@@ -65,7 +65,9 @@ listed under "Deviations from the plan".
   min(60*2^(attempts-1), 3600)` s): timeout, transport error, forge 5xx, git `could not
   resolve host` or connection errors, a push rejected after 3 re-renders, and see "Deviations"
   for 404 right after a push. Permanent (`blocked` with `last_error`): authentication refused,
-  repository not found, other forge 4xx except "already exists", unrenderable snapshot.
+  repository not found, other forge 4xx except "already exists" and except a 404 on the pull
+  request create right after a push (retried, then transient: Deviations 3), unrenderable
+  snapshot.
   `lakeloom git retry` moves blocked rows back to `pending`; `last_error` is redacted and
   capped at 500 characters.
 - **Job lease (NFR-DEP-07).** An in-process `asyncio.Lock` per repository, single replica;

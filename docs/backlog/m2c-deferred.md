@@ -64,6 +64,11 @@ Decisions and live research: [ADR 0013](../decisions/0013-git-publishing.md).
 - A naive `now=` datetime raises `TypeError` out of `process()`.
 - `requeue_blocked` keeps `last_error` and `updated_at`.
 - No pull-request-mode crash-after-push test; a changed remote URL orphans existing rows.
+- A forge 404 that outlasts the retry budget right after a push (for example a repository
+  renamed or deleted on the forge between push and pull request) is transient, so it retries
+  forever instead of blocking; only `attempts` and `last_error` in `lakeloom git status` show it.
+- Unexpected exceptions in the publisher (bugs, not Git or forge errors) are transient too and
+  retry forever instead of blocking.
 
 ## Review integration
 - When the enqueue itself failed, the internal-error warning still promises a retry (it should
@@ -77,6 +82,12 @@ Decisions and live research: [ADR 0013](../decisions/0013-git-publishing.md).
 - A caller's cancel can be swallowed without `uncancel` when the publish task finishes in the
   same loop iteration; on MCP (anyio) a cancelled approve is still audited as "cancelled" at the
   publication lookup, contrary to the docstring.
+
+## Upgrade notes
+- Draft ids are model-scoped since M2c. Proposals drafted before that change and not yet
+  applied carry the old, model-agnostic ids in their OpenMetadata change sets and can collide
+  with another model's ids at apply: rebase them (`rebase_proposal`) before approving
+  (pre-release note; no migration).
 
 ## Dev stack and tests
 - The Gitea throwaway-repository helper of `test_gitea_remote.py` ignores the `DELETE` status

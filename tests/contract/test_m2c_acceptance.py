@@ -338,6 +338,8 @@ async def _approve_new_model(run: Run, slug: str) -> Approved:
     )
     pid = str(proposed["proposal_id"])
     run.proposals.append(pid)
+    if slug == PR_MODEL:  # registered before the approve: teardown closes a leaked PR too
+        run.pr_branches.append(f"lakeloom/{slug}/{pid}")
     run.change_sets |= _change_sets(proposed["proposal"])
     submitted = ok(await call(run.url, t.agent, "submit_proposal", {"proposal_id": pid}))
     assert submitted["status"] == "submitted"
@@ -390,6 +392,16 @@ async def test_m2c_alice_approval_is_committed_with_all_trailers(run: Run) -> No
     assert values["Approved-By"] == [REVIEWER]
     assert values["Lakeloom-Publication"] == [pub["id"]]
     assert values["Lakeloom-Scan"] == [approved.scan["scan_id"]]
+    # Proposed-By and AI-Generated, against the proposal's stored provenance.
+    shown = ok(
+        await call(run.url, run.tokens.agent, "get_proposal", {"proposal_id": approved.proposal_id})
+    )
+    prov = shown["proposal"]["provenance"]
+    assert prov["principal_type"] == "agent", prov["principal_type"]
+    assert values["Lakeloom-Proposed-By"] == [
+        f"{prov['principal_subject']} ({prov['principal_type']})"
+    ]
+    assert values["Lakeloom-AI-Generated"] == ["true" if prov["ai_generated"] else "false"]
 
     # One Lakeloom-ChangeSet per applied set, equal to OpenMetadata's APPLIED change sets.
     change_sets = values["Lakeloom-ChangeSet"]
@@ -442,9 +454,6 @@ async def test_m2c_alice_approval_is_committed_with_all_trailers(run: Run) -> No
     assert mine[0]["publication_id"] == pub["id"]
 
     # get_proposal shows the same publication.
-    shown = ok(
-        await call(run.url, run.tokens.agent, "get_proposal", {"proposal_id": approved.proposal_id})
-    )
     assert shown["publication"]["commit"] == pub["commit"]
 
 
@@ -467,7 +476,7 @@ async def test_m2c_pull_request_mode(run: Run) -> None:
     approved = await _approve_new_model(run, PR_MODEL)
     pub = approved.publication
     branch = f"lakeloom/{PR_MODEL}/{approved.proposal_id}"
-    run.pr_branches.append(branch)
+    assert branch in run.pr_branches
     assert pub["status"] == "done", pub
     assert pub["branch"] == branch and pub["pr_url"], pub
     assert f"Git: pull request {pub['pr_url']}" in approved.text, approved.text[-500:]
