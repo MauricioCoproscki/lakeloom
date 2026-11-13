@@ -313,3 +313,79 @@ async def test_unreachable_db_app_starts_and_cancels_retry(tmp_path: Path) -> No
             r = await c.get("/readyz")
     assert r.status_code == 503
     assert _state_store(r.json())["detail"] == "schema upgrade pending"
+
+
+# --- Git publishing wiring (FR-GIT-05, NFR-OPS-04) -------------------------------------------
+
+
+def _git_settings(tmp_path: Path, **kw: object) -> Settings:
+    values: dict[str, object] = {"git_remote": f"file://{tmp_path}/remote.git", **kw}
+    return _settings(tmp_path).model_copy(update=values)
+
+
+@pytest.mark.parametrize(
+    ("kw", "policy", "message"),
+    [
+        ({"git_mode": "pull_request", "forge": "none"}, None, "LAKELOOM_FORGE"),
+        ({"git_mode": "direct", "forge": "none"}, "pull_request", "LAKELOOM_FORGE"),
+        ({"git_mode": "pull_request", "forge": "gitea"}, None, "owner/repo"),
+    ],
+)
+def test_pull_request_with_forge_none_is_config_error(
+    tmp_path: Path, kw: dict[str, object], policy: str | None, message: str
+) -> None:
+    settings = _git_settings(tmp_path, **kw)
+    if policy is not None:
+        config = tmp_path / "lakeloom.yaml"
+        config.write_text(f"models:\n  - name: shop\n    git: {{mode: {policy}}}\n")
+        settings = settings.model_copy(update={"config_file": config})
+    with pytest.raises(ConfigError) as exc:
+        build_deps(settings)
+    assert message in str(exc.value)
+    assert "remote.git" not in str(exc.value) or message == "owner/repo"
+
+
+def test_git_settings_that_need_no_forge_are_accepted(tmp_path: Path) -> None:
+    direct = build_deps(_git_settings(tmp_path, git_mode="direct", forge="none"))
+    assert direct.publisher.enabled
+    off = build_deps(_settings(tmp_path).model_copy(update={"forge": "none"}))
+    assert not off.publisher.enabled  # no remote: pull_request + none is not checked
+    gitea = build_deps(
+        _settings(tmp_path).model_copy(
+            update={"git_remote": "https://git.example.test/acme/onto.git", "forge": "gitea"}
+        )
+    )
+    assert gitea.publisher.enabled and gitea.git_http is not None
+
+
+class _CountingPublisher:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.started = asyncio.Event()
+
+    async def process(self) -> list[object]:
+        self.calls += 1
+        self.started.set()
+        return []
+
+
+async def test_lifespan_worker_cancelled_cleanly(tmp_path: Path) -> None:
+    deps = build_deps(_git_settings(tmp_path, git_mode="direct", forge="none"))
+    fake = _CountingPublisher()
+    deps.publisher = fake  # pyright: ignore[reportAttributeAccessIssue]
+    app = create_app(deps, checks=[_check("openmetadata", True)])
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(fake.started.wait(), 2)
+        workers = [t for t in asyncio.all_tasks() if t.get_name() == "lakeloom-git-worker"]
+        assert len(workers) == 1
+    assert workers[0].done() and workers[0].cancelled()
+    assert fake.calls == 1  # sleeping between runs when shut down
+    assert deps.git_http is not None and deps.git_http.is_closed
+
+
+async def test_lifespan_without_git_starts_no_worker(deps: AppDeps) -> None:
+    app = create_app(deps, checks=[_check("openmetadata", True)])
+    async with app.router.lifespan_context(app):
+        assert not [t for t in asyncio.all_tasks() if t.get_name() == "lakeloom-git-worker"]

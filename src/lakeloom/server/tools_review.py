@@ -32,8 +32,11 @@ from lakeloom.server.tools_proposals import (
     WRITE,
     ProposalIdArg,
     ProposalResult,
+    PublicationInfo,
     _result,  # pyright: ignore[reportPrivateUsage]
     _scope,  # pyright: ignore[reportPrivateUsage]
+    publication_of,
+    with_line,
 )
 from lakeloom.untrusted import code_span as _code
 from lakeloom.untrusted import single_line
@@ -64,6 +67,11 @@ change sets in order, then tags realizations); a failure part-way leaves the sta
 change sets (parts already applied stay in OpenMetadata). A replayed token, or a proposal \
 that changed since the preview → `conflict`. Not idempotent. Destructive: applied changes \
 cannot be undone from here.
+
+With Git publishing on, an approve also publishes the model to the ontology repository: the \
+text ends with `Git: committed <sha> to <branch>`, `Git: pull request <url>`, `Git: queued` \
+(retried automatically) or `Git: blocked` (an operator must retry), and `publication` holds \
+it. A Git problem never fails or undoes the approval.
 
 {_scope(REVIEW_SCOPE)}"""
 
@@ -111,6 +119,10 @@ class ReviewResult(BaseModel):
         default=None, description="Dry run only: the entity-level changes the decision affects."
     )
     proposal: Proposal | None = Field(default=None, description="After the decision: the proposal.")
+    publication: PublicationInfo | None = Field(
+        default=None,
+        description="After an approve: its Git publication (null when Git is off).",
+    )
 
 
 class PendingReviewsResult(BaseModel):
@@ -196,14 +208,16 @@ def register_review_tools(mcp: MCPServer, deps: AppDeps) -> None:
                     ),
                 )
             summary = deps.proposals.summary_markdown(out)
+            publication, line = await publication_of(deps, out.id)
             return _result(
-                summary,
+                with_line(summary, line),
                 ReviewResult(
                     decided=True,
                     proposal_id=out.id,
                     decision=decision,
                     summary=summary,
                     proposal=out,
+                    publication=publication,
                 ),
             )
 

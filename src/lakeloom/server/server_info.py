@@ -6,7 +6,7 @@ The caller section names the principal and its scopes but never carries its toke
 (NFR-SEC-11).
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,6 +41,13 @@ class ServerInfo(BaseModel):
             "not live capabilities: a flag can be on before the feature ships."
         )
     )
+    git: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Git publishing (FR-GIT-04): enabled, mode, pending and blocked publication counts "
+            "and the queue head's last error. Never carries the remote URL or credentials."
+        ),
+    )
     review_identity: OboMode = Field(
         description=(
             "How human review reaches OpenMetadata: 'exchange' (RFC 8693), 'forward' (the "
@@ -74,11 +81,24 @@ async def build_server_info(deps: AppDeps, principal: Principal | None) -> Serve
             "stdio": bool(settings.stdio_enabled),
             "token_exchange": settings.oidc_token_exchange,
         },
+        git=await _git_status(deps),
         review_identity=deps.obo.mode,
         sources=[source_status(n, s) for n, s in deps.sources.items()],
         models=[],
         caller=caller,
     )
+
+
+async def _git_status(deps: AppDeps) -> dict[str, Any]:
+    """``GitPublisher.status()`` (no remote URL); a store failure is reported, not raised."""
+    try:
+        return await deps.publisher.status()
+    except Exception as exc:
+        return {
+            "enabled": deps.publisher.enabled,
+            "mode": deps.settings.git_mode,
+            "error": f"publication queue unavailable ({type(exc).__name__})",
+        }
 
 
 def summarize(info: ServerInfo) -> str:
@@ -99,6 +119,14 @@ def summarize(info: ServerInfo) -> str:
         f"- Sources: {len(info.sources)} ({sum(s.available for s in info.sources)} available), "
         f"models: {len(info.models)}",
     ]
+    git = info.git
+    if git is not None and git.get("enabled"):
+        lines.append(
+            f"- Git: {git.get('mode')} mode, {git.get('pending', 0)} pending, "
+            f"{git.get('blocked', 0)} blocked"
+        )
+    else:
+        lines.append("- Git: off")
     if info.caller is not None:
         scopes = ", ".join(info.caller.scopes) or "none"
         lines.append(f"- Caller: {info.caller.type} `{info.caller.subject}` (scopes: {scopes})")

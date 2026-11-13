@@ -101,6 +101,12 @@ class GitPublisher:
             return pub
         return await self._repo.add(pub.model_copy(update={"repo": self.repo_key}))
 
+    async def for_proposal(self, proposal_id: str) -> Publication | None:
+        """The publication of a proposal (``None`` when Git is off or there is none)."""
+        if not self.enabled:
+            return None
+        return await self._repo.for_proposal(proposal_id)
+
     async def retry_blocked(self) -> int:
         """``lakeloom git retry``: move blocked publications back to pending."""
         if not self.enabled:

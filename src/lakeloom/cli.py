@@ -8,7 +8,9 @@ Configuration errors are printed to stderr and exit with code 2, without a trace
 OpenMetadata (FR-CTX-01..04, FR-IO-01). ``lakeloom propose SCAN_ID --model M``,
 ``lakeloom proposal ID`` and ``lakeloom submit ID`` are the proposal tools for the operator
 (drafts and submissions only; nothing is applied); ``lakeloom pending [--model M]`` lists the
-proposals awaiting review and ``lakeloom rebase ID`` rebases one. There is no review command:
+proposals awaiting review and ``lakeloom rebase ID`` rebases one. ``lakeloom git status``
+lists the queued and blocked Git publications and ``lakeloom git retry`` requeues the blocked
+ones and publishes once (FR-GIT-09). There is no review command:
 approving and rejecting are for human reviewers through MCP (ADR 0012). They write their own
 audit rows. Typed
 errors (``not_found``, ``upstream_unavailable``, ...) exit with code 1.
@@ -35,8 +37,10 @@ from lakeloom.untrusted import single_line
 if TYPE_CHECKING:
     from lakeloom.core.models import ModelService
     from lakeloom.core.proposals import Actor, ProposalService
+    from lakeloom.gitstore.publisher import GitPublisher
     from lakeloom.om.client import OMClient
     from lakeloom.sources.base import LakeSource
+    from lakeloom.state.publications import PublicationRepository
 
 CLI_CLIENT = "lakeloom-cli"
 
@@ -603,6 +607,98 @@ def rebase_cmd(
         async with _open_proposals(settings) as service:
             p = await service.rebase(proposal_id, principal=_actor(), client=CLI_CLIENT)
             typer.echo(service.summary_markdown(p), nl=False)
+
+    _run(_go())
+
+
+# --- Git publishing (operator side, FR-GIT-09) -----------------------------------------------
+
+git_app = typer.Typer(name="git", help="Git publication queue commands.", no_args_is_help=True)
+app.add_typer(git_app)
+
+
+@asynccontextmanager
+async def _open_publisher(
+    settings: Settings,
+) -> AsyncGenerator[tuple["GitPublisher", "PublicationRepository"]]:
+    """The publisher as the server builds it (same factory); exports through OM when set."""
+    import httpx
+
+    from lakeloom.gitstore.layout import Snapshot
+    from lakeloom.gitstore.snapshot import fill_exports
+    from lakeloom.gitstore.wiring import FORGE_TIMEOUT, build_publisher
+    from lakeloom.server.http_app import load_config
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.publications import PublicationRepository
+
+    config = load_config(settings)
+    engine = create_engine(settings.db_url)
+    http = httpx.AsyncClient(timeout=FORGE_TIMEOUT)
+    try:
+        await upgrade(engine)
+        repo = PublicationRepository(engine)
+        if settings.om_url is None:
+            yield build_publisher(settings, repo, http, config.models), repo
+            return
+        async with _open_semantic(settings) as (om, models, _s):
+
+            async def exporter(snapshot: Snapshot) -> Snapshot:
+                return await fill_exports(models, om, snapshot)
+
+            yield build_publisher(settings, repo, http, config.models, exporter=exporter), repo
+    finally:
+        await http.aclose()
+        await engine.dispose()
+
+
+@git_app.command("status")
+def git_status_cmd() -> None:
+    """List the pending and blocked Git publications, oldest first."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        async with _open_publisher(settings) as (publisher, repo):
+            if not publisher.enabled:
+                typer.echo("Git publishing is off (LAKELOOM_GIT_REMOTE is not set).")
+                return
+            rows = [*await repo.list("pending", 500), *await repo.list("blocked", 500)]
+            rows.sort(key=lambda r: r.seq or 0)
+            if not rows:
+                typer.echo("No pending or blocked Git publications.")
+                return
+            typer.echo("id\tmodel\tproposal\tstatus\tattempts\tlast_error")
+            for r in rows:
+                error = single_line(r.last_error) if r.last_error else "-"
+                typer.echo(
+                    f"{r.id}\t{single_line(r.model)}\t{r.proposal_id}\t{r.status}\t"
+                    f"{r.attempts}\t{error}"
+                )
+
+    _run(_go())
+
+
+@git_app.command("retry")
+def git_retry_cmd() -> None:
+    """Requeue the blocked Git publications, then publish the queue once."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        async with _open_publisher(settings) as (publisher, _repo):
+            if not publisher.enabled:
+                typer.echo("Git publishing is off (LAKELOOM_GIT_REMOTE is not set).")
+                return
+            requeued = await publisher.retry_blocked()
+            typer.echo(f"requeued {requeued} blocked publication(s)")
+            results = await publisher.process()
+            if not results:
+                typer.echo("nothing was due for publishing")
+            for r in results:
+                if r.status == "done":
+                    where = r.pr_url or f"{(r.commit_sha or '')[:7]} on {r.branch}"
+                    typer.echo(f"{r.id} done: {where}")
+                else:
+                    error = single_line(r.last_error) if r.last_error else "-"
+                    typer.echo(f"{r.id} {r.status} (attempt {r.attempts}): {error}")
 
     _run(_go())
 

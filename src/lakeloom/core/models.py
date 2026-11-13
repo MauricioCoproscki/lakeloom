@@ -165,6 +165,11 @@ class ModelService:
     # --- graph and export -------------------------------------------------------------
 
     @property
+    def om(self) -> OMClient:
+        """The service's own (bot) client, for reads."""
+        return self._om
+
+    @property
     def cache_ttl(self) -> float:
         """Seconds a cached graph (and anything derived from it) stays fresh."""
         return float(self._settings.model_cache_ttl_seconds)

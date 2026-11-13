@@ -31,6 +31,7 @@ from lakeloom.server.tools_common import (
     client_name,
     guarded,
 )
+from lakeloom.state.publications import Publication
 from lakeloom.untrusted import code_span as _code
 
 __all__ = [
@@ -38,7 +39,11 @@ __all__ = [
     "CreateModelResult",
     "DiscardResult",
     "ProposalResult",
+    "PublicationInfo",
+    "git_line",
+    "publication_of",
     "register_proposal_tools",
+    "with_line",
 ]
 
 MAX_OPERATIONS_PER_CALL = 200
@@ -159,7 +164,9 @@ GET_PROPOSAL_DESCRIPTION = f"""\
 Show one proposal: its status, parts and their OpenMetadata change sets (with the current \
 state read from OpenMetadata), provenance, matches, warnings and every operation. \
 {_RESULT_NOTE} {_UNTRUSTED_NOTE} Read-only: the change-set states are read from \
-OpenMetadata and nothing is stored. Unknown id → `not_found`.
+OpenMetadata and nothing is stored. Unknown id → `not_found`. With Git publishing on, an \
+applied proposal also shows its Git publication (`publication`: committed, pull request, \
+queued or blocked).
 
 {_scope(READ_SCOPE)}"""
 
@@ -199,6 +206,54 @@ so the catalog itself is unchanged) and marks the proposal discarded.
 {_scope(PROPOSE_SCOPE)}"""
 
 
+class PublicationInfo(BaseModel):
+    """The Git publication of an applied proposal (FR-GIT-04, FR-GIT-05)."""
+
+    id: str
+    status: str = Field(description="pending (queued, retried automatically), done or blocked.")
+    commit: str | None = None
+    branch: str | None = None
+    pr_url: str | None = None
+
+    @classmethod
+    def of(cls, pub: Publication) -> "PublicationInfo":
+        return cls(
+            id=pub.id,
+            status=pub.status,
+            commit=pub.commit_sha,
+            branch=pub.branch,
+            pr_url=pub.pr_url,
+        )
+
+
+def git_line(pub: PublicationInfo | None, mode: str | None = None) -> str | None:
+    """The ``Git: ...`` line of a tool's text, or ``None`` without a publication."""
+    if pub is None:
+        return None
+    if pub.status == "done":
+        if mode == "pull_request" and pub.pr_url:
+            return f"Git: pull request {pub.pr_url}"
+        return f"Git: committed {(pub.commit or '')[:7]} to {pub.branch}"
+    return "Git: blocked" if pub.status == "blocked" else "Git: queued"
+
+
+async def publication_of(deps: AppDeps, proposal_id: str) -> tuple[PublicationInfo | None, str]:
+    """The publication of ``proposal_id`` and its text line (empty when there is none)."""
+    pub = await deps.publisher.for_proposal(proposal_id)
+    if pub is None:
+        return None, ""
+    info = PublicationInfo.of(pub)
+    return info, git_line(info, pub.mode) or ""
+
+
+def with_line(text: str, line: str) -> str:
+    """``text`` followed by ``line`` on its own line (unchanged for an empty line)."""
+    if not line:
+        return text
+    sep = "" if text.endswith("\n") else "\n"
+    return f"{text}{sep}{line}\n"
+
+
 class ProposalResult(BaseModel):
     proposal_id: str
     status: str
@@ -209,6 +264,9 @@ class ProposalResult(BaseModel):
         description="Existing concepts the proposed ones resemble (FR-PRO-02).",
     )
     warnings: list[str] = Field(default_factory=list[str])
+    publication: PublicationInfo | None = Field(
+        default=None, description="get_proposal: the Git publication; null when Git is off."
+    )
 
 
 class DiscardResult(BaseModel):
@@ -264,7 +322,12 @@ ProposalIdArg = Annotated[
 def register_proposal_tools(mcp: MCPServer, deps: AppDeps) -> None:
     """Register create_model and the seven proposal tools on ``mcp``."""
 
-    def proposal_result(p: Proposal, *, next_step: bool = True) -> CallToolResult:
+    def proposal_result(
+        p: Proposal,
+        *,
+        next_step: bool = True,
+        publication: tuple[PublicationInfo | None, str] = (None, ""),
+    ) -> CallToolResult:
         summary = deps.proposals.summary_markdown(p)
         text = f"{summary}\n{NEXT_STEP}\n" if next_step and p.status == "draft" else summary
         data = ProposalResult(
@@ -274,8 +337,9 @@ def register_proposal_tools(mcp: MCPServer, deps: AppDeps) -> None:
             proposal=p,
             matches=p.matches,
             warnings=p.warnings,
+            publication=publication[0],
         )
-        return _result(text, data)
+        return _result(with_line(text, publication[1]), data)
 
     async def create_model_tool(
         name: Annotated[
@@ -426,7 +490,8 @@ def register_proposal_tools(mcp: MCPServer, deps: AppDeps) -> None:
         proposal_id: ProposalIdArg, ctx: Context
     ) -> Annotated[CallToolResult, ProposalResult]:
         async def body(_: Principal) -> CallToolResult:
-            return proposal_result(await deps.proposals.get_proposal(proposal_id))
+            p = await deps.proposals.get_proposal(proposal_id)
+            return proposal_result(p, publication=await publication_of(deps, p.id))
 
         return await guarded("get_proposal", ctx, READ_SCOPE, body)
 

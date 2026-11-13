@@ -16,6 +16,9 @@ Operators tune the mapping of a model through the ``models:`` section of the YAM
           propose_groups: [stewards]   # who may create or extend proposals (NFR-SEC-07)
           review_groups: [reviewers]   # who may review them
 
+        git:
+          mode: direct                 # or pull_request; default LAKELOOM_GIT_MODE (FR-GIT-05)
+
 A model without an entry gets the defaults. Unknown keys are rejected. An empty (or absent)
 group list means no restriction; the CLI operator (:class:`~lakeloom.core.callers.Actor`) is
 exempt. Otherwise one of the caller's ``groups`` must be listed (:func:`require_group`).
@@ -34,16 +37,20 @@ __all__ = [
     "DEFAULT_DATATYPES",
     "XSD_DATATYPE_PATTERN",
     "AccessAction",
+    "GitMode",
+    "GitPolicy",
     "MappingPolicy",
     "ModelAccess",
     "ModelPolicyEntry",
     "access_for",
+    "git_mode_for",
     "may",
     "policy_for",
     "require_group",
 ]
 
 AccessAction = Literal["propose", "review"]
+GitMode = Literal["direct", "pull_request"]
 GroupName = Annotated[str, Field(min_length=1, max_length=255)]
 
 # Keys are lower-case Spark base types (parameters such as ``(10,2)`` are stripped).
@@ -118,12 +125,19 @@ class ModelAccess(_Strict):
     review_groups: list[GroupName] = []
 
 
+class GitPolicy(_Strict):
+    """Per-model Git publishing (FR-GIT-05): overrides ``LAKELOOM_GIT_MODE``."""
+
+    mode: GitMode
+
+
 class ModelPolicyEntry(_Strict):
-    """One ``models:`` item: ``{name, mapping: {...}, access: {...}}``."""
+    """One ``models:`` item: ``{name, mapping: {...}, access: {...}, git: {...}}``."""
 
     name: str = Field(min_length=1)
     mapping: _MappingSettings = _MappingSettings()
     access: ModelAccess = ModelAccess()
+    git: GitPolicy | None = None
 
     def to_policy(self) -> MappingPolicy:
         settings = self.mapping.model_dump()
@@ -152,6 +166,14 @@ def access_for(entries: Sequence[ModelPolicyEntry], model: str) -> ModelAccess:
         if entry.name == model:
             return entry.access
     return ModelAccess()
+
+
+def git_mode_for(entries: Sequence[ModelPolicyEntry], model: str, default: GitMode) -> GitMode:
+    """The Git mode of ``model``: its ``git.mode`` entry, else ``default``."""
+    for entry in entries:
+        if entry.name == model and entry.git is not None:
+            return entry.git.mode
+    return default
 
 
 def _groups(access: ModelAccess, action: AccessAction) -> list[str]:

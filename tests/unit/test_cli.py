@@ -402,3 +402,88 @@ def test_cli_pending_and_rebase(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert rebased.exit_code == 0, rebased.output
     assert "# Proposal `prop_9`" in rebased.output and "Customer base refreshed" in rebased.output
     assert fake.calls[1][0] == "rebase" and fake.calls[1][1][1]["client"] == "lakeloom-cli"
+
+
+def test_cli_git_status_and_retry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import asyncio
+    import hashlib
+    import subprocess
+    from datetime import UTC, datetime
+
+    from lakeloom.gitstore.layout import Snapshot
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.publications import Publication, PublicationRepository
+
+    bare = tmp_path / "remote.git"
+    subprocess.run(  # noqa: S603
+        ["git", "init", "--bare", "-b", "main", str(bare)],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    remote = f"file://{bare}"
+    for name, value in {
+        "LAKELOOM_DATA_DIR": str(tmp_path),
+        "LAKELOOM_DB_URL": f"sqlite:///{tmp_path}/l.db",
+        "LAKELOOM_GIT_REMOTE": remote,
+        "LAKELOOM_GIT_MODE": "direct",
+        "LAKELOOM_FORGE": "none",
+        "LAKELOOM_LOG_LEVEL": "WARNING",
+    }.items():
+        monkeypatch.setenv(name, value)
+    now = datetime.now(UTC)
+    snap = Snapshot(
+        model="shop",
+        glossary_id="g",
+        glossary_fqn="shop",
+        model_version="v1",
+        exports={"ontology.ttl": "ttl\n", "ontology.jsonld": "{}\n", "ontology.owl": "<x/>\n"},
+        proposal_id="prop_9",
+        message="ontology(shop): add_concept x1\n\nLakeloom-Publication: pub_9\n",
+    )
+
+    async def seed() -> None:
+        engine = create_engine(f"sqlite:///{tmp_path}/l.db")
+        await upgrade(engine)
+        repo = PublicationRepository(engine)
+        pub = Publication(
+            id="pub_9",
+            repo=hashlib.sha256(remote.encode()).hexdigest(),
+            model="shop",
+            proposal_id="prop_9",
+            mode="direct",
+            created_at=now,
+            updated_at=now,
+            payload=snap,
+        )
+        await repo.add(pub)
+        await repo.update(
+            pub.model_copy(
+                update={"status": "blocked", "attempts": 1, "last_error": "git auth: refused"}
+            )
+        )
+        await engine.dispose()
+
+    asyncio.run(seed())
+    runner = CliRunner()
+
+    status = runner.invoke(app, ["git", "status"])
+    retry = runner.invoke(app, ["git", "retry"])
+    after = runner.invoke(app, ["git", "status"])
+
+    assert status.exit_code == 0, status.output
+    assert "pub_9" in status.output and "shop" in status.output and "prop_9" in status.output
+    assert "blocked" in status.output and "git auth: refused" in status.output
+    assert retry.exit_code == 0, retry.output
+    assert "requeued 1 blocked publication(s)" in retry.output
+    assert "pub_9 done" in retry.output and "main" in retry.output
+    assert after.exit_code == 0 and "No pending or blocked Git publications." in after.output
+    assert str(bare) not in status.output + retry.output + after.output
+
+
+def test_cli_git_status_when_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LAKELOOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LAKELOOM_DB_URL", f"sqlite:///{tmp_path}/l.db")
+    monkeypatch.delenv("LAKELOOM_GIT_REMOTE", raising=False)
+    result = CliRunner().invoke(app, ["git", "status"])
+    assert result.exit_code == 0, result.output
+    assert "Git publishing is off" in result.output

@@ -43,6 +43,10 @@ from lakeloom.core.review import ReviewService
 from lakeloom.core.scans import ScanService
 from lakeloom.core.sources import close_sources, start_sources
 from lakeloom.errors import LakeloomError
+from lakeloom.gitstore.layout import Snapshot
+from lakeloom.gitstore.publisher import GitPublisher
+from lakeloom.gitstore.snapshot import fill_exports
+from lakeloom.gitstore.wiring import FORGE_TIMEOUT, build_publisher
 from lakeloom.logging import request_id_var
 from lakeloom.metrics import HTTP_REQUESTS, REGISTRY
 from lakeloom.om.client import OMClient
@@ -71,6 +75,7 @@ from lakeloom.sources.registry import build_sources
 from lakeloom.state.audit import AuditRepository
 from lakeloom.state.db import create_engine, upgrade
 from lakeloom.state.proposals import ProposalRepository
+from lakeloom.state.publications import PublicationRepository
 from lakeloom.state.scans import ScanRepository
 from lakeloom.telemetry import configure_telemetry, is_active, start_span
 
@@ -100,6 +105,8 @@ class AppDeps:
     sources: dict[str, LakeSource] = field(default_factory=dict[str, LakeSource])
     # Per-model mapping policies (``models:`` in LAKELOOM_CONFIG_FILE, FR-PRO-01).
     policies: list[ModelPolicyEntry] = field(default_factory=list[ModelPolicyEntry])
+    # Forge API client for Git publishing (only with LAKELOOM_GIT_REMOTE); closed by the lifespan.
+    git_http: httpx.AsyncClient | None = None
     scans: ScanService = field(init=False)
     models: ModelService = field(init=False)
     confirm: ConfirmTokens = field(init=False)
@@ -107,6 +114,8 @@ class AppDeps:
     proposals: ProposalService = field(init=False)
     review: ReviewService = field(init=False)
     obo: OnBehalfOf = field(init=False)
+    publications: PublicationRepository = field(init=False)
+    publisher: GitPublisher = field(init=False)
 
     def __post_init__(self) -> None:
         self.confirm = confirm_tokens_from_settings(self.settings)
@@ -130,6 +139,17 @@ class AppDeps:
             sources=self.sources,
             policies=self.policies,
         )
+        # Git publishing on apply (FR-GIT-04); disabled without LAKELOOM_GIT_REMOTE.
+        if self.settings.git_remote and self.git_http is None:
+            self.git_http = httpx.AsyncClient(timeout=FORGE_TIMEOUT)  # closed by the lifespan
+        self.publications = PublicationRepository(self.engine)
+        self.publisher = build_publisher(
+            self.settings,
+            self.publications,
+            self.git_http,
+            self.policies,
+            exporter=self._export,
+        )
         # Same for reviews: review_proposal is audited by guarded() (audit=None here).
         self.review = ReviewService(
             self.proposals,
@@ -140,7 +160,12 @@ class AppDeps:
             self.settings,
             None,
             self.policies,
+            publisher=self.publisher,
         )
+
+    async def _export(self, snapshot: Snapshot) -> Snapshot:
+        """The publisher's exporter: the model as OM holds it now (bot client, reads)."""
+        return await fill_exports(self.models, self.om, snapshot)
 
 
 def build_deps(settings: Settings, *, http_auth: bool = True) -> AppDeps:
@@ -344,10 +369,20 @@ def create_app(
                 _log.info("state store schema upgraded")
                 return
 
+    async def git_worker() -> None:
+        """Drain the Git outbox; queued rows stay in the store on shutdown (NFR-OPS-04)."""
+        while True:
+            try:
+                await deps.publisher.process()
+            except Exception as exc:  # process() never raises; belt and braces
+                _log.error("git publication worker failed (%s)", type(exc).__name__)
+            await asyncio.sleep(settings.git_retry_interval_seconds)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         nonlocal upgrade_pending
         retry: asyncio.Task[None] | None = None
+        worker: asyncio.Task[None] | None = None
         # Off unless an OTLP endpoint is set; an already-active setup is not ours to stop.
         owns_telemetry = not is_active()
         telemetry = configure_telemetry(settings)
@@ -368,17 +403,22 @@ def create_app(
                 raise RuntimeError(f"state store migration failed ({type(exc).__name__})") from None
             # Upstream MCP sources connect here, bounded; an unavailable one never fails startup.
             await start_sources(deps.sources)
+            if deps.publisher.enabled:
+                worker = asyncio.create_task(git_worker(), name="lakeloom-git-worker")
             async with AsyncExitStack() as stack:
                 for factory in lifespans:
                     await stack.enter_async_context(factory())
                 yield
         finally:
-            if retry is not None:
-                retry.cancel()
-                await asyncio.gather(retry, return_exceptions=True)
+            for task in (worker, retry):
+                if task is not None:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
             await close_sources(deps.sources)
             if deps.idp_http is not None:
                 await deps.idp_http.aclose()
+            if deps.git_http is not None:
+                await deps.git_http.aclose()
             await deps.om.aclose()
             await deps.engine.dispose()
             if owns_telemetry:

@@ -325,3 +325,137 @@ async def test_list_pending_needs_review_scope(
     async with mcp_session(create_server_app(deps), kit.token(scope="lakeloom:read")) as s:
         r = await s.call_tool(tool, {})
     assert structured(r)["error"]["code"] == "forbidden"
+
+
+# --- Git publication in the output (FR-GIT-04, FR-GIT-05) ---------------------------------
+
+
+GIT: dict[str, Any] = {
+    "git_remote": "file:///srv/remote.git",
+    "git_mode": "direct",
+    "forge": "none",
+}
+
+
+async def seed_publication(deps: AppDeps, proposal_id: str, **update: Any) -> None:
+    from lakeloom.gitstore.layout import Snapshot
+    from lakeloom.state.publications import Publication, PublicationRepository
+
+    await upgrade(deps.engine)
+    snap = Snapshot(
+        model="shop",
+        glossary_id="g",
+        glossary_fqn="shop",
+        model_version="v",
+        proposal_id=proposal_id,
+        message="ontology(shop): add_concept x2\n",
+    )
+    pub = Publication(
+        id="pub_1",
+        repo=deps.publisher.repo_key,
+        model="shop",
+        proposal_id=proposal_id,
+        mode="direct",
+        created_at=NOW,
+        updated_at=NOW,
+        payload=snap,
+    )
+    repo = PublicationRepository(deps.engine)
+    await repo.add(pub)
+    await repo.update(pub.model_copy(update=update))
+
+
+async def test_review_tool_shows_git_line(make_deps: DepsFactory, kit: AuthKit) -> None:
+    deps = make_deps(**GIT)
+    assert deps.publisher.enabled
+    deps.review = FakeReview()  # pyright: ignore[reportAttributeAccessIssue]
+    await seed_publication(
+        deps, "prop_1", status="done", commit_sha="0123456789abcdef", branch="main"
+    )
+    async with mcp_session(create_server_app(deps), kit.token(scope=REVIEW)) as s:
+        done = await s.call_tool(
+            "review_proposal",
+            {"proposal_id": "prop_1", "decision": "approve", "confirm_token": TOKEN},
+        )
+        preview = await s.call_tool(
+            "review_proposal", {"proposal_id": "prop_1", "decision": "approve"}
+        )
+    assert "Git: committed 0123456 to main" in text(done)
+    assert structured(done)["publication"] == {
+        "id": "pub_1",
+        "status": "done",
+        "commit": "0123456789abcdef",
+        "branch": "main",
+        "pr_url": None,
+    }
+    assert "Git:" not in text(preview) and structured(preview)["publication"] is None
+
+
+@pytest.mark.parametrize(
+    ("update", "line"),
+    [
+        (
+            {
+                "status": "done",
+                "mode": "pull_request",
+                "branch": "lakeloom/shop/prop_1",
+                "commit_sha": "abc",
+                "pr_url": "https://forge/pulls/3",
+            },
+            "Git: pull request https://forge/pulls/3",
+        ),
+        ({"status": "pending", "last_error": "timeout"}, "Git: queued"),
+        ({"status": "blocked", "last_error": "auth"}, "Git: blocked"),
+    ],
+)
+async def test_review_tool_git_line_per_status(
+    make_deps: DepsFactory, kit: AuthKit, update: dict[str, Any], line: str
+) -> None:
+    deps = make_deps(**GIT)
+    deps.review = FakeReview()  # pyright: ignore[reportAttributeAccessIssue]
+    await seed_publication(deps, "prop_1", **update)
+    async with mcp_session(create_server_app(deps), kit.token(scope=REVIEW)) as s:
+        r = await s.call_tool(
+            "review_proposal",
+            {"proposal_id": "prop_1", "decision": "approve", "confirm_token": TOKEN},
+        )
+    lines = text(r).splitlines()
+    assert line in lines
+    assert structured(r)["publication"]["status"] == update["status"]
+
+
+async def test_review_tool_without_git_has_no_line(make_deps: DepsFactory, kit: AuthKit) -> None:
+    deps = make_deps()
+    assert not deps.publisher.enabled
+    deps.review = FakeReview()  # pyright: ignore[reportAttributeAccessIssue]
+    await upgrade(deps.engine)
+    async with mcp_session(create_server_app(deps), kit.token(scope=REVIEW)) as s:
+        r = await s.call_tool(
+            "review_proposal",
+            {"proposal_id": "prop_1", "decision": "approve", "confirm_token": TOKEN},
+        )
+    assert "Git:" not in text(r) and structured(r)["publication"] is None
+
+
+class FakeGet:
+    def __init__(self, deps: AppDeps) -> None:
+        self.real = deps.proposals
+
+    async def get_proposal(self, proposal_id: str) -> Proposal:
+        return make_proposal(proposal_id, status="applied")
+
+    def summary_markdown(self, p: Proposal) -> str:
+        return self.real.summary_markdown(p)
+
+
+async def test_get_proposal_shows_publication(make_deps: DepsFactory, kit: AuthKit) -> None:
+    deps = make_deps(**GIT)
+    deps.proposals = FakeGet(deps)  # pyright: ignore[reportAttributeAccessIssue]
+    await seed_publication(deps, "prop_1", status="pending", last_error="timeout")
+    async with mcp_session(create_server_app(deps), kit.token(scope="lakeloom:read")) as s:
+        shown = await s.call_tool("get_proposal", {"proposal_id": "prop_1"})
+        other = await s.call_tool("get_proposal", {"proposal_id": "prop_2"})
+    assert "Git: queued" in text(shown).splitlines()
+    assert structured(shown)["publication"]["id"] == "pub_1"
+    assert structured(shown)["publication"]["status"] == "pending"
+    assert "Git:" not in text(other) and structured(other)["publication"] is None

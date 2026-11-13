@@ -105,6 +105,7 @@ from lakeloom.core.proposals import (
     map_om_error,
     summary_markdown,
 )
+from lakeloom.core.review_git import GitHook, Publisher
 from lakeloom.errors import LakeloomError
 from lakeloom.om.client import OMClient, OMConflict, OMError, OMForbidden
 from lakeloom.om.models import (
@@ -201,6 +202,8 @@ class ReviewService:
         settings: Settings,
         audit: AuditRepository | None,
         policies: Sequence[ModelPolicyEntry] = (),
+        *,
+        publisher: Publisher | None = None,
     ) -> None:
         self._proposals = proposals
         self._repo = repo
@@ -210,6 +213,10 @@ class ReviewService:
         self._settings = settings
         self._audit = audit
         self._policies = list(policies)
+        # Publish on apply (FR-GIT-04); None or a disabled publisher: no Git at all.
+        self._git = (
+            GitHook(publisher, models, settings, self._policies) if publisher is not None else None
+        )
 
     # -- entry point -----------------------------------------------------------------------
 
@@ -543,6 +550,8 @@ class ReviewService:
         )
         await self._proposals.save(p)
         self._models.invalidate(p.model)
+        if self._git is not None:
+            await self._git.after_apply(p, info, self._keep)  # never fails the approval
         return p
 
     async def _apply_part(
