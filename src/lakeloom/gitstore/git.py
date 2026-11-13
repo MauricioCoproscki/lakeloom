@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
@@ -88,10 +89,14 @@ _RULES: tuple[tuple[GitErrorKind, tuple[str, ...]], ...] = (
 )
 
 
+# Token values of every GitRunner created in this process; redact() always strips them.
+_KNOWN_SECRETS: set[str] = set()
+
+
 def redact(text: str, secrets: Iterable[str] = ()) -> str:
-    """Remove URL user info and every ``secrets`` value from ``text``."""
+    """Remove URL user info, every registered token and every ``secrets`` value."""
     out = _USERINFO.sub(r"\g<scheme>", text)
-    for secret in secrets:
+    for secret in (*_KNOWN_SECRETS, *secrets):
         if secret:
             out = out.replace(secret, "***")
     return out
@@ -125,6 +130,8 @@ class GitRunner:
         self._timeout = timeout
         self._askpass: Path | None = None
         self._warned_accept_new = False
+        if settings.git_token is not None and settings.git_token.get_secret_value():
+            _KNOWN_SECRETS.add(settings.git_token.get_secret_value())
 
     @property
     def workdir(self) -> Path:
@@ -212,6 +219,7 @@ class GitRunner:
                 stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
         except OSError as exc:
             raise GitError("failed", redact(str(exc), self._secrets())) from None
@@ -230,9 +238,13 @@ class GitRunner:
 
     @staticmethod
     async def _kill(proc: asyncio.subprocess.Process) -> None:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        await proc.wait()
+        # git spawns helpers (git-remote-https, ssh) that inherit the pipes: kill the whole
+        # process group, otherwise wait() blocks until those helpers exit.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            logger.warning("git process %s did not exit after SIGKILL", proc.pid)

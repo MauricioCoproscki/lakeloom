@@ -88,3 +88,8 @@ def other_bare(tmp_path: Path) -> Path:
     path = tmp_path / "other.git"
     plain_git("init", "--bare", "-b", "main", str(path), cwd=tmp_path)
     return path
+
+
+@pytest.fixture
+def git_cmd() -> Callable[..., str]:
+    return plain_git

@@ -3,6 +3,7 @@ import logging
 import os
 import stat
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -177,3 +178,32 @@ def test_redact_and_error_message_cap() -> None:
     err = GitError("failed", "x" * 900 + " https://u:p@h/")
     assert len(err.message) == 500
     assert "u:p" not in GitError("failed", "see https://u:p@h/r").message
+
+
+async def test_timeout_kills_process_group_and_returns_promptly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_settings: Callable[..., Settings],
+) -> None:
+    pidfile = tmp_path / "child.pid"
+    _fake_git(tmp_path, monkeypatch, f"sleep 30 &\necho $! > {pidfile}\nwait\n")
+    runner = GitRunner(make_settings(), tmp_path / "w", timeout=0.5)
+    started = time.monotonic()
+    with pytest.raises(GitError) as exc:
+        await runner.run("fetch")
+    assert exc.value.kind == "timeout"
+    assert time.monotonic() - started < 3.5
+    pid = int(pidfile.read_text())
+    await asyncio.sleep(0.1)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+def test_redact_removes_configured_token_without_explicit_secrets(
+    tmp_path: Path, make_settings: Callable[..., Settings]
+) -> None:
+    secret = "registered-token-98765"  # noqa: S105
+    GitRunner(make_settings(git_token=SecretStr(secret)), tmp_path / "w")
+    assert secret not in redact(f"x {secret} y")
+    assert secret not in GitError("failed", f"x {secret}").message
+    assert secret not in str(GitError("failed", f"x {secret}"))

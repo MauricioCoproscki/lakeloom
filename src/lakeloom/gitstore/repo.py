@@ -25,7 +25,9 @@ class WorkingCopy:
         self._remote = remote
 
     async def _git(self, *args: str, input: bytes | None = None) -> str:
-        return await self._runner.run(*args, cwd=self.path, input=input)
+        return await self._runner.run(
+            "-c", "core.symlinks=false", *args, cwd=self.path, input=input
+        )
 
     def _has_git_dir(self) -> bool:
         return (self.path / ".git").exists()
@@ -65,7 +67,9 @@ class WorkingCopy:
                     await self._git("remote", "add", "origin", self._remote)
             return
         self._clear_path()
-        await self._runner.run("clone", "--origin", "origin", self._remote, str(self.path))
+        await self._runner.run(
+            "clone", "-c", "core.symlinks=false", "--origin", "origin", self._remote, str(self.path)
+        )
 
     async def remote_head(self, branch: str) -> str | None:
         out = await self._git("ls-remote", "--heads", "origin", f"refs/heads/{branch}")
@@ -108,6 +112,8 @@ class WorkingCopy:
 
     def read(self, path: str) -> bytes | None:
         target = self.path / _safe_rel(path)
+        if target.is_symlink() or not target.resolve().is_relative_to(self.path.resolve()):
+            raise ValueError(f"unsafe repository path: {path!r}")
         try:
             return target.read_bytes()
         except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
@@ -116,13 +122,13 @@ class WorkingCopy:
     def list_files(self, prefix: str) -> list[str]:
         """Sorted repo-relative POSIX paths of files under ``prefix`` (excluding ``.git``)."""
         base = self.path / _safe_rel(prefix) if prefix.strip("/") else self.path
-        if not base.is_dir():
+        if not base.is_dir() or not base.resolve().is_relative_to(self.path.resolve()):
             return []
         root = self.path
         return sorted(
             p.relative_to(root).as_posix()
             for p in base.rglob("*")
-            if p.is_file() and ".git" not in p.relative_to(root).parts
+            if p.is_file() and not p.is_symlink() and ".git" not in p.relative_to(root).parts
         )
 
     async def commit(self, message: str) -> str:

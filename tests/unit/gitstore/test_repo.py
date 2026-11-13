@@ -140,3 +140,33 @@ async def test_list_files(wc: WorkingCopy) -> None:
     assert wc.list_files("") == sorted(wc.list_files(""))
     with pytest.raises(ValueError, match="unsafe"):
         wc.list_files("../x")
+
+
+async def test_symlinks_cannot_escape_the_repo(
+    wc: WorkingCopy,
+    push_foreign: PushForeign,
+    tmp_path: Path,
+    git_cmd: Callable[..., str],
+) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET")
+    push_foreign("seed", {"a.txt": "1\n"})
+    # commit a symlink pointing outside the repository through a foreign clone
+    clone = tmp_path / "linker"
+    git_cmd("clone", wc._remote, str(clone), cwd=tmp_path)
+    (clone / "m").mkdir()
+    (clone / "m" / "manifest.yaml").symlink_to(secret)
+    git_cmd("add", "-A", cwd=clone)
+    git_cmd("commit", "-m", "link", cwd=clone)
+    git_cmd("push", "origin", "main", cwd=clone)
+
+    await wc.ensure()
+    await wc.checkout_tip("main")
+    # core.symlinks=false: checked out as a plain file holding the link text
+    assert not (wc.path / "m" / "manifest.yaml").is_symlink()
+    assert wc.read("m/manifest.yaml") != b"TOP-SECRET"
+    # a symlink created behind our back is refused by read() and skipped by list_files()
+    (wc.path / "evil").symlink_to(secret)
+    with pytest.raises(ValueError, match="unsafe"):
+        wc.read("evil")
+    assert "evil" not in wc.list_files("")
