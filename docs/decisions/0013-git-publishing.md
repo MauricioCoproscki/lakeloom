@@ -1,6 +1,6 @@
 # 0013. Git publishing on apply
 
-- Status: proposed (M2c in progress)
+- Status: accepted (M2c complete)
 - Date: 2026-11-13
 - Requirements: FR-GIT-01, FR-GIT-02, FR-GIT-03, FR-GIT-04, FR-GIT-05, FR-GIT-09, FR-PRO-03, NFR-SEC-11, NFR-DEP-04, NFR-DEP-07, NFR-OPS-02, NFR-OPS-04
 
@@ -184,3 +184,47 @@ Docs: <https://docs.gitlab.com/api/merge_requests/>.
    with `ls-remote --heads <url> <branch>` (empty output) rather than parsing fetch errors.
 5. GitHub's duplicate message and GitLab's 409 are not in their docs pages (see above); the
    code should not depend on the message text for those two.
+
+## Consequences
+
+What shipped in M2c:
+
+- Every proposal a human approves and applies is one commit: the three deterministic exports,
+  `manifest.yaml`, a `provenance/<slug>.jsonl` line and the root `README.md`, with the trailers
+  above. Verified live (`tests/contract/test_m2c_acceptance.py`): alice's approval in the dev
+  stack is committed to `lakeloom-admin/ontologies` with `Approved-By: alice`, one
+  `Lakeloom-ChangeSet` per APPLIED change set and one `Lake-Source-Version` per scanned table;
+  two later exports equal the committed `ontology.ttl` byte for byte; a model with
+  `git: {mode: pull_request}` gets a pull request.
+- The in-process publisher is exercised against throwaway Gitea repositories
+  (`tests/contract/test_git_publisher_gitea.py`): the initial commit of an empty repository,
+  direct commits, pull requests, reuse of an open pull request after a retry, and a wrong
+  token that blocks the queue with a redacted error.
+- The outbox survives restarts; `lakeloom git status|retry` and `get_server_info.git` show
+  and unblock it. A Git failure never fails or undoes an approval.
+
+Found by the live tests:
+
+- **Model-scoped draft ids.** Draft ids of new terms and native members were derived from the
+  operation alone, so a second model proposing the same concept collided with the first
+  model's ids (OpenMetadata ids are global primary keys; the apply failed as "the name is
+  already taken"). The ids now include the model slug.
+- **Gitea links.** Gitea 1.27 builds API links (`html_url`) from the caller's `Host` header,
+  so pull requests opened by the container named `http://gitea:3000/...`. The dev stack sets
+  `GITEA__server__PUBLIC_URL_DETECTION=legacy` so links use `ROOT_URL`. A production forge
+  behind a proxy needs the same care.
+- Right after the first push into an empty Gitea repository the commits API may answer 409
+  ("repository is empty") briefly; only the tests read it, and they retry.
+
+Known limits:
+
+- Single replica: the queue lock is in-process; `lakeloom git retry` must not run against the
+  same working copy as a busy server.
+- Pull-request idempotency searches only the PR branch: a PR merged and its branch deleted
+  before the publication was recorded can block or open a second PR.
+- No stacked pull requests: each PR carries a full snapshot and a later merge supersedes an
+  earlier one. GitHub and GitLab are not live-tested; SSH is not live-tested.
+- Throwaway models of the dev contract tests leave their direct commits in the dev
+  repository's history (dev only).
+- Releases, tags, `CHANGELOG.md`, SHACL shapes, `context.jsonld`, import from Git, drift and
+  Git `Link` headers remain M3/M4. The follow-ups are in `docs/backlog/m2c-deferred.md`.

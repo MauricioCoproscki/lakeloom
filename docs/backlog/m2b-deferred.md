@@ -6,7 +6,8 @@ M2c/M3. Details and rulings: [ADR 0012](../decisions/0012-review-and-human-ident
 ## Out of scope for M2b
 - Auto-approve policies (FR-REV-04) and `min_approvals` (Q6).
 - CLI review: needs a human OIDC login flow in the CLI (the operator holds bot credentials).
-- Git commits (and PRs, with trailers) on apply: M2c.
+- Done (M2c): Git commits (and PRs, with trailers) on apply
+  ([ADR 0013](../decisions/0013-git-publishing.md)).
 - Multi-replica proposal lock (carried from M2a; see m2a-deferred).
 
 ## OpenMetadata configuration (documented in ADR 0012)

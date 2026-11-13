@@ -406,6 +406,67 @@ plain language and calls `review_proposal` only on their explicit decision.
 - **CLI.** `lakeloom pending [--model M]` lists the proposals awaiting review. There is no CLI
   review command: decisions are made by humans through MCP with their own identity.
 
+### Git publishing
+
+With `LAKELOOM_GIT_REMOTE` set, every proposal a human approves and applies in OpenMetadata
+becomes one commit in the ontology repository (ADR 0013). OpenMetadata stays the source of
+truth: Git is a published copy, and a Git problem never fails or undoes an approval.
+
+- **What is committed.** `ontologies/<slug>/ontology.ttl`, `ontology.jsonld` and
+  `ontology.owl` (the same deterministic bytes as `export_model`), `ontologies/<slug>/manifest.yaml`
+  (model, glossary, base IRI, versions, source tables), one line appended to
+  `provenance/<slug>.jsonl`, and a regenerated root `README.md`. An empty repository first gets
+  the commit `chore: initialise ontology repository`.
+- **Commit message.** Subject `ontology(<slug>): add_concept x4, ...`, a body of operation keys,
+  then the trailers `Lakeloom-Proposal`, one `Lakeloom-ChangeSet` per applied change set,
+  `Approved-By` (the human reviewer), one `Lake-Source-Version: <table>@<version>` per scanned
+  table, `Lakeloom-Scan`, `Lakeloom-Proposed-By`, `Lakeloom-AI-Generated` and
+  `Lakeloom-Publication`. The author is the Lakeloom service identity
+  (`LAKELOOM_GIT_AUTHOR_NAME`, `LAKELOOM_GIT_AUTHOR_EMAIL`).
+- **Modes.** `LAKELOOM_GIT_MODE=pull_request` (the default) pushes the branch
+  `lakeloom/<slug>/<proposal-id>` and opens a pull request (an open one for that branch is
+  reused); `direct` commits on `LAKELOOM_GIT_BRANCH` (default `main`) and pushes. A model can
+  override the default in `LAKELOOM_CONFIG_FILE`:
+
+  ```yaml
+  models:
+    - name: retail
+      git:
+        mode: direct   # or pull_request
+  ```
+
+  Pull requests need a forge: `LAKELOOM_FORGE` (`github` default, `gitlab`, `gitea`, `none`)
+  and optionally `LAKELOOM_FORGE_API_URL` (else derived from the remote). `pull_request` with
+  `LAKELOOM_FORGE=none` is a startup error. Only Gitea is live-tested.
+- **Credentials.** HTTPS: `LAKELOOM_GIT_TOKEN` (or `LAKELOOM_GIT_TOKEN_FILE`) with
+  `LAKELOOM_GIT_USERNAME` (default `x-access-token`); git gets them through a `GIT_ASKPASS`
+  helper, never in arguments or the URL, and the forge API uses the same token. SSH:
+  `LAKELOOM_GIT_SSH_KEY_FILE` and `LAKELOOM_GIT_SSH_KNOWN_HOSTS_FILE` (without it, unknown hosts
+  are accepted on first use, with a warning). Git runs with no system or global config and no
+  credential helper; user info in a remote URL is redacted everywhere.
+- **Queue and retry.** The approval stores a snapshot in the state store (the outbox) and
+  waits up to `LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS` (default 20) for the commit. The
+  `review_proposal` text then ends with `Git: committed <sha> to <branch>`,
+  `Git: pull request <url>`, `Git: queued` (retried automatically) or `Git: blocked`, and its
+  structured `publication` has `id`, `status`, `commit`, `branch` and `pr_url` (`get_proposal`
+  shows it too). Publications of one repository are committed strictly in order; transient
+  failures (network, timeouts, a push rejected after three re-renders) are retried every
+  `LAKELOOM_GIT_RETRY_INTERVAL_SECONDS` (default 60) with backoff up to one hour; permanent ones
+  (authentication, missing repository) block the queue. A retry never commits twice: the
+  remote is searched for the `Lakeloom-Publication` trailer first. `get_server_info` reports
+  `git` (`enabled`, `mode`, `pending`, `blocked`, `last_error`); metrics
+  `lakeloom_git_publications_total{result}` and `lakeloom_git_push_failures_total`.
+- **CLI.** `lakeloom git status` lists the pending and blocked publications with their last
+  error; `lakeloom git retry` requeues the blocked ones and publishes the queue once. Run it
+  while the server is stopped or idle: the queue lock is in-process only.
+- **Dev stack.** The Lakeloom container publishes in `direct` mode to the Gitea repository
+  `lakeloom-admin/ontologies` (<http://localhost:3000/lakeloom-admin/ontologies>) with the
+  Gitea admin's password as token (DEV ONLY); the throwaway model `retail_m2c_pr` uses
+  `pull_request` mode (`deploy/compose/lakeloom-sources.yaml`). The contract tests delete their
+  models from OpenMetadata, close their pull requests and delete their branches, but the
+  direct commits of their throwaway models (`ontologies/retail_m2c/`) stay in the dev
+  repository's history.
+
 ### Surfaces overview
 
 | Capability | MCP tool | MCP resource | HTTP route |

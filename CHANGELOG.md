@@ -97,9 +97,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     connection pool keep no cookies.
   - `LAKELOOM_OM_EXCHANGE_SCOPE` is unset by default (the dev stack sets
     `openmetadata-audience`).
+- M2c Git publishing:
+  - Every applied proposal becomes one commit in the ontology repository: the three
+    deterministic exports, `manifest.yaml`, a `provenance/<slug>.jsonl` line and a regenerated
+    root `README.md`, with the trailers `Lakeloom-Proposal`, `Lakeloom-ChangeSet`,
+    `Approved-By`, `Lake-Source-Version`, `Lakeloom-Scan`, `Lakeloom-Proposed-By`,
+    `Lakeloom-AI-Generated` and `Lakeloom-Publication` (FR-GIT-04, FR-PRO-03).
+  - Modes `direct` and `pull_request` (`LAKELOOM_GIT_MODE`, per model `git.mode` in
+    `LAKELOOM_CONFIG_FILE`); pull requests on Gitea, GitHub and GitLab, an open one reused
+    (FR-GIT-05). Only Gitea is live-tested.
+  - A publication outbox in the state store (Alembic migration) with per-repository ordering,
+    retry with exponential backoff, `blocked` publications on permanent errors and
+    trailer-based idempotency (FR-GIT-09).
+  - An isolated `git` runner: credentials through `GIT_ASKPASS` or an SSH key, no system or
+    global config, process-group kill on timeout, redacted errors (FR-GIT-01, NFR-SEC-11).
+  - `review_proposal` ends with a `Git:` line and returns `publication`; `get_proposal` shows
+    it; `get_server_info` reports `git`; metrics `lakeloom_git_publications_total` and
+    `lakeloom_git_push_failures_total`.
+  - CLI commands `lakeloom git status` and `lakeloom git retry`.
+  - Settings `LAKELOOM_GIT_USERNAME`, `LAKELOOM_GIT_SSH_KNOWN_HOSTS_FILE`,
+    `LAKELOOM_GIT_AUTHOR_NAME`, `LAKELOOM_GIT_AUTHOR_EMAIL`,
+    `LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS`, `LAKELOOM_GIT_RETRY_INTERVAL_SECONDS` and
+    `LAKELOOM_FORGE_API_URL`.
+  - Dev stack: Lakeloom publishes to the Gitea repository `lakeloom-admin/ontologies` in
+    `direct` mode (DEV ONLY admin credentials); the model `retail_m2c_pr` uses
+    `pull_request`; Gitea builds API links from `ROOT_URL`; the image ships `openssh-client`.
+  - Contract tests: the publisher against throwaway Gitea repositories, and the M2c acceptance
+    test (an approval by alice is committed with all trailers, the export equals the committed
+    Turtle byte for byte, pull-request mode opens a PR).
 
 ### Fixed
 
 - An attribute whose xsd datatype is not in the OWL 2 datatype map (such as `xsd:date` from a
   Spark `date` column) gets the native range `rdfs:Literal`, so OpenMetadata applies it; the
   proposal keeps the precise datatype.
+- Draft ids of new terms, native classes, properties, relations and axioms include the model,
+  so two models proposing the same concept no longer collide on OpenMetadata's global ids
+  (the second model's approve failed with "the name is already taken").
