@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     git_mode: Literal["direct", "pull_request"] = "pull_request"
     git_ssh_key_file: Path | None = None
     git_token: SecretStr | None = None
+    # M2c Git publishing (ADR 0013, FR-GIT-01, FR-GIT-09). HTTPS user name for GIT_ASKPASS.
+    git_username: str = "x-access-token"
+    git_ssh_known_hosts_file: Path | None = None
+    git_author_name: str = "Lakeloom"
+    git_author_email: str = "lakeloom@localhost.invalid"
+    git_publish_timeout_seconds: float = Field(20, ge=0, le=300)
+    git_retry_interval_seconds: int = Field(60, ge=5, le=3600)
+    forge_api_url: AnyHttpUrl | None = None
     forge: Literal["github", "gitlab", "gitea", "none"] = "github"
     profile_samples: bool = False
     # JSON list or comma-separated string.
@@ -141,6 +149,9 @@ class Settings(BaseSettings):
         "oidc_client_secret",
         "oidc_token_endpoint",
         "om_exchange_scope",
+        "git_remote",
+        "git_token",
+        "forge_api_url",
         mode="before",
     )
     @classmethod

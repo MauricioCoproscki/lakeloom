@@ -246,3 +246,75 @@ def test_m2b_blank_obo_values_are_unset(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert s.oidc_client_id is None
     assert s.oidc_client_secret is None
     assert s.oidc_token_endpoint is None
+
+
+def test_fr_git_01_git_settings_defaults() -> None:
+    s = Settings()
+
+    assert s.git_username == "x-access-token"
+    assert s.git_ssh_known_hosts_file is None
+    assert s.git_author_name == "Lakeloom"
+    assert s.git_author_email == "lakeloom@localhost.invalid"
+    assert s.git_publish_timeout_seconds == 20
+    assert s.git_retry_interval_seconds == 60
+    assert s.forge_api_url is None
+
+
+def test_fr_git_01_git_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LAKELOOM_GIT_USERNAME", "bot")
+    monkeypatch.setenv("LAKELOOM_GIT_SSH_KNOWN_HOSTS_FILE", "/etc/kh")
+    monkeypatch.setenv("LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("LAKELOOM_GIT_RETRY_INTERVAL_SECONDS", "5")
+    monkeypatch.setenv("LAKELOOM_FORGE_API_URL", "http://gitea:3000/api/v1")
+
+    s = Settings()
+
+    assert s.git_username == "bot"
+    assert s.git_ssh_known_hosts_file == Path("/etc/kh")
+    assert s.git_publish_timeout_seconds == 0
+    assert s.git_retry_interval_seconds == 5
+    assert str(s.forge_api_url) == "http://gitea:3000/api/v1"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS", "301"),
+        ("LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS", "-1"),
+        ("LAKELOOM_GIT_RETRY_INTERVAL_SECONDS", "4"),
+        ("LAKELOOM_GIT_RETRY_INTERVAL_SECONDS", "3601"),
+    ],
+)
+def test_fr_git_09_git_timing_bounds(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_nfr_sec_11_git_token_env_secret_not_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LAKELOOM_GIT_TOKEN", "tok-secret-1")
+
+    s = Settings()
+
+    assert s.git_token is not None
+    assert s.git_token.get_secret_value() == "tok-secret-1"
+    assert "tok-secret-1" not in repr(s) + str(s) + str(s.model_dump())
+
+
+def test_fr_git_01_blank_git_values_are_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    f = tmp_path / "gt"
+    f.write_text("  \n")
+    monkeypatch.setenv("LAKELOOM_GIT_REMOTE", "  ")
+    monkeypatch.setenv("LAKELOOM_GIT_TOKEN_FILE", str(f))
+    monkeypatch.setenv("LAKELOOM_FORGE_API_URL", "")
+
+    s = Settings()
+
+    assert s.git_remote is None
+    assert s.git_token is None
+    assert s.forge_api_url is None

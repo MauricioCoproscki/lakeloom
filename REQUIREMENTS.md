@@ -441,6 +441,12 @@ Scopes are OAuth scopes (section 8.2). "OM write" means the tool creates or chan
 | `LAKELOOM_GIT_BRANCH` | `main` | Target branch. |
 | `LAKELOOM_GIT_MODE` | `pull_request` | `direct` or `pull_request`. |
 | `LAKELOOM_GIT_SSH_KEY_FILE` / `LAKELOOM_GIT_TOKEN` / `_FILE` | — | Git credentials. |
+| `LAKELOOM_GIT_USERNAME` | `x-access-token` | HTTPS user name paired with `LAKELOOM_GIT_TOKEN` (passed through `GIT_ASKPASS`, never in argv or the URL). |
+| `LAKELOOM_GIT_SSH_KNOWN_HOSTS_FILE` | — | `known_hosts` for SSH remotes (strict host-key checking when set). |
+| `LAKELOOM_GIT_AUTHOR_NAME` / `LAKELOOM_GIT_AUTHOR_EMAIL` | `Lakeloom` / `lakeloom@localhost.invalid` | Author and committer of publication commits (the human is in `Approved-By`). |
+| `LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS` | `20` | How long approve waits for the inline Git publish before answering "queued" (0 to 300). |
+| `LAKELOOM_GIT_RETRY_INTERVAL_SECONDS` | `60` | Interval of the background worker that drains queued publications (5 to 3600). |
+| `LAKELOOM_FORGE_API_URL` | derived from the remote | Forge API base (e.g. `http://gitea:3000/api/v1`); needed when it cannot be derived. |
 | `LAKELOOM_FORGE` | `github` | `github`, `gitlab`, `gitea`, `none`. |
 | `LAKELOOM_PROFILE_SAMPLES` | `false` | Allow sample values in profiles. |
 | `LAKELOOM_SENSITIVE_TAGS` | `PII.*` | Tags whose columns never yield sample values. |

@@ -568,6 +568,12 @@ services:
       LAKELOOM_SCOPE_GROUP_MAP: '{"ontology-reviewers":["lakeloom:read","lakeloom:review"],"data-engineers":["lakeloom:read","lakeloom:propose"],"lakeloom-admins":["lakeloom:read","lakeloom:admin"]}'
       LAKELOOM_GIT_REMOTE: http://gitea:3000/lakeloom-admin/ontologies.git
       LAKELOOM_FORGE: gitea
+      # M2c Git publishing (ADR 0013). DEV ONLY: the fixed public Gitea admin credentials
+      # from gitea-init; Gitea accepts the password for HTTP basic auth (git and the API).
+      LAKELOOM_GIT_USERNAME: lakeloom-admin  # DEV ONLY
+      LAKELOOM_GIT_TOKEN: lakeloom-admin  # DEV ONLY
+      LAKELOOM_GIT_MODE: direct
+      LAKELOOM_FORGE_API_URL: http://gitea:3000/api/v1
       # Development only: role + database from lakeloom-db-init.sql.
       LAKELOOM_DB_URL: postgresql://lakeloom:lakeloom@postgresql:5432/lakeloom
       # Operator-managed lake sources (fixture_delta, fixture_uc, openmetadata_mcp).

@@ -27,7 +27,7 @@ LABEL org.opencontainers.image.title="Lakeloom" \
 # before the python tag is refreshed (NFR-SEC-17: Trivy CRITICAL/HIGH gate).
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 lakeloom \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin lakeloom \
