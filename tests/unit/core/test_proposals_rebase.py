@@ -210,7 +210,7 @@ async def test_rebuild_skips_applied_parts(make) -> None:
     kit.om.terms["shop"] = [
         OMGlossaryTerm.model_validate(
             {
-                "id": draft_term_id(op),
+                "id": draft_term_id(op, "shop"),
                 "name": op.name,
                 "fullyQualifiedName": f"shop.{op.name}",
                 "description": "applied",
@@ -503,7 +503,9 @@ async def test_rebuild_partly_applied_part_with_remove_concept(make) -> None:
     kit.om.terms["shop"] = [
         OMGlossaryTerm.model_validate(
             {
-                "id": draft_term_id(next(o for o in p.operations() if isinstance(o, AddConcept))),
+                "id": draft_term_id(
+                    next(o for o in p.operations() if isinstance(o, AddConcept)), "shop"
+                ),
                 "name": "Customer",
                 "fullyQualifiedName": "shop.Customer",
                 "description": "applied",

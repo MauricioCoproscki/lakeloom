@@ -1022,7 +1022,7 @@ class ProposalService:
         created = {
             op.name: op for op in ops if isinstance(op, AddConcept) and op.name not in existing
         }
-        term_ids: dict[str, str] = {n: draft_term_id(op) for n, op in created.items()}
+        term_ids: dict[str, str] = {n: draft_term_id(op, slug) for n, op in created.items()}
         term_versions: dict[str, float] = dict.fromkeys(created, DRAFT_TERM_VERSION)
         terms: dict[str, TermSnapshot] = {}
         wanted = {

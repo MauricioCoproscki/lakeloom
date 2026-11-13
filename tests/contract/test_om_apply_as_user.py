@@ -117,7 +117,7 @@ async def test_fr_rev_02_reviewer_applies_as_herself(
         assert result is not None
         assert (result.applied_by, result.operations_failed) == ("alice", 0)
         (term_result,) = result.results
-        assert term_result.entity_id == draft_term_id(widget)  # rc1 keeps the draft id
+        assert term_result.entity_id == draft_term_id(widget, slug)  # rc1 keeps the draft id
         assert (term_result.entity_fqn, term_result.entity_version) == (f"{slug}.Widget", 0.1)
 
         native = await alice.apply_change_set(native_cs.id)
@@ -129,7 +129,7 @@ async def test_fr_rev_02_reviewer_applies_as_herself(
         term = (
             (await http.get(f"/api/v1/glossaryTerms/name/{slug}.Widget")).raise_for_status().json()
         )
-        assert (term["id"], term["updatedBy"]) == (draft_term_id(widget), "alice")
+        assert (term["id"], term["updatedBy"]) == (draft_term_id(widget, slug), "alice")
 
         # alice realizes the concept on a throwaway table's column
         table = await http.post(

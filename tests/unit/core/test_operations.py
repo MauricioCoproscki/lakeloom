@@ -14,6 +14,7 @@ from lakeloom.core.operations import (
     AddSynonym,
     Evidence,
     OMContext,
+    OMOps,
     ProposalOperation,
     RemoveAttribute,
     RemoveAxiom,
@@ -143,7 +144,7 @@ def test_add_concept_maps_to_term_and_native_class() -> None:
         {
             "operationType": "CREATE_TERM",
             "term": {
-                "id": draft_term_id(ORDER),
+                "id": draft_term_id(ORDER, "retail"),
                 "name": "Order",
                 "iri": BASE + "Order",
                 "glossary": {"id": "g-1", "type": "glossary"},
@@ -171,8 +172,31 @@ def test_add_concept_description_on_both_sides() -> None:
 
 
 def test_draft_term_id_is_deterministic() -> None:
-    assert draft_term_id(CUSTOMER) == draft_term_id(AddConcept(op="add_concept", name="Customer"))
-    assert draft_term_id(CUSTOMER) != draft_term_id(ORDER)
+    same = AddConcept(op="add_concept", name="Customer")
+    assert draft_term_id(CUSTOMER, "retail") == draft_term_id(same, "retail")
+    assert draft_term_id(CUSTOMER, "retail") != draft_term_id(ORDER, "retail")
+
+
+def _entity_ids(ops: OMOps) -> list[str]:
+    return [
+        str(v["id"])
+        for entry in (*ops.glossary, *ops.native)
+        for v in entry.values()
+        if isinstance(v, dict) and "id" in v
+    ]
+
+
+def test_ids_differ_between_models() -> None:
+    """OpenMetadata ids are global primary keys: the same concept proposed in two models
+    must get different term, class and property ids (found live in M2c: the second model's
+    apply failed with a duplicate glossary_term_entity key)."""
+    other = replace(CTX, glossary_name="retail_copy", ontology_name="retail_copy")
+    attr = AddAttribute(op="add_attribute", concept="Customer", name="email", datatype="xsd:string")
+    assert draft_term_id(CUSTOMER, "retail") != draft_term_id(CUSTOMER, "retail_copy")
+    for op in (CUSTOMER, attr):
+        here, there = _entity_ids(to_om(op, CTX)), _entity_ids(to_om(op, other))
+        assert here and len(here) == len(there), op
+        assert set(here).isdisjoint(there), op
 
 
 def test_update_concept() -> None:
@@ -604,7 +628,7 @@ def test_relation_and_mapping_from_a_term_created_in_the_batch_have_no_base_vers
     widget = AddConcept(op="add_concept", name="Widget", description=text("w"))
     ctx = replace(
         CTX,
-        term_ids={**CTX.term_ids, "Widget": draft_term_id(widget)},
+        term_ids={**CTX.term_ids, "Widget": draft_term_id(widget, "retail")},
         term_versions={**CTX.term_versions, "Widget": 0.1},
     )
     relation = AddRelation(
@@ -619,7 +643,7 @@ def test_relation_and_mapping_from_a_term_created_in_the_batch_have_no_base_vers
     out = to_om_all([widget, relation, mapping, existing], ctx).glossary
     by_type = {o["operationType"]: o for o in out if o["operationType"] != "ADD_RELATIONSHIP"}
     rels = [o for o in out if o["operationType"] == "ADD_RELATIONSHIP"]
-    assert "baseVersion" not in rels[0] and rels[0]["targetId"] == draft_term_id(widget)
+    assert "baseVersion" not in rels[0] and rels[0]["targetId"] == draft_term_id(widget, "retail")
     assert "baseVersion" not in by_type["UPSERT_MAPPING"]
     assert rels[1]["baseVersion"] == 0.3  # from an existing term: still versioned
 
@@ -668,7 +692,7 @@ def test_append_to_change_set_with_draft_term_strips_base_version() -> None:
     widget = AddConcept(op="add_concept", name="Widget", description=text("w"))
     ctx = replace(
         CTX,
-        term_ids={**CTX.term_ids, "Widget": draft_term_id(widget)},
+        term_ids={**CTX.term_ids, "Widget": draft_term_id(widget, "retail")},
         term_versions={**CTX.term_versions, "Widget": 0.1},
     )
     rel = AddRelation(op="add_relation", source="Widget", relation_type="placedBy", target="Order")
@@ -689,8 +713,8 @@ def test_terms_and_classes_are_declared_before_operations_that_reference_them() 
         CTX,
         term_ids={
             **CTX.term_ids,
-            "Invoice": draft_term_id(invoice),
-            "Widget": draft_term_id(widget),
+            "Invoice": draft_term_id(invoice, "retail"),
+            "Widget": draft_term_id(widget, "retail"),
         },
         term_versions={**CTX.term_versions, "Invoice": 0.1, "Widget": 0.1},
     )
@@ -822,7 +846,11 @@ def test_parent_term_is_created_before_its_child() -> None:
     child = AddConcept(op="add_concept", name="Shipped", parent="Status", description=text("c"))
     ctx = replace(
         CTX,
-        term_ids={**CTX.term_ids, "Status": draft_term_id(parent), "Shipped": draft_term_id(child)},
+        term_ids={
+            **CTX.term_ids,
+            "Status": draft_term_id(parent, "retail"),
+            "Shipped": draft_term_id(child, "retail"),
+        },
     )
     out = to_om_all([child, parent], ctx)
     assert [o["term"]["name"] for o in out.glossary] == ["Status", "Shipped"]

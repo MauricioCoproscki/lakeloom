@@ -385,13 +385,15 @@ def _relation_key(source: str, relation_type: str, target: str) -> str:
     return f"rel:{_bare(source)}|{relation_type}|{_bare(target)}"
 
 
-def _uid(kind: str, key: str) -> str:
-    return str(uuid.uuid5(_NS, f"{kind}:{key}"))
+def _uid(kind: str, model: str, key: str) -> str:
+    """A deterministic entity id. OpenMetadata ids are global primary keys, so the model is
+    part of the name: two models proposing the same concept must not collide."""
+    return str(uuid.uuid5(_NS, f"{kind}:{model}:{key}"))
 
 
-def draft_term_id(op: AddConcept) -> str:
-    """Deterministic draft id of the term an ``AddConcept`` creates."""
-    return _uid("term", op_key(op))
+def draft_term_id(op: AddConcept, model: str) -> str:
+    """Deterministic draft id of the term an ``AddConcept`` creates in ``model`` (slug)."""
+    return _uid("term", model, op_key(op))
 
 
 def _fail(message: str, hint: str) -> LakeloomError:
@@ -586,7 +588,7 @@ class _ClassDeclarations:
                 continue
             self.skip.add(name)
             concept: dict[str, Any] = {
-                "id": _uid("concept", f"concept:{name}"),
+                "id": _uid("concept", ctx.glossary_name, f"concept:{name}"),
                 "name": name,
                 "fullyQualifiedName": f"{_ontology_name(ctx)}.{name}",
                 "iri": iri,
@@ -675,7 +677,7 @@ def to_om(op: ProposalOperation, ctx: OMContext) -> OMOps:
 def _add_concept(op: AddConcept, ctx: OMContext) -> OMOps:
     iri = _concept_iri(ctx, op.name)
     term: dict[str, Any] = {
-        "id": draft_term_id(op),
+        "id": draft_term_id(op, ctx.glossary_name),
         "name": op.name,
         "iri": iri,
         "glossary": _glossary_ref(ctx),
@@ -690,7 +692,7 @@ def _add_concept(op: AddConcept, ctx: OMContext) -> OMOps:
     if op.parent:
         term["parent"] = _term_ref(ctx, op.parent)
     concept: dict[str, Any] = {
-        "id": _uid("concept", op_key(op)),
+        "id": _uid("concept", ctx.glossary_name, op_key(op)),
         "name": op.name,
         "fullyQualifiedName": f"{_ontology_name(ctx)}.{op.name}",
         "iri": iri,
@@ -797,7 +799,7 @@ def _add_attribute(op: AddAttribute, ctx: OMContext) -> OMOps:
     domain = _concept_iri(ctx, op.concept)
     name = f"{_bare(op.concept)}.{op.name}"
     prop: dict[str, Any] = {
-        "id": _uid("property", op_key(op)),
+        "id": _uid("property", ctx.glossary_name, op_key(op)),
         "name": name,
         "displayName": op.name,
         "fullyQualifiedName": f"{_ontology_name(ctx)}.{name}",
@@ -832,7 +834,7 @@ def _relationship_type(ctx: OMContext, name: str) -> dict[str, str]:
 def _add_relation(op: AddRelation, ctx: OMContext) -> OMOps:
     source = _term_ref(ctx, op.source)
     relationship: dict[str, Any] = {
-        "id": _uid("relationship", op_key(op)),
+        "id": _uid("relationship", ctx.glossary_name, op_key(op)),
         "fromTerm": source,
         "toTerm": _term_ref(ctx, op.target),
         "relationshipType": _relationship_type(ctx, op.relation_type),
@@ -861,7 +863,7 @@ def _object_property(op: AddRelation, ctx: OMContext) -> dict[str, Any]:
     range the target class; IRI and name follow the property scheme (ADR 0011)."""
     name = f"{_bare(op.source)}.{op.relation_type}"
     prop: dict[str, Any] = {
-        "id": _uid("object-property", op_key(op)),
+        "id": _uid("object-property", ctx.glossary_name, op_key(op)),
         "name": name,
         "displayName": op.relation_type,
         "fullyQualifiedName": f"{_ontology_name(ctx)}.{name}",
@@ -932,7 +934,7 @@ def _add_axiom(op: AddAxiom, ctx: OMContext) -> OMOps:
         "provenance": "Manual",
         "fullyQualifiedName": f"{_ontology_name(ctx)}.{name}",
         **op.axiom,
-        "id": _uid("axiom", op_key(op)),
+        "id": _uid("axiom", ctx.glossary_name, op_key(op)),
         "subjectIri": _concept_iri(ctx, op.concept),
         "ontology": _ontology_ref(ctx),
     }

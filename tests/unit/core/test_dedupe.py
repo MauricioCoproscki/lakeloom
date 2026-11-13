@@ -416,7 +416,7 @@ async def test_imported_parent_dropped_and_output_accepted_by_to_om() -> None:
         glossary_id="g",
         base_iri="http://x/ontology/sales/",
         ontology_id="o",
-        term_ids={c.name: draft_term_id(c) for c in of(res, AddConcept)},
+        term_ids={c.name: draft_term_id(c, "sales") for c in of(res, AddConcept)},
         term_versions={c.name: 0.1 for c in of(res, AddConcept)},
     )
     to_om_all(res.operations, ctx)  # must not raise
