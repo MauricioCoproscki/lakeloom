@@ -38,3 +38,11 @@ sources:
     token_file: /secrets/om_bot_token
     mapping: /etc/lakeloom/mappings/openmetadata.yaml
     om_service: lakeloom_fixture
+
+# Per-model policy (core/model_policy.py). The M2c contract test publishes its throwaway
+# model `retail_m2c_pr` through a pull request instead of the stack's default direct push
+# (LAKELOOM_GIT_MODE=direct); the test closes the PR and deletes its branch afterwards.
+models:
+  - name: retail_m2c_pr
+    git:
+      mode: pull_request

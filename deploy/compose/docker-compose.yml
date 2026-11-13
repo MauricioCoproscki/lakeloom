@@ -414,7 +414,7 @@ services:
       retries: 30
       start_period: 30s
 
-  # --- Gitea (local Git remote for released ontology versions) ------------------------------
+  # --- Gitea (Git remote; applied proposals are committed to it, ADR 0013) -----------------
   gitea:
     image: gitea/gitea:1.27.3
     restart: unless-stopped
@@ -424,6 +424,9 @@ services:
       GITEA__database__DB_TYPE: sqlite3
       GITEA__security__INSTALL_LOCK: "true"
       GITEA__server__ROOT_URL: http://localhost:3000/
+      # Links in API answers (pull request html_url) always use ROOT_URL, not the Host header
+      # of the caller: Lakeloom calls http://gitea:3000, but humans open localhost:3000.
+      GITEA__server__PUBLIC_URL_DETECTION: legacy
       GITEA__server__HTTP_PORT: "3000"
       GITEA__server__DISABLE_SSH: "true"
       GITEA__service__DISABLE_REGISTRATION: "true"
