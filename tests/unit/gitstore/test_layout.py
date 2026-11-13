@@ -384,3 +384,15 @@ def test_render_is_lf_utf8() -> None:
 def test_hostile_slug_rejected() -> None:
     with pytest.raises(ValueError, match="slug"):
         do_render(snap(model="../x"))
+
+
+@pytest.mark.parametrize("slug", ["Shop", "s" * 65, "1shop", "shop\n", ""])
+def test_slug_follows_model_rule_refused(slug: str) -> None:
+    with pytest.raises(ValueError, match="slug"):
+        do_render(snap(model=slug))
+
+
+def test_slug_64_chars_accepted() -> None:
+    slug = "s" + "a_-" * 21
+    assert len(slug) == 64
+    assert f"ontologies/{slug}/manifest.yaml" in do_render(snap(model=slug))

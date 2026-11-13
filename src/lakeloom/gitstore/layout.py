@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 import yaml
 from pydantic import BaseModel, Field
 
+from lakeloom.core.model_create import SLUG_PATTERN
 from lakeloom.core.operations import op_key
 from lakeloom.core.proposals import (
     SIDES,
@@ -30,7 +31,7 @@ BODY_MAX_OPS = 50
 TRAILER_MAX = 200
 EXPORT_NAMES = ("ontology.ttl", "ontology.jsonld", "ontology.owl")
 
-_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SLUG = re.compile(SLUG_PATTERN)
 # characters YAML double-quoted scalars may not carry literally (JSON leaves them unescaped)
 _YAML_UNSAFE = re.compile("[\x7f-\x9f\\u2028\\u2029\\ufeff\\ufffe\\uffff]")
 
