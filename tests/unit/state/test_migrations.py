@@ -82,7 +82,9 @@ async def test_upgrade_postgres() -> None:
     try:
         await upgrade(engine)
         await upgrade(engine)
-        assert {"scan_records", "proposals", "audit_log"} <= set(await _tables(engine))
+        assert {"scan_records", "proposals", "audit_log", "publications"} <= set(
+            await _tables(engine)
+        )
     finally:
         await engine.dispose()
 
@@ -98,6 +100,7 @@ async def test_concurrent_upgrades_postgres() -> None:
             await conn.execute(text("DROP TABLE IF EXISTS scan_records"))
             await conn.execute(text("DROP TABLE IF EXISTS proposals"))
             await conn.execute(text("DROP TABLE IF EXISTS audit_log"))
+            await conn.execute(text("DROP TABLE IF EXISTS publications"))
             await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await asyncio.gather(*(upgrade(e) for e in engines))
         assert "scan_records" in await _tables(engines[0])

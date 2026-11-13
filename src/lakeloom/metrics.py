@@ -38,3 +38,14 @@ SCAN_SECONDS = Histogram(
     ["source", "outcome"],
     registry=REGISTRY,
 )
+GIT_PUBLICATIONS = Counter(
+    "lakeloom_git_publications_total",
+    "Git publication attempts by result (done, retry, blocked).",
+    ["result"],
+    registry=REGISTRY,
+)
+GIT_PUSH_FAILURES = Counter(
+    "lakeloom_git_push_failures_total",
+    "Failed git push invocations (NFR-OPS-02).",
+    registry=REGISTRY,
+)
