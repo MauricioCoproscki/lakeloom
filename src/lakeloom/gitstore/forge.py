@@ -38,6 +38,8 @@ _SCP = re.compile(r"^(?:[^@/]+@)?(?P<host>[^:/]+):(?P<path>(?!//).+)$")
 _TIMEOUT = 15.0
 _FIRST_DELAY = 0.25
 _CREATE_BUDGET = 5.0
+_PAGE_SIZE = 50
+_MAX_PAGES = 20
 
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -175,21 +177,35 @@ class _BaseForge:
             elapsed += step
             delay *= 2
 
+    _size_param = "limit"
+
     async def _find_open(self, head: str) -> PullRequest:
         path, params = self._list_request(head)
-        resp = await self._send("GET", path, params=params)
-        if resp.status_code != 200:
-            raise self._fail(resp)
-        try:
-            items: Any = resp.json()
-        except ValueError:
-            items = None
-        if isinstance(items, list):
-            for item in cast("list[Any]", items):
+        for page in range(1, _MAX_PAGES + 1):
+            resp = await self._send(
+                "GET", path, params={**params, self._size_param: str(_PAGE_SIZE), "page": str(page)}
+            )
+            if resp.status_code != 200:
+                raise self._fail(resp)
+            try:
+                items: Any = resp.json()
+            except ValueError:
+                items = None
+            if not isinstance(items, list):
+                break
+            entries = cast("list[Any]", items)
+            for item in entries:
                 if isinstance(item, dict):
                     entry = cast("dict[str, Any]", item)
                     if self._head_of(entry) == head:
-                        return self._to_pr(entry)
+                        try:
+                            return self._to_pr(entry)
+                        except (KeyError, TypeError, ValueError):
+                            raise self._err(
+                                "failed", f"{self.kind} listed an unexpected PR body"
+                            ) from None
+            if len(entries) < _PAGE_SIZE:
+                break
         raise self._err(
             "failed", f"{self.kind} reported a duplicate but no open PR has head {head!r}"
         )
@@ -246,6 +262,7 @@ class GiteaForge(_BaseForge):
 
 class GitHubForge(GiteaForge):
     kind = "github"
+    _size_param = "per_page"
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/vnd.github+json"}
@@ -263,6 +280,7 @@ class GitHubForge(GiteaForge):
 
 class GitLabForge(_BaseForge):
     kind = "gitlab"
+    _size_param = "per_page"
 
     def _headers(self) -> dict[str, str]:
         headers = super()._headers()

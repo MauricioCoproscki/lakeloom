@@ -285,3 +285,50 @@ async def test_client_not_closed() -> None:
             )
             await _gitea(http).open_pull_request(**ARGS)
         assert not http.is_closed
+
+
+def _pr(n: int, ref: str) -> dict[str, object]:
+    return {"number": n, "html_url": f"u{n}", "head": {"ref": ref}}
+
+
+@respx.mock
+async def test_gitea_duplicate_lookup_pages() -> None:
+    respx.post("http://gitea:3000/api/v1/repos/o/r/pulls").respond(409, json={})
+    lst = respx.get("http://gitea:3000/api/v1/repos/o/r/pulls").mock(
+        side_effect=[
+            httpx.Response(200, json=[_pr(i, f"b{i}") for i in range(50)]),
+            httpx.Response(200, json=[_pr(99, "lk/x")]),
+        ]
+    )
+    async with httpx.AsyncClient() as http:
+        assert (await _gitea(http).open_pull_request(**ARGS)).number == 99
+    assert [c.request.url.params["page"] for c in lst.calls] == ["1", "2"]
+    assert lst.calls[0].request.url.params["limit"] == "50"
+
+
+@respx.mock
+async def test_gitea_duplicate_lookup_no_match_stops() -> None:
+    respx.post("http://gitea:3000/api/v1/repos/o/r/pulls").respond(409, json={})
+    lst = respx.get("http://gitea:3000/api/v1/repos/o/r/pulls").mock(
+        side_effect=[
+            httpx.Response(200, json=[_pr(i, f"b{i}") for i in range(50)]),
+            httpx.Response(200, json=[_pr(60, "other")]),
+        ]
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(GitError) as ei:
+            await _gitea(http).open_pull_request(**ARGS)
+    assert ei.value.kind == "failed"
+    assert lst.call_count == 2
+
+
+@respx.mock
+async def test_duplicate_match_with_missing_field_is_failed() -> None:
+    respx.post("http://gitea:3000/api/v1/repos/o/r/pulls").respond(409, json={})
+    respx.get("http://gitea:3000/api/v1/repos/o/r/pulls").respond(
+        200, json=[{"head": {"ref": "lk/x"}, "number": 1}]
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(GitError) as ei:
+            await _gitea(http).open_pull_request(**ARGS)
+    assert ei.value.kind == "failed"
