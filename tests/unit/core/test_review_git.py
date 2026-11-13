@@ -48,6 +48,7 @@ class FakePublisher:
         self.outcome: dict[str, Any] = {"status": "done", "commit_sha": "a" * 40}
         self.gate: asyncio.Event | None = None
         self.processed = 0
+        self.processing = asyncio.Event()
         self.fail_enqueue: Exception | None = None
 
     async def enqueue(self, pub: Publication) -> Publication:
@@ -58,6 +59,7 @@ class FakePublisher:
         return pub
 
     async def process(self, *, now: datetime | None = None) -> list[Publication]:
+        self.processing.set()
         if self.gate is not None:
             await self.gate.wait()
         self.processed += 1
@@ -370,3 +372,72 @@ async def test_disabled_publisher_is_a_no_op(engine: AsyncEngine) -> None:
     out = await kit.approve(p)
     assert out.status == "applied" and git_warnings(out) == []
     assert await repo.for_proposal(p.id) is None
+
+
+# --- cancellation (FR-GIT-09: a publication is never lost) -----------------------------------
+
+
+async def _confirming(kit: ReviewKit, p: Any) -> "asyncio.Task[Any]":
+    preview = await kit.review.review(p.id, "approve", principal=ALICE, client="pytest")
+    return asyncio.create_task(
+        kit.review.review(
+            p.id,
+            "approve",
+            principal=ALICE,
+            client="pytest",
+            confirm_token=preview.confirm_token,  # type: ignore[union-attr]
+        )
+    )
+
+
+async def test_cancel_during_snapshot_still_enqueues(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakePublisher()
+    kit = with_git(ReviewKit(engine), fake)
+    p = await kit.submitted()
+    started, release = asyncio.Event(), asyncio.Event()
+    real = review_git.take_snapshot
+
+    async def blocked(*args: Any, **kw: Any) -> Any:
+        started.set()
+        await release.wait()
+        return await real(*args, **kw)
+
+    monkeypatch.setattr(review_git, "take_snapshot", blocked)
+    call = await _confirming(kit, p)
+    await asyncio.wait_for(started.wait(), 2)
+    call.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    out = await asyncio.wait_for(call, 2)  # the cancel is absorbed: the approve stands
+
+    assert out.status == "applied"
+    assert p.id in fake.rows  # the publication was enqueued despite the cancel
+    assert git_warnings(out) == [review_git.CANCELLED_WARNING]
+    stored = await kit.repo.get(p.id)
+    assert stored.status == "applied" and git_warnings(stored) == [review_git.CANCELLED_WARNING]
+    assert (await kit.reviews())[-1].result == "ok"
+
+
+async def test_cancel_during_inline_wait_keeps_task_running(engine: AsyncEngine) -> None:
+    fake = FakePublisher()
+    fake.gate = asyncio.Event()
+    kit = with_git(ReviewKit(engine), fake, git_settings(git_publish_timeout_seconds=30))
+    p = await kit.submitted()
+    call = await _confirming(kit, p)
+    await asyncio.wait_for(fake.processing.wait(), 2)
+    call.cancel()
+
+    out = await asyncio.wait_for(call, 2)
+
+    assert out.status == "applied" and p.id in fake.rows
+    assert git_warnings(out) == [review_git.CANCELLED_WARNING]
+    hook = kit.review._git  # pyright: ignore[reportPrivateUsage]
+    assert hook is not None
+    (task,) = hook.tasks
+    assert not task.done()
+    fake.gate.set()
+    await asyncio.wait_for(task, 1)
+    assert fake.rows[p.id].status == "done"

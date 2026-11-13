@@ -459,3 +459,30 @@ async def test_get_proposal_shows_publication(make_deps: DepsFactory, kit: AuthK
     assert structured(shown)["publication"]["id"] == "pub_1"
     assert structured(shown)["publication"]["status"] == "pending"
     assert "Git:" not in text(other) and structured(other)["publication"] is None
+
+
+async def test_publication_lookup_failure_never_fails_the_tool(
+    make_deps: DepsFactory, kit: AuthKit, caplog: pytest.LogCaptureFixture
+) -> None:
+    deps = make_deps(**GIT)
+    deps.review = FakeReview()  # pyright: ignore[reportAttributeAccessIssue]
+    deps.proposals = FakeGet(deps)  # pyright: ignore[reportAttributeAccessIssue]
+    await upgrade(deps.engine)
+
+    async def broken(proposal_id: str) -> Any:
+        raise RuntimeError("db at postgresql://u:pw-secret@db/x is gone")
+
+    deps.publisher.for_proposal = broken  # type: ignore[method-assign]
+    async with mcp_session(create_server_app(deps), kit.token(scope=REVIEW)) as s:
+        approved = await s.call_tool(
+            "review_proposal",
+            {"proposal_id": "prop_1", "decision": "approve", "confirm_token": TOKEN},
+        )
+    async with mcp_session(create_server_app(deps), kit.token(scope="lakeloom:read")) as s:
+        shown = await s.call_tool("get_proposal", {"proposal_id": "prop_1"})
+    data = structured(approved)
+    assert "error" not in data and data["proposal"]["status"] == "applied"
+    assert data["publication"] is None and "Git:" not in text(approved)
+    assert structured(shown)["publication"] is None and structured(shown)["status"] == "applied"
+    assert [r.result for r in await rows(deps)] == ["ok"]
+    assert "pw-secret" not in caplog.text

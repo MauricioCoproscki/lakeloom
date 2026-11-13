@@ -11,6 +11,7 @@ call's audit context (model, proposal, change set). Summaries quote untrusted te
 (lake comments, OM descriptions) through the core renderers.
 """
 
+import logging
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -47,6 +48,7 @@ __all__ = [
 ]
 
 MAX_OPERATIONS_PER_CALL = 200
+_log = logging.getLogger(__name__)
 
 READ_ONLY = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
@@ -238,8 +240,16 @@ def git_line(pub: PublicationInfo | None, mode: str | None = None) -> str | None
 
 
 async def publication_of(deps: AppDeps, proposal_id: str) -> tuple[PublicationInfo | None, str]:
-    """The publication of ``proposal_id`` and its text line (empty when there is none)."""
-    pub = await deps.publisher.for_proposal(proposal_id)
+    """The publication of ``proposal_id`` and its text line (empty when there is none).
+
+    Never raises: Git must not fail a decision that is already stored, so a store failure
+    is logged by type and shows as no publication.
+    """
+    try:
+        pub = await deps.publisher.for_proposal(proposal_id)
+    except Exception as exc:
+        _log.warning("Git publication of %s unavailable (%s)", proposal_id, type(exc).__name__)
+        return None, ""
     if pub is None:
         return None, ""
     info = PublicationInfo.of(pub)
