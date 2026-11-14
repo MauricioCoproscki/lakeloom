@@ -12,6 +12,11 @@ Decisions and live research: [ADR 0013](../decisions/0013-git-publishing.md).
   m2a-deferred). `lakeloom git retry` can collide with a running server on the same working
   copy: document it better or add a file lock.
 - Stacked pull requests, live SSH tests, signed commits; GitHub and GitLab are not live-tested.
+- Pull-request mode: re-render open Lakeloom PR branches when the target moves, or stack PRs,
+  so two open PRs no longer conflict on `README.md`, `manifest.yaml` and
+  `provenance/<slug>.jsonl` (today: merge or close one before the next approval).
+- A `Git: not queued` approval (the outbox insert failed) has no re-publish command yet; the
+  operator re-applies by hand (for example a no-op proposal on the model).
 
 ## Git runner and working copy
 - `init_branch` and `checkout_tip` can act on a parent repository when called before
@@ -71,8 +76,6 @@ Decisions and live research: [ADR 0013](../decisions/0013-git-publishing.md).
   retry forever instead of blocking.
 
 ## Review integration
-- When the enqueue itself failed, the internal-error warning still promises a retry (it should
-  say the proposal is unpublished).
 - Background publish tasks started inline are not drained at shutdown before the Git HTTP
   client and the engine are closed.
 - `fill_exports` loads the model once per format (plus the version), so a snapshot can mix two

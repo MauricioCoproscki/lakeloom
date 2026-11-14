@@ -425,8 +425,12 @@ truth: Git is a published copy, and a Git problem never fails or undoes an appro
   (`LAKELOOM_GIT_AUTHOR_NAME`, `LAKELOOM_GIT_AUTHOR_EMAIL`).
 - **Modes.** `LAKELOOM_GIT_MODE=pull_request` (the default) pushes the branch
   `lakeloom/<slug>/<proposal-id>` and opens a pull request (an open one for that branch is
-  reused); `direct` commits on `LAKELOOM_GIT_BRANCH` (default `main`) and pushes. A model can
-  override the default in `LAKELOOM_CONFIG_FILE`:
+  reused); `direct` commits on `LAKELOOM_GIT_BRANCH` (default `main`) and pushes. Each pull
+  request branch starts from the target tip and rewrites `README.md` and the model's
+  `manifest.yaml` and appends to `provenance/<slug>.jsonl`, so two open Lakeloom pull requests
+  conflict (on `README.md` even across models): merge or close one before the next approval, or
+  resolve the conflict keeping both provenance lines. A model can override the default in
+  `LAKELOOM_CONFIG_FILE`:
 
   ```yaml
   models:
@@ -443,8 +447,12 @@ truth: Git is a published copy, and a Git problem never fails or undoes an appro
   helper, never in arguments or the URL, and the forge API uses the same token. SSH:
   `LAKELOOM_GIT_SSH_KEY_FILE` and `LAKELOOM_GIT_SSH_KNOWN_HOSTS_FILE` (without it, unknown hosts
   are accepted on first use, with a warning). Git runs with no system or global config and no
-  credential helper; user info in a remote URL is redacted everywhere.
-- **Queue and retry.** The approval stores a snapshot in the state store (the outbox) and
+  credential helper. `LAKELOOM_GIT_REMOTE` must not carry a password or token
+  (`https://user:TOKEN@host/...` is a startup error; a user name alone, as in
+  `git@host:owner/repo.git`, is fine), and any user info in it is redacted everywhere.
+- **Queue and retry.** The approval stores a snapshot in the state store (the outbox; queued
+  before anything is exported, so `Git: not queued` appears only when that store failed and an
+  operator must re-publish the proposal) and
   waits up to `LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS` (default 20) for the commit. The
   `review_proposal` text then ends with `Git: committed <sha> to <branch>`,
   `Git: pull request <url>`, `Git: queued` (retried automatically) or `Git: blocked`, and its

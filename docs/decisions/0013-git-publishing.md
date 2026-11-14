@@ -24,7 +24,11 @@ listed under "Deviations from the plan".
   the previous manifest, appends the provenance line unless the publication id is already
   present, and regenerates `README.md`. A rejected push never triggers `git rebase`: reset to
   the new remote tip and render again (OM is the source of truth).
-- **Ordering.** Snapshot plus enqueue run under a per-model in-process lock. The worker
+- **Ordering.** Enqueue plus snapshot run under a per-model in-process lock. The row is
+  inserted first, with a snapshot that needs no OpenMetadata read (`exports: null`); the
+  exports, model version and OM version are then stored on it while no worker has attempted
+  it. So an applied proposal is never left without a row unless the insert itself fails, and
+  then the warning says `Git: not queued (internal error); an operator must re-publish it`. The worker
   publishes one repository's rows strictly in `seq` order; a `blocked` head stops that
   repository's queue and is reported.
 - **Export failure at apply.** The snapshot is stored with `exports: null`; the worker
@@ -42,13 +46,17 @@ listed under "Deviations from the plan".
   with `git: {mode: direct|pull_request}`. `direct` commits on `LAKELOOM_GIT_BRANCH` and
   pushes. `pull_request` pushes `lakeloom/<slug>/<proposal-id>` from the remote tip
   (`--force`, the branch is Lakeloom's own) and opens a PR; an existing open PR for that head
-  is reused. Each PR carries a full snapshot, so a later merge supersedes an earlier one;
-  stacked PRs are deferred. `pull_request` with `LAKELOOM_FORGE=none` is a startup
-  `ConfigError`.
+  is reused. Every PR branch starts from the target tip and rewrites `README.md` and
+  `ontologies/<slug>/manifest.yaml` and appends to `provenance/<slug>.jsonl`, so two open
+  Lakeloom PRs conflict on those files (on `README.md` even across models): merge or close one
+  before the next approval, or resolve the conflict keeping both provenance lines. Re-rendering
+  open PR branches and stacked PRs are deferred. `pull_request` with `LAKELOOM_FORGE=none` is a
+  startup `ConfigError`.
 - **Empty remote.** If the target branch is missing, first push `chore: initialise ontology
   repository` (only `README.md`) straight to the branch, in both modes.
-- **Idempotency.** Before committing, search the remote target branch (direct) or PR branch
-  (pull_request) for `Lakeloom-Publication: <id>`; a hit marks the publication done.
+- **Idempotency.** Before committing, search the remote target branch (both modes) and the PR
+  branch (pull_request) for `Lakeloom-Publication: <id>`; a hit marks the publication done (a
+  PR merged and its branch deleted before the row was recorded is found on the target).
 - **Credentials (FR-GIT-01, NFR-SEC-11).** HTTPS: `LAKELOOM_GIT_TOKEN` (+ `_FILE`) and
   `LAKELOOM_GIT_USERNAME` (default `x-access-token`) through a `GIT_ASKPASS` helper reading
   the child environment, never argv or the URL. SSH: `GIT_SSH_COMMAND` with `-i <key> -o
@@ -56,7 +64,9 @@ listed under "Deviations from the plan".
   `StrictHostKeyChecking=yes` when `LAKELOOM_GIT_SSH_KNOWN_HOSTS_FILE` is set, else
   `accept-new` with a startup warning (not live-tested: dev Gitea has SSH off). Every git child
   runs with `GIT_TERMINAL_PROMPT=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
-  `-c credential.helper=`. Remote-URL user info is redacted in logs, errors and tool output.
+  `-c credential.helper=`. A password or token in the user info of `LAKELOOM_GIT_REMOTE` is a
+  startup `ConfigError` (it would reach argv and `.git/config`); a user name alone is allowed.
+  Remote-URL user info is redacted in logs, errors and tool output.
 - **Forge auth.** Gitea: HTTP basic (username and token). GitHub: `Authorization: Bearer`.
   GitLab: `PRIVATE-TOKEN`. API base from `LAKELOOM_FORGE_API_URL`, else derived from the
   remote (`https://api.github.com`; `<scheme>://<host>/api/v4`; `<scheme>://<host>[:port]/api/v1`).
@@ -222,10 +232,11 @@ Known limits:
 
 - Single replica: the queue lock is in-process; `lakeloom git retry` must not run against the
   same working copy as a busy server.
-- Pull-request idempotency searches only the PR branch: a PR merged and its branch deleted
-  before the publication was recorded can block or open a second PR.
-- No stacked pull requests: each PR carries a full snapshot and a later merge supersedes an
-  earlier one. GitHub and GitLab are not live-tested; SSH is not live-tested.
+- Open Lakeloom pull requests conflict with each other: each branch starts from the target
+  tip and rewrites `README.md` and `manifest.yaml` and appends to `provenance/<slug>.jsonl`
+  (`README.md` conflicts even across models). Merge or close one before the next approval, or
+  resolve keeping both provenance lines; open PR branches are not re-rendered when the target
+  moves, and there are no stacked PRs. GitHub and GitLab are not live-tested; SSH is not live-tested.
 - Throwaway models of the dev contract tests leave their direct commits in the dev
   repository's history (dev only).
 - Releases, tags, `CHANGELOG.md`, SHACL shapes, `context.jsonld`, import from Git, drift and
