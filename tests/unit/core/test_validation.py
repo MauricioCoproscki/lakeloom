@@ -163,3 +163,35 @@ def test_markdown_quotes_untrusted_names() -> None:
     assert "\n- fake bullet" not in md
     assert md.startswith("# Validation of model `m`")
     assert "- Conforms:" in md and "Errors:" in md
+
+
+def test_large_chain_cycle_is_linear_and_capped() -> None:
+    import time
+
+    g = Graph()
+    n = 5000
+    for i in range(n):
+        concept(g, f"N{i}")
+    for i in range(n - 1):
+        g.add((u(f"N{i}"), SKOS.broader, u(f"N{i + 1}")))
+    g.add((u(f"N{n - 1}"), SKOS.broader, u("N0")))
+    start = time.monotonic()
+    r = run(g)
+    assert time.monotonic() - start < 2
+    cyc = [i for i in r.issues if i.code == "hierarchy_cycle"]
+    assert len(cyc) == 1 and "and 4980 more" in cyc[0].message and len(cyc[0].message) < 3000
+
+
+def test_self_loop_is_a_cycle() -> None:
+    g = clean()
+    g.add((u("A"), SKOS.broader, u("A")))
+    assert codes(run(g), "error") == ["hierarchy_cycle"]
+
+
+def test_duplicate_group_message_capped() -> None:
+    g = clean()
+    for i in range(30):
+        concept(g, f"D{i}", "same")
+        g.add((u(f"D{i}"), SKOS.broader, u("A")))
+    dup = [i for i in run(g).issues if i.code == "duplicate_label"]
+    assert len(dup) == 1 and "and 10 more" in dup[0].message

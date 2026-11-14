@@ -51,6 +51,15 @@ class ValidationReport(BaseModel):
     truncated: bool = False
 
 
+MAX_MEMBERS = 20
+
+
+def _members(items: list[URIRef]) -> str:
+    shown = ", ".join(f"'{m}'" for m in items[:MAX_MEMBERS])
+    more = len(items) - MAX_MEMBERS
+    return shown + (f" … and {more} more" if more > 0 else "")
+
+
 def _cycles(edges: dict[URIRef, set[URIRef]]) -> list[list[URIRef]]:
     """Strongly connected components with a cycle (size > 1 or a self-loop), sorted."""
     index: dict[URIRef, int] = {}
@@ -62,7 +71,9 @@ def _cycles(edges: dict[URIRef, set[URIRef]]) -> list[list[URIRef]]:
     for root in sorted(edges):
         if root in index:
             continue
-        work: list[tuple[URIRef, list[URIRef]]] = [(root, sorted(edges.get(root, ())))]
+        work: list[tuple[URIRef, list[URIRef]]] = [
+            (root, sorted(edges.get(root, ()), reverse=True))
+        ]
         index[root] = low[root] = counter
         counter += 1
         stack.append(root)
@@ -70,13 +81,13 @@ def _cycles(edges: dict[URIRef, set[URIRef]]) -> list[list[URIRef]]:
         while work:
             node, todo = work[-1]
             if todo:
-                nxt = todo.pop(0)
+                nxt = todo.pop()
                 if nxt not in index:
                     index[nxt] = low[nxt] = counter
                     counter += 1
                     stack.append(nxt)
                     on_stack.add(nxt)
-                    work.append((nxt, sorted(edges.get(nxt, ()))))
+                    work.append((nxt, sorted(edges.get(nxt, ()), reverse=True)))
                 elif nxt in on_stack:
                     low[node] = min(low[node], index[nxt])
                 continue
@@ -134,8 +145,7 @@ def validate_model(graph: Graph, info: ModelInfo, shapes: Graph) -> ValidationRe
                 "error",
                 "duplicate_label",
                 str(ordered[0]),
-                f"label '{text}'{where} is used by {len(ordered)} concepts: "
-                + ", ".join(f"'{m}'" for m in ordered),
+                f"label '{text}'{where} is used by {len(ordered)} concepts: " + _members(ordered),
             )
 
     # hierarchy: skos:broader / skos:narrower (inverse) and rdfs:subClassOf among concepts
@@ -156,7 +166,7 @@ def validate_model(graph: Graph, info: ModelInfo, shapes: Graph) -> ValidationRe
                 "error",
                 "hierarchy_cycle",
                 str(comp[0]),
-                f"cycle in {kind} among: " + ", ".join(f"'{m}'" for m in comp),
+                f"cycle in {kind} among: " + _members(comp),
             )
 
     # property checks
@@ -192,14 +202,14 @@ def validate_model(graph: Graph, info: ModelInfo, shapes: Graph) -> ValidationRe
     for pred in (SKOS.related,):
         for s, o in graph.subject_objects(pred):
             related.update(x for x in (s, o) if isinstance(x, URIRef))
+    parent_set = {p for ps in (*broader.values(), *sub.values()) for p in ps}
     for c in concepts:
         connected = (
             c in linked
             or c in related
             or bool(broader.get(c))
             or bool(sub.get(c))
-            or any(c in parents for parents in broader.values())
-            or any(c in parents for parents in sub.values())
+            or c in parent_set
         )
         if not connected:
             add(
