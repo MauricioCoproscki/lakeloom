@@ -68,6 +68,7 @@ dev = [
     "pip-audit>=2.10.1",
     "pyarrow>=26.0.1",
     "pyright>=1.1.414",
+    "pyshacl>=0.40.2",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=7.1.0",
