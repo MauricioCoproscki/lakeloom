@@ -396,3 +396,24 @@ def test_slug_64_chars_accepted() -> None:
     slug = "s" + "a_-" * 21
     assert len(slug) == 64
     assert f"ontologies/{slug}/manifest.yaml" in do_render(snap(model=slug))
+
+
+def test_render_writes_shapes_and_context() -> None:
+    exports = {**EXPORTS, "shapes.ttl": "@prefix sh: <http://www.w3.org/ns/shacl#> .\n"}
+    exports["context.jsonld"] = '{"@context":{}}\n'
+    files = do_render(snap(exports=exports))
+    assert files["ontologies/shop/shapes.ttl"] == exports["shapes.ttl"].encode()
+    assert files["ontologies/shop/context.jsonld"] == exports["context.jsonld"].encode()
+
+
+def test_render_old_payload_without_new_files() -> None:
+    files = do_render(snap())
+    assert "ontologies/shop/shapes.ttl" not in files
+    assert "ontologies/shop/context.jsonld" not in files
+    assert "ontologies/shop/ontology.owl" in files
+
+
+def test_missing_required_export_is_value_error() -> None:
+    partial = {k: v for k, v in EXPORTS.items() if k != "ontology.owl"}
+    with pytest.raises(ValueError, match=r"ontology\.owl"):
+        do_render(snap(exports=partial))

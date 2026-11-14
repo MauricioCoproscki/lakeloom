@@ -184,7 +184,14 @@ async def test_approve_enqueues_snapshot_and_publishes_inline(
     assert snap.exports is None  # cleared once done; the commit holds them
     assert _git("ls-tree", "--name-only", "main", "ontologies/shop/", cwd=bare).split() == [
         f"ontologies/shop/{n}"
-        for n in ("manifest.yaml", "ontology.jsonld", "ontology.owl", "ontology.ttl")
+        for n in (
+            "context.jsonld",
+            "manifest.yaml",
+            "ontology.jsonld",
+            "ontology.owl",
+            "ontology.ttl",
+            "shapes.ttl",
+        )
     ]
     assert snap.om_version == "1.12.0" and snap.model_version
     assert snap.glossary_id == "id-shop" and snap.proposal_id == p.id

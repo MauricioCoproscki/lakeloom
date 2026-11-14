@@ -187,6 +187,25 @@ async def test_direct_publish_commits_files_and_trailers(
     assert await publisher.process() == []
 
 
+async def test_publisher_commit_contains_shapes_and_context(
+    publisher: GitPublisher,
+    git_cmd: Git,
+    tmp_path: Path,
+    remote_url: str,
+) -> None:
+    exports = {
+        **EXPORTS,
+        "shapes.ttl": "@prefix sh: <http://www.w3.org/ns/shacl#> .\n",
+        "context.jsonld": '{"@context":{"@vocab":"http://e/"}}\n',
+    }
+    await publisher.enqueue(make_pub(exports=exports))
+    [result] = await publisher.process()
+    assert result.status == "done"
+    repo = clone(git_cmd, tmp_path, remote_url)
+    assert (repo / "ontologies/shop/shapes.ttl").read_text() == exports["shapes.ttl"]
+    assert (repo / "ontologies/shop/context.jsonld").read_text() == exports["context.jsonld"]
+
+
 async def test_pull_request_mode_pushes_branch_and_opens_pr(
     publisher: GitPublisher,
     forge: FakeForge,

@@ -36,6 +36,7 @@ __all__ = [
     "asset_context_artifact",
     "check_version",
     "concept_artifact",
+    "context_bytes",
     "etag_for",
     "glossary_link",
     "json_bytes",
@@ -113,6 +114,11 @@ def json_bytes(data: Any) -> bytes:
     return (text + "\n").encode()
 
 
+def context_bytes(context: dict[str, Any]) -> bytes:
+    """The bytes of a model's JSON-LD context document (HTTP body and Git file alike)."""
+    return json_bytes({"@context": context})
+
+
 def _make(body: bytes, media_type: str, last_modified: datetime, links: list[str]) -> Artifact:
     return Artifact(
         body=body,
@@ -162,7 +168,7 @@ async def model_context_artifact(
     info = await models.get_model(slug)
     context = await models.jsonld_context(slug)  # also fails like the other artefacts
     modified, links = await _model_stamp(models, info)
-    return _make(json_bytes({"@context": context}), "application/ld+json", modified, links)
+    return _make(context_bytes(context), "application/ld+json", modified, links)
 
 
 async def shapes_artifact(

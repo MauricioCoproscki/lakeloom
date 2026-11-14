@@ -457,3 +457,37 @@ async def test_shapes_cached_per_version_and_built_off_loop(
     svc.invalidate("retail")
     assert await svc.shapes("retail") is not first
     assert len(threads) == 2
+
+
+async def test_fill_exports_adds_shapes_and_context() -> None:
+    from lakeloom.gitstore import Snapshot
+    from lakeloom.gitstore.snapshot import fill_exports
+    from lakeloom.publish.artifacts import context_bytes
+    from lakeloom.publish.shacl_gen import shapes_turtle
+
+    class Caps:
+        version = "1.12.0"
+
+    class FakeOMClient:
+        async def get_capabilities(self) -> Caps:
+            return Caps()
+
+    svc, _, _ = make()
+    base = Snapshot(
+        model="retail",
+        glossary_id="",
+        glossary_fqn="retail",
+        model_version="",
+        proposal_id="p1",
+        message="m",
+    )
+    filled = await fill_exports(svc, FakeOMClient(), base)  # pyright: ignore[reportArgumentType]
+    assert filled.exports is not None
+    info = await svc.get_model("retail")
+    assert filled.exports["shapes.ttl"].encode() == shapes_turtle(await svc.shapes("retail"), info)
+    assert filled.exports["context.jsonld"].encode() == context_bytes(
+        await svc.jsonld_context("retail")
+    )
+    assert filled.exports["ontology.ttl"].encode() == await svc.export("retail", "turtle")
+    again = await fill_exports(svc, FakeOMClient(), base)  # pyright: ignore[reportArgumentType]
+    assert again.exports == filled.exports

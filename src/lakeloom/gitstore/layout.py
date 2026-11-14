@@ -29,7 +29,9 @@ from lakeloom.core.proposals import (
 SUBJECT_MAX = 100
 BODY_MAX_OPS = 50
 TRAILER_MAX = 200
-EXPORT_NAMES = ("ontology.ttl", "ontology.jsonld", "ontology.owl")
+REQUIRED_EXPORTS = ("ontology.ttl", "ontology.jsonld", "ontology.owl")
+# written when present; queued payloads from before M3a carry only the required three
+OPTIONAL_EXPORTS = ("shapes.ttl", "context.jsonld")
 
 _SLUG = re.compile(SLUG_PATTERN)
 # characters YAML double-quoted scalars may not carry literally (JSON leaves them unescaped)
@@ -47,7 +49,15 @@ class Snapshot(BaseModel):
     om_version: str | None = None
     model_version: str
     # UTF-8 text; None when the export at apply failed (the publisher exports at publish time)
-    exports: dict[Literal["ontology.ttl", "ontology.jsonld", "ontology.owl"], str] | None = None
+    exports: (
+        dict[
+            Literal[
+                "ontology.ttl", "ontology.jsonld", "ontology.owl", "shapes.ttl", "context.jsonld"
+            ],
+            str,
+        ]
+        | None
+    ) = None
     last_change_set: str | None = None
     proposal_id: str
     source_tables: list[TableProvenance] = Field(default_factory=list[TableProvenance])
@@ -282,9 +292,14 @@ def render(
         raise ValueError(f"model slug {slug!r} is not a safe path component")
     if snapshot.exports is None:
         raise ValueError("snapshot has no exports: the publisher must export before rendering")
+    missing = [name for name in REQUIRED_EXPORTS if name not in snapshot.exports]
+    if missing:
+        raise ValueError(f"snapshot exports lack {', '.join(missing)}")
     manifest = _manifest(snapshot, previous_manifest)
     files = {
-        f"ontologies/{slug}/{name}": snapshot.exports[name].encode("utf-8") for name in EXPORT_NAMES
+        f"ontologies/{slug}/{name}": snapshot.exports[name].encode("utf-8")
+        for name in (*REQUIRED_EXPORTS, *OPTIONAL_EXPORTS)
+        if name in snapshot.exports
     }
     files[f"ontologies/{slug}/manifest.yaml"] = manifest
     files[f"provenance/{slug}.jsonl"] = _provenance_log(
