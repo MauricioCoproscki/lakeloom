@@ -18,10 +18,13 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
   `rdfs:subClassOf` `owl:Restriction`s.
 - **SHACL.** One `sh:NodeShape` `<C>/shape` per class (`sh:targetClass`, `sh:name`: `skos:prefLabel`
   first, then `rdfs:label`, the sorted first). One `sh:PropertyShape` `<P>/shape` per property,
-  shared by all its domains: `sh:path`, `sh:datatype` (a single `xsd:` range), `sh:class`
+  shared by the domains without a cardinality restriction on it: `sh:path`, `sh:datatype` (a single `xsd:` range), `sh:class`
   (relations), `sh:in` from `owl:oneOf`, `sh:minCount 1` / `sh:maxCount 1` for functional
-  properties, `sh:name`. Restrictions set `sh:minCount` / `sh:maxCount` (creating the shape when
-  missing); the stricter count wins. Shapes are open (no `sh:closed`) and units are not
+  properties, `sh:name`. A class `C` with restrictions on `P` gets its own shape
+  `<C>/shape/<percent-encoded P>` (path, copy of the base constraints, counts merged with the
+  functional 1..1, the stricter wins) linked instead of the shared one, so a restriction never
+  leaks to other domains; it is created even when `C` is not a domain of `P`. Counts that are
+  not non-negative integers are ignored. Shapes are open (no `sh:closed`) and units are not
   constrained. Output is `rdf/canonical.serialize` turtle through `shapes_turtle`, which HTTP and
   Git both call, so their bytes match.
 - **JSON-LD context.** `{"@context": {...}}` with sorted keys: `@version` 1.1, the minimal context
@@ -33,8 +36,8 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
 
 ## Consequences
 
-- A cardinality restriction on one domain of a shared property shape applies to every domain of
-  that property, since the shape is shared (accepted for the first version).
+- A malformed `owl:oneOf` list (cycle, gap, non-literal) is skipped; among several well-formed
+  lists the one whose sorted values sort first is used, so the output is deterministic.
 - A property with several distinct `xsd:` ranges gets no `sh:datatype` (the conjunction would be
   unsatisfiable).
 - Properties whose domain is not a model class produce no shape.

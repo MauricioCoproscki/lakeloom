@@ -1,6 +1,5 @@
 import random
 
-import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pyshacl import validate
@@ -141,8 +140,14 @@ def test_relation_shape_has_class() -> None:
     assert list(s.objects(ps, SH.datatype)) == []
 
 
-def _counts(s: Graph, prop: str) -> tuple[int | None, int | None]:
-    ps = u(prop + "/shape")
+def _shape_of(s: Graph, cls_: str, prop: str) -> URIRef:
+    (ps,) = [x for x in s.objects(u(cls_ + "/shape"), SH.property) if (x, SH.path, u(prop)) in s]
+    assert isinstance(ps, URIRef)
+    return ps
+
+
+def _counts(s: Graph, prop: str, cls_: str = "A") -> tuple[int | None, int | None]:
+    ps = _shape_of(s, cls_, prop)
     lo = s.value(ps, SH.minCount)
     hi = s.value(ps, SH.maxCount)
     return (
@@ -187,8 +192,7 @@ def test_stricter_count_wins_over_functional() -> None:
 
 def test_restriction_creates_missing_shape() -> None:
     s = shapes([cls("A")], [], [restriction("A", "A.ghost", "MIN", 1)])
-    assert (u("A/shape"), SH.property, u("A.ghost/shape")) in s
-    assert (u("A.ghost/shape"), SH.path, u("A.ghost")) in s
+    assert (_shape_of(s, "A", "A.ghost"), RDF.type, SH.PropertyShape) in s
     assert _counts(s, "A.ghost") == (1, None)
 
 
@@ -286,8 +290,91 @@ def test_shapes_turtle_prefixes() -> None:
     assert f"@prefix ex: <{B}>" in out
 
 
-@pytest.mark.parametrize("bad", [True])
-def test_blank_classes_excluded(bad: bool) -> None:
+def test_blank_classes_excluded() -> None:
     g = Graph()
     g.add((BNode(), RDF.type, OWL.Class))
     assert model_classes(g) == []
+
+
+def test_restriction_on_one_domain_does_not_leak() -> None:
+    s = shapes(
+        [cls("A"), cls("B")],
+        [data("P", ["A", "B"], str(XSD.string))],
+        [restriction("A", "P", "MIN", 1)],
+    )
+    assert _shape_of(s, "A", "P") != _shape_of(s, "B", "P")
+    assert _counts(s, "P", "A") == (1, None)
+    assert _counts(s, "P", "B") == (None, None)
+    assert (_shape_of(s, "A", "P"), SH.datatype, XSD.string) in s
+
+    def conforms(cname: str, values: list[str]) -> bool:
+        d = Graph()
+        d.add((u("x"), RDF.type, u(cname)))
+        for v in values:
+            d.add((u("x"), u("P"), Literal(v)))
+        return bool(validate(d, shacl_graph=s)[0])
+
+    assert conforms("B", [])
+    assert not conforms("A", [])
+    assert conforms("A", ["v"])
+
+
+def test_two_classes_keep_independent_counts() -> None:
+    s = shapes(
+        [cls("A"), cls("B")],
+        [data("P", ["A", "B"], str(XSD.string))],
+        [restriction("A", "P", "MIN", 1), restriction("B", "P", "MAX", 2)],
+    )
+    assert _counts(s, "P", "A") == (1, None)
+    assert _counts(s, "P", "B") == (None, 2)
+
+
+def _enum_graph(lists: list[list[str]], cyclic: bool = False) -> Graph:
+    g = build_graph([cls("A")], [data("A.e", ["A"], str(XSD.string))], [])
+    for values in lists:
+        head = BNode()
+        Collection(g, head, [Literal(v) for v in values])
+        g.add((u("A.e"), OWL.oneOf, head))
+    if cyclic:
+        head, tail = BNode(), BNode()
+        g.add((head, RDF.first, Literal("x")))
+        g.add((head, RDF.rest, tail))
+        g.add((tail, RDF.first, Literal("y")))
+        g.add((tail, RDF.rest, head))
+        g.add((u("A.e"), OWL.oneOf, head))
+    return g
+
+
+def test_multiple_enum_lists_pick_is_deterministic() -> None:
+    outs = set()
+    for lists in ([["b", "c"], ["a", "z"]], [["a", "z"], ["b", "c"]]):
+        for _ in range(3):
+            outs.add(shapes_turtle(build_shapes(_enum_graph(lists), INFO), INFO))
+    assert len(outs) == 1
+    s = build_shapes(_enum_graph([["b", "c"], ["a", "z"]]), INFO)
+    (head,) = s.objects(u("A.e/shape"), SH["in"])
+    assert [str(v) for v in Collection(s, head)] == ["a", "z"]
+
+
+def test_cyclic_enum_list_is_skipped() -> None:
+    s = build_shapes(_enum_graph([], cyclic=True), INFO)
+    assert list(s.objects(u("A.e/shape"), SH["in"])) == []
+    s2 = build_shapes(_enum_graph([["ok"]], cyclic=True), INFO)
+    (head,) = s2.objects(u("A.e/shape"), SH["in"])
+    assert [str(v) for v in Collection(s2, head)] == ["ok"]
+
+
+def test_invalid_counts_are_ignored() -> None:
+    g = build_graph([cls("A")], [data("A.p", ["A"], str(XSD.string))], [])
+    for pred, val in (
+        (OWL.minCardinality, Literal(-1, datatype=XSD.integer)),
+        (OWL.maxCardinality, Literal("2.5", datatype=XSD.decimal)),
+        (OWL.cardinality, Literal("many")),
+    ):
+        r = BNode()
+        g.add((r, RDF.type, OWL.Restriction))
+        g.add((r, OWL.onProperty, u("A.p")))
+        g.add((r, pred, val))
+        g.add((u("A"), RDFS.subClassOf, r))
+    s = build_shapes(g, INFO)
+    assert _counts(s, "A.p") == (None, None)

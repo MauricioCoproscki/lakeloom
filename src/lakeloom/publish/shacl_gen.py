@@ -7,6 +7,7 @@ Shapes are open (no ``sh:closed``); units are not constrained.
 """
 
 from collections.abc import Iterable
+from urllib.parse import quote
 
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
 from rdflib.collection import Collection
@@ -51,12 +52,38 @@ def _class_label(graph: Graph, cls: URIRef) -> Literal | None:
 
 
 def _int(value: Node) -> int | None:
+    """A non-negative integer literal's value; anything else (2.5, -1, text) is ignored."""
     if isinstance(value, Literal):
-        try:
-            return int(value.toPython())
-        except (TypeError, ValueError):
-            return None
+        py = value.toPython()
+        if isinstance(py, int) and not isinstance(py, bool) and py >= 0:
+            return py
     return None
+
+
+def _list_values(graph: Graph, head: Node) -> list[Literal] | None:
+    """Literals of a well-formed RDF list; ``None`` when malformed (cycle, gap, non-literal)."""
+    out: list[Literal] = []
+    seen: set[Node] = set()
+    node = head
+    while node != RDF.nil:
+        if node in seen:
+            return None
+        seen.add(node)
+        firsts = list(graph.objects(node, RDF.first))
+        rests = list(graph.objects(node, RDF.rest))
+        if len(firsts) != 1 or len(rests) != 1 or not isinstance(firsts[0], Literal):
+            return None
+        out.append(firsts[0])
+        node = rests[0]
+    return out
+
+
+def _enum_values(graph: Graph, prop: URIRef) -> list[Literal] | None:
+    """The values of the sorted-first well-formed non-empty ``owl:oneOf`` list (deterministic)."""
+    lists = [v for h in graph.objects(prop, OWL.oneOf) if (v := _list_values(graph, h))]
+    if not lists:
+        return None
+    return min(lists, key=lambda v: ("\x00".join(sorted(map(str, v))), [str(x) for x in v]))
 
 
 def _restriction_counts(graph: Graph, cls: URIRef) -> dict[URIRef, tuple[int | None, int | None]]:
@@ -82,16 +109,10 @@ def _restriction_counts(graph: Graph, cls: URIRef) -> dict[URIRef, tuple[int | N
     return out
 
 
-def _tighten(
-    shapes: Graph, shape: URIRef, pred: URIRef, new: int, *, stricter_is_max: bool
-) -> None:
-    old = [_int(v) for v in shapes.objects(shape, pred)]
-    olds = [o for o in old if o is not None]
-    if olds:
-        pick = max if stricter_is_max else min
-        new = pick([*olds, new])
-        shapes.remove((shape, pred, None))
-    shapes.add((shape, pred, Literal(new)))
+def _merge(a: int | None, b: int | None, *, stricter_is_max: bool) -> int | None:
+    if a is None or b is None:
+        return b if a is None else a
+    return max(a, b) if stricter_is_max else min(a, b)
 
 
 def build_shapes(graph: Graph, info: ModelInfo) -> Graph:
@@ -108,13 +129,35 @@ def build_shapes(graph: Graph, info: ModelInfo) -> Graph:
         if label is not None:
             shapes.add((node, SH.name, label))
 
-    def ensure(prop: URIRef) -> URIRef:
-        shape = URIRef(f"{prop}/shape")
-        if (shape, RDF.type, SH.PropertyShape) not in shapes:
-            shapes.add((shape, RDF.type, SH.PropertyShape))
-            shapes.add((shape, SH.path, prop))
-        return shape
+    def base(shape: URIRef, prop: URIRef, lo: int | None, hi: int | None) -> None:
+        """Write the property shape ``shape``: base constraints of ``prop`` plus counts."""
+        shapes.add((shape, RDF.type, SH.PropertyShape))
+        shapes.add((shape, SH.path, prop))
+        label = _first(graph.objects(prop, RDFS.label))
+        if label is not None:
+            shapes.add((shape, SH.name, label))
+        ranges = sorted(r for r in graph.objects(prop, RDFS.range) if isinstance(r, URIRef))
+        if (prop, RDF.type, OWL.ObjectProperty) in graph:
+            for r in ranges:
+                shapes.add((shape, SH["class"], r))
+        elif (prop, RDF.type, OWL.DatatypeProperty) in graph:
+            datatypes = [r for r in ranges if str(r).startswith(_XSD)]
+            if len(datatypes) == 1:
+                shapes.add((shape, SH.datatype, datatypes[0]))
+            values = _enum_values(graph, prop)
+            if values:
+                lst = BNode()
+                Collection(shapes, lst, list[Node](values))
+                shapes.add((shape, SH["in"], lst))
+        if (prop, RDF.type, OWL.FunctionalProperty) in graph:
+            lo = _merge(lo, 1, stricter_is_max=True)
+            hi = _merge(hi, 1, stricter_is_max=False)
+        if lo is not None:
+            shapes.add((shape, SH.minCount, Literal(lo)))
+        if hi is not None:
+            shapes.add((shape, SH.maxCount, Literal(hi)))
 
+    restricted = {c: _restriction_counts(graph, c) for c in classes}
     properties = sorted(
         {
             s
@@ -127,40 +170,18 @@ def build_shapes(graph: Graph, info: ModelInfo) -> Graph:
         domains = sorted(
             d for d in graph.objects(p, RDFS.domain) if isinstance(d, URIRef) and d in class_set
         )
-        if not domains:
+        plain = [d for d in domains if p not in restricted[d]]
+        if not plain:
             continue
-        shape = ensure(p)
-        for d in domains:
-            shapes.add((URIRef(f"{d}/shape"), SH.property, shape))
-        label = _first(graph.objects(p, RDFS.label))
-        if label is not None:
-            shapes.add((shape, SH.name, label))
-        ranges = sorted(r for r in graph.objects(p, RDFS.range) if isinstance(r, URIRef))
-        if (p, RDF.type, OWL.ObjectProperty) in graph:
-            for r in ranges:
-                shapes.add((shape, SH["class"], r))
-        else:
-            datatypes = [r for r in ranges if str(r).startswith(_XSD)]
-            if len(datatypes) == 1:
-                shapes.add((shape, SH.datatype, datatypes[0]))
-            for head in sorted(graph.objects(p, OWL.oneOf), key=str):
-                values: list[Node] = [v for v in Collection(graph, head) if isinstance(v, Literal)]
-                if values:
-                    lst = BNode()
-                    Collection(shapes, lst, values)
-                    shapes.add((shape, SH["in"], lst))
-                    break
-        if (p, RDF.type, OWL.FunctionalProperty) in graph:
-            shapes.add((shape, SH.minCount, Literal(1)))
-            shapes.add((shape, SH.maxCount, Literal(1)))
+        shared = URIRef(f"{p}/shape")
+        base(shared, p, None, None)
+        for d in plain:
+            shapes.add((URIRef(f"{d}/shape"), SH.property, shared))
     for c in classes:
-        for p, (lo, hi) in _restriction_counts(graph, c).items():
-            shape = ensure(p)
-            shapes.add((URIRef(f"{c}/shape"), SH.property, shape))
-            if lo is not None:
-                _tighten(shapes, shape, SH.minCount, lo, stricter_is_max=True)
-            if hi is not None:
-                _tighten(shapes, shape, SH.maxCount, hi, stricter_is_max=False)
+        for p, (lo, hi) in restricted[c].items():
+            own = URIRef(f"{c}/shape/{quote(str(p), safe='')}")
+            base(own, p, lo, hi)
+            shapes.add((URIRef(f"{c}/shape"), SH.property, own))
     return shapes
 
 
