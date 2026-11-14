@@ -133,8 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `lakeloom://models/{slug}/shapes.ttl`.
   - The full JSON-LD `@context` of a model (a typed term per class and per property, unique
     short aliases) at `GET /v1/models/{slug}/context.jsonld` and
-    `lakeloom://models/{slug}/context.jsonld`, also embedded in asset JSON-LD (FR-PUB-05,
-    FR-CTX-02).
+    `lakeloom://models/{slug}/context.jsonld` (FR-PUB-05). Asset JSON-LD now declares
+    `@version: 1.1` and its `@context` is the model's context pruned to the terms and prefixes
+    the payload uses (the minimal context plus keywords for today's payload), so `max_tokens`
+    is not spent on unused terms (FR-CTX-02, FR-CTX-06).
   - MCP tool `validate_model` and CLI command `lakeloom validate` (exit code 1 when the model
     does not conform): duplicate labels, hierarchy cycles, dangling domains, external ranges,
     isolated or undefined concepts, untyped attributes, shapes counts.
@@ -142,6 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     bytes as the HTTP API (FR-GIT-02, FR-GIT-03).
   - `pyshacl` as a dev dependency; the M3a acceptance test validates the fixture lake's data
     against a throwaway model's published shapes and reads a JSON record through its context.
+  - Serialised shapes (per media type) and the context document are cached per model
+    version; the Git files are the same cached bytes.
 
 ### Fixed
 

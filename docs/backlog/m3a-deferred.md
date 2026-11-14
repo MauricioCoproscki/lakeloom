@@ -36,7 +36,8 @@ deliberately deferred. Triage when planning M3b. Decisions and known limits:
   IRIs) and decide on percent-encoded local names (`Cust%20Name` is kept encoded).
 - Count every model property, not only those that received a term, when deciding whether a
   short alias is unique.
-- Fall back to the minimal context in asset JSON-LD if building the full context fails.
+- Fall back to the minimal context in asset JSON-LD if building the full context fails (still
+  open: the pruned context is built from the full one, so a failed build still fails the asset).
 
 ## validate_model
 - Do not report a concept as isolated when its only links are external parents or restriction
@@ -46,9 +47,6 @@ deliberately deferred. Triage when planning M3b. Decisions and known limits:
   it).
 
 ## Serving, caching and Git
-- Cache the serialised shapes bytes per model entry instead of re-serialising per request.
-- Build a validation report from one consistent graph and shapes pair even when the model is
-  invalidated during the build.
 - Retrieve the exception of a shared build whose awaiters were all cancelled (no "Task exception
   was never retrieved" warning).
 - Read a Git snapshot's five exports and the model version from one graph state.

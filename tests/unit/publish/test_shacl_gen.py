@@ -384,3 +384,47 @@ def test_vocabulary_properties_are_ignored() -> None:
         assert key not in context, key
         assert all(i.subject != str(prop) for i in report.issues), prop
     assert report.counts["properties"] == 1
+
+
+def test_subclass_instances_need_the_ontology_at_validation() -> None:
+    """Documented in ADR 0014 / README: sh:targetClass follows rdfs:subClassOf in the *data*
+    graph, so an instance of a subclass is checked only when the ontology is supplied with it
+    (``pyshacl -s shapes.ttl -e ontology.ttl -i rdfs data.ttl``)."""
+    ontology = build_graph(
+        [cls("Parent"), cls("Child")],
+        [data("Parent.name", ["Parent"], str(XSD.string))],
+        [restriction("Parent", "Parent.name", "MIN", 1)],
+    )
+    ontology.add((u("Child"), RDFS.subClassOf, u("Parent")))
+    s = build_shapes(ontology, INFO)
+    d = Graph()
+    d.add((URIRef("urn:x:1"), RDF.type, u("Child")))  # no Parent.name: violates minCount 1
+    assert validate(d, shacl_graph=s)[0] is True  # without the ontology: not checked
+    assert validate(d, shacl_graph=s, ont_graph=ontology, inference="rdfs")[0] is False
+    assert validate(d, shacl_graph=s, ont_graph=ontology)[0] is False  # -e alone suffices
+    # an instance typed with the parent itself is checked either way
+    d.add((URIRef("urn:x:2"), RDF.type, u("Parent")))
+    assert validate(d, shacl_graph=s)[0] is False
+
+
+def test_decimal_values_must_be_sent_as_json_strings() -> None:
+    """Documented in ADR 0014 / README: a JSON number under an xsd:decimal term does not
+    become a valid xsd:decimal literal (JSON-LD 1.1 toRdf gives a double's lexical form;
+    rdflib keeps a Python float or int), so sh:datatype xsd:decimal rejects it."""
+    import json
+
+    from lakeloom.publish.jsonld_context import build_context
+
+    ontology = build_graph([cls("A")], [data("A.amount", ["A"], str(XSD.decimal))], [])
+    s = build_shapes(ontology, INFO)
+    context = build_context(ontology, INFO)
+
+    def conforms(value: object) -> bool:
+        doc = {"@context": context, "@id": "urn:x:1", "@type": "A", "A.amount": value}
+        return bool(
+            validate(Graph().parse(data=json.dumps(doc), format="json-ld"), shacl_graph=s)[0]
+        )
+
+    assert conforms("12.5") and conforms("12")
+    assert not conforms(12.5)
+    assert not conforms(12)

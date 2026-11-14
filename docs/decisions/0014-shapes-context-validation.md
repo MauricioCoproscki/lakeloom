@@ -18,7 +18,8 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
   declares `skos:Concept`, `skos:ConceptScheme`, `om:Glossary` and `om:GlossaryTerm` as classes;
   they are not model concepts. A denylist rather than a base-IRI allowlist, because paired
   native ontologies keep their own IRIs. Shapes, the context and `validate_model` share
-  `model_classes`, so all three leave them out.
+  `model_classes` and `model_properties` (the same denylist applied to properties), so all
+  three leave them out.
   Attributes are `owl:DatatypeProperty` (range, `owl:oneOf`, `qudt:unit`; identifiers are also
   `owl:FunctionalProperty`), relations `owl:ObjectProperty`. Cardinality comes from
   `rdfs:subClassOf` `owl:Restriction`s.
@@ -36,7 +37,13 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
 - **JSON-LD context.** `{"@context": {...}}` with sorted keys: `@version` 1.1, the minimal context
   (`@vocab`, model prefixes, `dcterms`, `skos`), `xsd`, one term per class and per property (key =
   IRI minus the base IRI), typed by datatype or `@id`, plus bare-name aliases only when unique. A
-  later entry never overrides an earlier key.
+  later entry never overrides an earlier key. Asset JSON-LD carries this context pruned to the
+  keywords, the minimal context and the terms or prefixes its payload references
+  (`prune_context`), so its size does not grow with the model and `max_tokens` is spent on
+  content; the pruned document expands to the same triples as with the full context.
+- **Caching.** Shapes, the context, their serialised bytes (`shapes:<media>`,
+  `jsonld_context:bytes`) and the validation report are derived once per model cache entry, each
+  from that entry's graph, and dropped with it on reload or invalidation.
 - **Validation.** `pyshacl` is a dev-only dependency: tests prove the shapes validate instance
   data. No new runtime dependency.
 
@@ -60,6 +67,17 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
   in the model, so a JSON record of a table whose columns repeat elsewhere uses the qualified
   keys.
 
+- **Subclass instances.** SHACL follows `rdfs:subClassOf` for `sh:targetClass` and `sh:class`
+  only in the data graph, and the shapes do not repeat the hierarchy. An instance typed with a
+  subclass is therefore checked against its parent's shape only when the ontology is merged
+  into the data: `pyshacl -s shapes.ttl -e ontology.ttl -i rdfs data.ttl` (`-e` alone is
+  enough for targets; `-i rdfs` also materialises the parent types). Pinned by
+  `test_subclass_instances_need_the_ontology_at_validation`.
+- **Decimals.** A JSON number under an `xsd:decimal` term does not yield a valid `xsd:decimal`
+  literal (JSON-LD 1.1 toRdf gives a double's lexical form; rdflib keeps a float or int), so
+  `sh:datatype xsd:decimal` rejects it; decimal values are sent as JSON strings. Pinned by
+  `test_decimal_values_must_be_sent_as_json_strings`.
+
 ### Known limits
 
 - Units (`qudt:unit`) are not constraints, and shapes are open; a closed-shape option is a
@@ -80,6 +98,5 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
 - `validate_model` reports a concept linked only to external parents or restriction blank
   nodes as isolated, and its messages carry the untrusted label text in the structured output
   (the Markdown quotes it).
-- Shapes turtle is re-serialised per request, and an invalidation during a build can pair a new
-  graph with the previous shapes counts in one report. A Git snapshot reads its five exports and
-  the model version in separate calls, so a model change in between can mix states.
+- A Git snapshot reads its five exports and the model version in separate calls, so a model
+  change in between can mix states.

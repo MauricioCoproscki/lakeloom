@@ -277,9 +277,21 @@ constrained) and a full JSON-LD `@context` (one term per class and per property,
 unique in the model). Vocabulary classes the model graph also declares (`skos:Concept`,
 `skos:ConceptScheme`, `om:Glossary`, `om:GlossaryTerm`, anything in the SKOS, OWL, RDF, RDFS, XSD
 or OpenMetadata `https://open-metadata.org/ontology/` namespaces) get no shape, no context term
-and no `validate_model` issue. Lakeloom does not validate lake data itself: consumers run the
-shapes, for example `pyshacl -s shapes.ttl data.ttl`, and use the context to read JSON records
-as RDF.
+and no `validate_model` issue; the same holds for properties in those namespaces. Lakeloom does
+not validate lake data itself: consumers run the shapes and use the context to read JSON records
+as RDF. Two things to know when doing so:
+
+- **Subclass instances.** SHACL resolves `sh:targetClass` and `sh:class` through
+  `rdfs:subClassOf` triples in the *data* graph only, so an instance typed with a subclass is
+  not checked against its parent's shape unless the ontology is supplied with the data:
+  `pyshacl -s shapes.ttl -e ontology.ttl -i rdfs data.ttl` (`-e` mixes the ontology into the
+  data graph; `-i rdfs` also infers the parent types).
+- **Decimal attributes.** Send `xsd:decimal` values as JSON strings (`"12.5"`, not `12.5`): a
+  JSON number is converted per JSON-LD 1.1 toRdf to a double's lexical form (rdflib keeps a
+  float or int), which fails `sh:datatype xsd:decimal`.
+
+Asset JSON-LD (`get_asset_context` with `format=jsonld`) carries the model's context pruned to
+the terms its payload uses, so it stays small however large the model is.
 
 Models, OpenMetadata tables and realizing-asset lists are cached for
 `LAKELOOM_MODEL_CACHE_TTL_SECONDS` (default 60 s; `0` disables the cache). A change made directly
