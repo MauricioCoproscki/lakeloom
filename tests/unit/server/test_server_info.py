@@ -82,7 +82,7 @@ async def test_server_info_reports_review_identity_mode(make_deps: DepsFactory) 
 
 async def test_server_info_git_status_has_no_remote_url(make_deps: DepsFactory) -> None:
     deps = make_deps(
-        git_remote="https://bot:remote-tok-981@git.example.test/acme/onto.git",
+        git_remote="https://bot-remote-tok-981@git.example.test/acme/onto.git",
         git_mode="direct",
         forge="none",
     )

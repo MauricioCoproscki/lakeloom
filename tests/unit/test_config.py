@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from lakeloom.config import Settings, get_settings
+from lakeloom.config import ConfigError, Settings, get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -155,7 +155,7 @@ def test_nfr_sec_11_validation_errors_do_not_echo_secrets(
 
 def test_nfr_sec_11_db_url_and_git_remote_not_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LAKELOOM_DB_URL", "postgresql://u:hunter2@h/db")
-    monkeypatch.setenv("LAKELOOM_GIT_REMOTE", "https://bot:gitpass@git.test/o/r.git")
+    monkeypatch.setenv("LAKELOOM_GIT_REMOTE", "https://bot-gitpass@git.test/o/r.git")
 
     s = Settings()
 
@@ -318,3 +318,42 @@ def test_fr_git_01_blank_git_values_are_unset(
     assert s.git_remote is None
     assert s.git_token is None
     assert s.forge_api_url is None
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "https://bot:tok-Secret-9@git.test/o/r.git",
+        "https://:tok-Secret-9@git.test/o/r.git",
+        "http://u:tok-Secret-9@localhost:3000/o/r.git",
+        "ssh://git:tok-Secret-9@git.test/o/r.git",
+    ],
+)
+def test_nfr_sec_11_password_in_git_remote_is_refused(
+    monkeypatch: pytest.MonkeyPatch, remote: str
+) -> None:
+    monkeypatch.setenv("LAKELOOM_GIT_REMOTE", remote)
+
+    with pytest.raises(ConfigError) as exc:
+        Settings()
+
+    text = str(exc.value) + repr(exc.value)
+    assert "LAKELOOM_GIT_TOKEN" in text and "LAKELOOM_GIT_REMOTE" in text
+    assert "tok-Secret-9" not in text and "git.test" not in text and "localhost" not in text
+
+
+@pytest.mark.parametrize(
+    "remote",
+    [
+        "https://git.test/o/r.git",
+        "https://user@git.test/o/r.git",
+        "git@git.test:owner/repo.git",
+        "ssh://git@git.test/o/r.git",
+        "file:///srv/git/r.git",
+    ],
+)
+def test_nfr_sec_11_user_name_alone_in_git_remote_is_allowed(
+    monkeypatch: pytest.MonkeyPatch, remote: str
+) -> None:
+    monkeypatch.setenv("LAKELOOM_GIT_REMOTE", remote)
+    assert Settings().git_remote == remote

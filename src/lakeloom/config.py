@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_core import InitErrorDetails, PydanticCustomError
@@ -159,6 +160,28 @@ class Settings(BaseSettings):
         """An empty or whitespace-only value (env var or ``_FILE``) means unset."""
         raw = value.get_secret_value() if isinstance(value, SecretStr) else value
         return None if isinstance(raw, str) and not raw.strip() else value
+
+    @field_validator("git_remote", mode="after")
+    @classmethod
+    def _no_password_in_git_remote(cls, value: str | None) -> str | None:
+        """A password or token in the remote's user info would reach argv and .git/config.
+
+        A user name alone (``https://user@host/...``, ``ssh://git@host/...``,
+        ``git@host:owner/repo.git``) is allowed. The error never repeats the URL.
+        """
+        if value is None or "://" not in value:
+            return value
+        try:
+            password = urlsplit(value.strip()).password
+        except ValueError:
+            password = None
+        if password is not None:
+            raise ConfigError(
+                "LAKELOOM_GIT_REMOTE carries a password or token in its user info; put the "
+                "credential in LAKELOOM_GIT_TOKEN / LAKELOOM_GIT_TOKEN_FILE, not in "
+                "LAKELOOM_GIT_REMOTE (NFR-SEC-11)"
+            )
+        return value
 
     @field_validator("sensitive_tags", mode="before")
     @classmethod
