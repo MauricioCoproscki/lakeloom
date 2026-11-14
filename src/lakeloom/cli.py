@@ -4,8 +4,8 @@
 ``lakeloom sources``, ``lakeloom tables SOURCE`` and ``lakeloom scan SOURCE`` use the
 sources in ``LAKELOOM_CONFIG_FILE`` directly, as the operator (FR-AGT-07, FR-SRC-10).
 Configuration errors are printed to stderr and exit with code 2, without a traceback;
-``lakeloom models``, ``concept``, ``context`` and ``export`` read the semantic models in
-OpenMetadata (FR-CTX-01..04, FR-IO-01). ``lakeloom propose SCAN_ID --model M``,
+``lakeloom models``, ``concept``, ``context``, ``export`` and ``validate`` read the semantic
+models in OpenMetadata (FR-CTX-01..04, FR-IO-01). ``lakeloom propose SCAN_ID --model M``,
 ``lakeloom proposal ID`` and ``lakeloom submit ID`` are the proposal tools for the operator
 (drafts and submissions only; nothing is applied); ``lakeloom pending [--model M]`` lists the
 proposals awaiting review and ``lakeloom rebase ID`` rebases one. ``lakeloom git status``
@@ -414,7 +414,8 @@ def context_cmd(
                 payload = render_json(context, max_tokens=max_tokens).payload
             else:
                 info = await models.get_model(context.model) if context.model else None
-                payload = render_jsonld(context, info, max_tokens=max_tokens).payload
+                full = await models.jsonld_context(info.slug) if info else None
+                payload = render_jsonld(context, info, max_tokens=max_tokens, context=full).payload
             typer.echo(json.dumps(payload, indent=2, ensure_ascii=False))
 
     _run(_go())
@@ -445,6 +446,25 @@ def export_cmd(
             except OSError as exc:
                 typer.echo(f"cannot write {out} ({type(exc).__name__})", err=True)
                 raise typer.Exit(code=1) from None
+
+    _run(_go())
+
+
+@app.command("validate")
+def validate_cmd(
+    model: Annotated[str, typer.Argument(help="Model slug (see `lakeloom models`).")],
+) -> None:
+    """Validate a model's structure; exit code 1 when it does not conform."""
+    from lakeloom.core.validation import validation_markdown
+
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        async with _open_semantic(settings) as (_, models, _s):
+            report = await models.validation(model)
+        typer.echo(validation_markdown(report), nl=False)
+        if not report.conforms:
+            raise typer.Exit(code=1)
 
     _run(_go())
 

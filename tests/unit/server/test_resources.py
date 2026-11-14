@@ -66,9 +66,11 @@ async def test_resources_list_has_models_and_per_model_uris(
     for ext in EXTS:
         assert f"lakeloom://models/retail/ontology.{ext}" in uris
     assert "lakeloom://models/retail/context.jsonld" in uris
+    assert "lakeloom://models/retail/shapes.ttl" in uris
     assert {t.uri_template for t in templates.resource_templates} >= {
         "lakeloom://models/{slug}/ontology.{ext}",
         "lakeloom://models/{slug}/context.jsonld",
+        "lakeloom://models/{slug}/shapes.ttl",
         "lakeloom://assets/{fqn}/context.md",
     }
 
@@ -183,3 +185,28 @@ async def test_list_and_templates_require_read_scope(make_deps: DepsFactory, kit
     for exc in errors:
         assert isinstance(exc.data, dict)
         assert exc.data["error"]["code"] == "forbidden"
+
+
+async def test_resource_list_has_shapes(make_deps: DepsFactory, kit: AuthKit) -> None:
+    app = create_server_app(fake_deps(make_deps))
+    async with mcp_session(app, kit.token()) as session:
+        listed = await session.list_resources()
+        templates = await session.list_resource_templates()
+
+    (shapes,) = [r for r in listed.resources if str(r.uri).endswith("/shapes.ttl")]
+    assert shapes.mime_type == "text/turtle"
+    ctx = [t for t in templates.resource_templates if t.uri_template.endswith("context.jsonld")]
+    assert "minimal" not in (ctx[0].description or "")
+
+
+async def test_shapes_resource_bytes_equal_http(make_deps: DepsFactory, kit: AuthKit) -> None:
+    content = await read(make_deps, kit, "lakeloom://models/retail/shapes.ttl")
+    pinned = await read(make_deps, kit, "lakeloom://models/retail/shapes.ttl?version=latest")
+    other = await error_of(make_deps, kit, "lakeloom://models/retail/shapes.ttl?version=1.0.0")
+
+    assert content.mime_type == "text/turtle"
+    http = http_body(make_deps, kit, "/v1/models/retail/shapes", "text/turtle")
+    assert content.text.encode() == http == pinned.text.encode()
+    assert other["code"] == "not_found"
+    ctx = await read(make_deps, kit, "lakeloom://models/retail/context.jsonld")
+    assert "@vocab" in ctx.text and "Order" in ctx.text

@@ -429,3 +429,31 @@ async def test_native_class_of_a_glossary_term_adds_no_label_or_comment() -> Non
     assert (order, RDF.type, OWL.Class) in g
     prop = URIRef("http://x/ontology/retail/Order.total")
     assert (prop, RDFS.label, None) in g  # properties keep theirs
+
+
+async def test_shapes_cached_per_version_and_built_off_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    import lakeloom.publish.shacl_gen as sg
+
+    threads: list[int] = []
+    real = sg.build_shapes
+
+    def build(*a: object, **k: object) -> Graph:
+        threads.append(threading.get_ident())
+        return real(*a, **k)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(sg, "build_shapes", build)
+    svc, _, _ = make()
+    first, second = await asyncio.gather(svc.shapes("retail"), svc.shapes("retail"))
+    assert first is second and await svc.shapes("retail") is first
+    assert len(threads) == 1 and threads[0] != threading.get_ident()
+    report = await svc.validation("retail")
+    assert report is await svc.validation("retail") and len(threads) == 1
+    ctx = await svc.jsonld_context("retail")
+    assert ctx is await svc.jsonld_context("retail") and "@vocab" in ctx
+    svc.invalidate("retail")
+    assert await svc.shapes("retail") is not first
+    assert len(threads) == 2

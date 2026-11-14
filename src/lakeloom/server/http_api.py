@@ -27,6 +27,7 @@ from lakeloom.publish.artifacts import (
     model_artifact,
     model_context_artifact,
     models_list_artifact,
+    shapes_artifact,
 )
 from lakeloom.publish.negotiation import MediaType, choose
 from lakeloom.server.auth import Principal
@@ -55,6 +56,11 @@ MODEL_TYPES: Final[tuple[MediaType, ...]] = (
     "text/turtle",
     "application/ld+json",
     "application/rdf+xml",
+    "application/n-triples",
+)
+SHAPES_TYPES: Final[tuple[MediaType, ...]] = (
+    "text/turtle",
+    "application/ld+json",
     "application/n-triples",
 )
 CONCEPT_TYPES: Final[tuple[MediaType, ...]] = ("text/markdown", "application/json")
@@ -267,8 +273,25 @@ def create_router(deps: "AppDeps") -> APIRouter:
         )
 
     @router.get(
+        "/models/{slug}/shapes",
+        summary="The model's SHACL shapes (Turtle, JSON-LD or N-Triples)",
+        response_class=Response,
+        responses=_responses(SHAPES_TYPES),
+    )
+    async def get_model_shapes(request: Request, slug: str) -> Response:
+        def build(media: MediaType) -> Awaitable[Artifact]:
+            return shapes_artifact(
+                deps.models,
+                slug,
+                _narrow(media, "text/turtle", "application/ld+json", "application/n-triples"),
+                version=None,
+            )
+
+        return await serve(request, SHAPES_TYPES, build)
+
+    @router.get(
         "/models/{slug}/context.jsonld",
-        summary="The JSON-LD context of the model (minimal until M3)",
+        summary="The JSON-LD context of the model",
         response_class=Response,
         responses=_responses(CONTEXT_TYPES),
     )

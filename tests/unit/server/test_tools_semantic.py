@@ -32,6 +32,7 @@ TOOLS = (
     "find_assets_for_concept",
     "get_asset_context",
     "export_model",
+    "validate_model",
 )
 COLUMNS = {
     "order_id": "retail.OrderIdentifier",
@@ -454,3 +455,44 @@ def test_nfr_sec_14_asset_list_type_is_code_span() -> None:
     out = _assets_text("retail.Order", page)
     assert "\n# H" not in out
     assert "(type `evil) # H [x](http://e)`)" in out
+
+
+async def test_validate_model_tool_markdown_and_structured(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    result = await call(make_deps, kit, "validate_model", {"model": "retail"})
+    missing = await call(make_deps, kit, "validate_model", {"model": "nope"})
+
+    report = structured(result)
+    assert report["model"] == "retail" and isinstance(report["conforms"], bool)
+    assert {"counts", "issues", "truncated"} <= set(report)
+    assert text(result).startswith("# Validation of model `retail`")
+    assert any(i["code"] == "shapes" for i in report["issues"])
+    assert structured(missing)["error"]["code"] == "not_found"
+
+
+async def test_validate_model_requires_read_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
+    result = await call(make_deps, kit, "validate_model", {"model": "retail"}, scope="openid")
+
+    assert result.is_error is True
+    assert structured(result)["error"]["code"] == "forbidden"
+
+
+@pytest.mark.usefixtures("cli_env")
+def test_cli_validate_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lakeloom.core.validation import ValidationReport
+
+    runner = CliRunner()
+    ok = runner.invoke(cli_app, ["validate", "retail"])
+    missing = runner.invoke(cli_app, ["validate", "nope"])
+
+    assert ok.exit_code == 0, ok.output
+    assert ok.output.startswith("# Validation of model `retail`")
+    assert missing.exit_code == 1 and "error not_found" in missing.output
+
+    async def failing(self: ModelService, slug: str) -> ValidationReport:
+        return ValidationReport(model=slug, conforms=False, counts={"error": 1}, issues=[])
+
+    monkeypatch.setattr(ModelService, "validation", failing)
+    bad = runner.invoke(cli_app, ["validate", "retail"])
+    assert bad.exit_code == 1 and "Conforms: no" in bad.output

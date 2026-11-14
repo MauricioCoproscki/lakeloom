@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 from rdflib import RDF, RDFS, Graph
@@ -28,6 +28,9 @@ from lakeloom.om.models import OMGlossary
 from lakeloom.rdf.canonical import ExportFormat, parse_rdf, serialize
 from lakeloom.sources.models import Page
 from lakeloom.untrusted import UntrustedText
+
+if TYPE_CHECKING:
+    from lakeloom.core.validation import ValidationReport
 
 __all__ = ["ModelInfo", "ModelService"]
 
@@ -231,6 +234,53 @@ class ModelService:
         if key not in entry.derived:
             entry.derived[key] = build(entry.graph)
         return cast(T, entry.derived[key])
+
+    async def _derived_threaded[T](self, slug: str, key: str, build: Callable[[_Entry], T]) -> T:
+        """Like :meth:`derived`, but ``build`` runs in a worker thread (CPU-bound work off the
+        event loop). The in-flight task is cached on the entry, so concurrent callers share one
+        build; a failed build is not cached."""
+        entry = await self._load(slug)
+        task = entry.derived.get(key)
+        if task is None:
+            task = asyncio.ensure_future(asyncio.to_thread(build, entry))
+            entry.derived[key] = task
+        try:
+            return await asyncio.shield(task)
+        except BaseException:
+            if task.done() and entry.derived.get(key) is task:
+                del entry.derived[key]
+            raise
+
+    async def shapes(self, slug: str) -> Graph:
+        """The model's SHACL shapes (FR-PUB-04), built once per graph version."""
+
+        def build(entry: _Entry) -> Graph:
+            from lakeloom.publish.shacl_gen import build_shapes
+
+            return build_shapes(entry.graph, entry.info)
+
+        return await self._derived_threaded(slug, "shapes", build)
+
+    async def jsonld_context(self, slug: str) -> dict[str, Any]:
+        """The model's full JSON-LD ``@context`` object (FR-PUB-05), built once per version."""
+
+        def build(entry: _Entry) -> dict[str, Any]:
+            from lakeloom.publish.jsonld_context import build_context
+
+            return build_context(entry.graph, entry.info)
+
+        return await self._derived_threaded(slug, "jsonld_context", build)
+
+    async def validation(self, slug: str) -> "ValidationReport":
+        """The model's validation report, built once per version from graph and shapes."""
+        shapes = await self.shapes(slug)
+
+        def build(entry: _Entry) -> "ValidationReport":
+            from lakeloom.core.validation import validate_model
+
+            return validate_model(entry.graph, entry.info, shapes)
+
+        return await self._derived_threaded(slug, "validation", build)
 
     async def _load(self, slug: str) -> _Entry:
         cached = self._fresh(slug)

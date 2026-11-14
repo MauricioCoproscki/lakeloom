@@ -6,6 +6,7 @@ the time the model graph was loaded) and ``Link`` values pointing at the OpenMet
 artefact was built from (``rel="via"``; Git links arrive with M2, ADR 0010).
 """
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
@@ -18,7 +19,6 @@ from pydantic import BaseModel, ConfigDict
 from lakeloom.core.concepts import concept_markdown, explain_concept, fetch_tables
 from lakeloom.core.context import (
     get_asset_context,
-    minimal_jsonld_context,
     render_json,
     render_jsonld,
     render_markdown,
@@ -27,6 +27,8 @@ from lakeloom.core.models import ModelInfo, ModelService
 from lakeloom.errors import LakeloomError
 from lakeloom.om.client import OMClient
 from lakeloom.publish.negotiation import FORMAT_BY_MEDIA, MediaType
+from lakeloom.publish.shacl_gen import SH, shapes_turtle
+from lakeloom.rdf.canonical import serialize
 from lakeloom.sources.base import LakeSource
 
 __all__ = [
@@ -41,6 +43,7 @@ __all__ = [
     "model_artifact",
     "model_context_artifact",
     "models_list_artifact",
+    "shapes_artifact",
     "table_link",
 ]
 
@@ -154,13 +157,33 @@ async def model_artifact(
 async def model_context_artifact(
     models: ModelService, slug: str, *, version: str | None
 ) -> Artifact:
-    """The minimal JSON-LD ``@context`` of a model (the full ``context.jsonld`` is M3)."""
+    """The model's full JSON-LD ``@context`` (FR-PUB-05)."""
     check_version(version)
     info = await models.get_model(slug)
-    await models.graph(slug)  # fail like the other artefacts when the export is unreadable
-    context = minimal_jsonld_context(info)  # the one the asset JSON-LD carries
+    context = await models.jsonld_context(slug)  # also fails like the other artefacts
     modified, links = await _model_stamp(models, info)
     return _make(json_bytes({"@context": context}), "application/ld+json", modified, links)
+
+
+async def shapes_artifact(
+    models: ModelService,
+    slug: str,
+    media: Literal["text/turtle", "application/ld+json", "application/n-triples"],
+    *,
+    version: str | None,
+) -> Artifact:
+    """The model's SHACL shapes (FR-PUB-04); turtle is the bytes the Git file carries."""
+    check_version(version)
+    info = await models.get_model(slug)
+    shapes = await models.shapes(slug)
+    if media == "text/turtle":
+        body = await asyncio.to_thread(shapes_turtle, shapes, info)
+    else:
+        fmt = "jsonld" if media == "application/ld+json" else "ntriples"
+        prefixes = {"sh": str(SH), **info.prefixes}
+        body = await asyncio.to_thread(serialize, shapes, fmt, prefixes=prefixes)
+    modified, links = await _model_stamp(models, info)
+    return _make(body, media, modified, links)
 
 
 async def models_list_artifact(
@@ -228,7 +251,8 @@ async def asset_context_artifact(
     elif media == "application/json":
         body = json_bytes(render_json(ctx, max_tokens=max_tokens).payload)
     else:
-        body = json_bytes(render_jsonld(ctx, model, max_tokens=max_tokens).payload)
+        full = await models.jsonld_context(ctx.model) if ctx.model else None
+        body = json_bytes(render_jsonld(ctx, model, max_tokens=max_tokens, context=full).payload)
     table = (await fetch_tables(models, om, [ctx.asset.table_fqn]))[ctx.asset.table_fqn]
     # Best-effort lower bound: the table's updatedAt and every realized model's freshness.
     slugs = {r.model for r in ctx.table_concepts} | {

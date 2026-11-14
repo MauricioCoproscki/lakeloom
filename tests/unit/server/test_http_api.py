@@ -270,6 +270,75 @@ def test_unexpected_exception_is_generic_500(deps: Any, kit: AuthKit, auth: dict
     assert "secret" not in r.text
 
 
+SHAPES_TYPES = ("text/turtle", "application/ld+json", "application/n-triples")
+
+
+def test_shapes_endpoint_negotiates_three_types(client: TestClient, auth: dict[str, str]) -> None:
+    default = get(client, auth, "/v1/models/retail/shapes")
+    for media in SHAPES_TYPES:
+        assert_validators(get(client, auth, "/v1/models/retail/shapes", media), media)
+    assert default.headers["content-type"].startswith("text/turtle")
+    shapes = Graph().parse(data=default.text, format="turtle")
+    assert len(shapes) > 0
+    assert get(client, auth, "/v1/models/retail/shapes", "application/rdf+xml").status_code == 406
+    nt = get(client, auth, "/v1/models/retail/shapes", "application/n-triples")
+    assert len(Graph().parse(data=nt.text, format="nt")) == len(shapes)
+
+
+def test_shapes_etag_and_link(client: TestClient, auth: dict[str, str]) -> None:
+    import hashlib
+
+    r = get(client, auth, "/v1/models/retail/shapes")
+    onto = get(client, auth, "/v1/models/retail")
+
+    assert r.headers["etag"] == '"sha256:' + hashlib.sha256(r.content).hexdigest() + '"'
+    assert r.headers["link"] == onto.headers["link"] and 'rel="via"' in r.headers["link"]
+    again = client.get(
+        "/v1/models/retail/shapes", headers={**auth, "If-None-Match": r.headers["etag"]}
+    )
+    assert again.status_code == 304 and again.content == b""
+    assert get(client, auth, "/v1/models/nope/shapes").status_code == 404
+
+
+async def test_shapes_version_other_than_latest_is_not_found(deps: Any) -> None:
+    from lakeloom.errors import LakeloomError
+    from lakeloom.publish.artifacts import shapes_artifact
+
+    ok = await shapes_artifact(deps.models, "retail", "text/turtle", version="latest")
+    assert ok.body
+    with pytest.raises(LakeloomError) as exc:
+        await shapes_artifact(deps.models, "retail", "text/turtle", version="1.0.0")
+    assert exc.value.code == "not_found"
+    assert "use version=latest" in exc.value.hint
+
+
+def test_context_endpoint_full_context(client: TestClient, auth: dict[str, str]) -> None:
+    ctx = get(client, auth, "/v1/models/retail/context.jsonld").json()["@context"]
+
+    assert ctx["@vocab"] == "https://lakeloom.test/ontology/retail/"
+    assert ctx["@version"] == 1.1 and "xsd" in ctx and "skos" in ctx
+    assert ctx["Order"] == IRI  # a class term, beyond the minimal
+
+
+def test_openapi_lists_shapes_route(client: TestClient, auth: dict[str, str]) -> None:
+    op = client.get("/openapi.json", headers=auth).json()["paths"]["/v1/models/{slug}/shapes"][
+        "get"
+    ]
+
+    assert op["summary"]
+    assert set(op["responses"]["200"]["content"]) == set(SHAPES_TYPES)
+
+
+def test_asset_context_jsonld_has_model_terms(client: TestClient, auth: dict[str, str]) -> None:
+    r = get(client, auth, f"/v1/assets/{ORDERS}/context", "application/ld+json")
+
+    assert r.status_code == 200, r.text
+    ctx = r.json()["@context"]
+    assert ctx["Order"] == IRI
+    assert ctx["@vocab"] == "https://lakeloom.test/ontology/retail/"
+    assert r.json()["@graph"]
+
+
 def test_openapi_requires_auth(client: TestClient, auth: dict[str, str]) -> None:
     assert client.get("/openapi.json").status_code == 401
     paths = client.get("/openapi.json", headers=auth).json()["paths"]

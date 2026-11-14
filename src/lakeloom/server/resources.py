@@ -1,7 +1,8 @@
 """MCP resources for models and asset context (FR-PUB-01).
 
 The URIs are ``lakeloom://models``, ``lakeloom://models/{slug}/ontology.{ext}`` (``ttl``,
-``jsonld``, ``owl``, ``nt``), ``lakeloom://models/{slug}/context.jsonld`` and
+``jsonld``, ``owl``, ``nt``), ``lakeloom://models/{slug}/shapes.ttl``,
+``lakeloom://models/{slug}/context.jsonld`` and
 ``lakeloom://assets/{fqn}/context.md`` (FQN percent-encoded), each optionally pinned with
 ``?version=``. Only ``latest`` exists until releases arrive in M3.
 
@@ -46,6 +47,7 @@ from lakeloom.publish.artifacts import (
     model_artifact,
     model_context_artifact,
     models_list_artifact,
+    shapes_artifact,
 )
 from lakeloom.publish.negotiation import MediaType
 from lakeloom.server.tools_common import READ_SCOPE, current_principal
@@ -76,8 +78,14 @@ TEMPLATES: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "lakeloom://models/{slug}/context.jsonld",
         "model_context",
-        "The JSON-LD context of the model (minimal until M3).",
+        "The full JSON-LD context of the model.",
         "application/ld+json",
+    ),
+    (
+        "lakeloom://models/{slug}/shapes.ttl",
+        "model_shapes",
+        "The model's SHACL shapes as Turtle.",
+        "text/turtle",
     ),
     (
         "lakeloom://assets/{fqn}/context.md",
@@ -93,7 +101,7 @@ def _mcp_error(error: LakeloomError) -> MCPError:
     return MCPError(code=code, message=error.message, data=error.to_dict())
 
 
-Kind = Literal["models", "ontology", "context", "asset"]
+Kind = Literal["models", "ontology", "shapes", "context", "asset"]
 
 
 class LakeloomMCP(MCPServer[Any]):
@@ -166,6 +174,13 @@ class LakeloomMCP(MCPServer[Any]):
                         mime_type=media,
                     )
                 )
+            out.append(
+                Resource(
+                    uri=f"lakeloom://models/{info.slug}/shapes.ttl",
+                    name=f"{info.slug} SHACL shapes",
+                    mime_type="text/turtle",
+                )
+            )
             out.append(
                 Resource(
                     uri=f"lakeloom://models/{info.slug}/context.jsonld",
@@ -253,6 +268,10 @@ class LakeloomMCP(MCPServer[Any]):
                         "use one of: " + ", ".join(MEDIA_BY_EXT),
                     )
                 return "ontology", lambda: model_artifact(deps.models, slug, media, version=version)
+            if name == "shapes.ttl":
+                return "shapes", lambda: shapes_artifact(
+                    deps.models, slug, "text/turtle", version=version
+                )
             if name == "context.jsonld":
                 return "context", lambda: model_context_artifact(deps.models, slug, version=version)
         if head == "assets" and tail.endswith("/context.md"):
