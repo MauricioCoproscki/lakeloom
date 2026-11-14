@@ -159,3 +159,21 @@ def test_asset_jsonld_uses_full_context() -> None:
     assert doc["@context"] == full
     # without a full context the minimal one is kept
     assert render_jsonld(_asset_ctx(), INFO).payload["@context"] == minimal_jsonld_context(INFO)
+
+
+def test_vocabulary_classes_get_no_context_term() -> None:
+    from rdflib.namespace import OWL, SKOS
+
+    g = build_graph([cls("Customer")], [], [])
+    om = "https://open-metadata.org/ontology/"
+    for v in (
+        SKOS.Concept,
+        SKOS.ConceptScheme,
+        URIRef(om + "Glossary"),
+        URIRef(om + "GlossaryTerm"),
+    ):
+        g.add((v, RDF.type, OWL.Class))
+    c = build_context(g, INFO)
+    assert c["Customer"] == B + "Customer"
+    for key in ("Concept", "ConceptScheme", "Glossary", "GlossaryTerm"):
+        assert key not in c, key

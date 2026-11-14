@@ -338,3 +338,24 @@ def test_invalid_counts_are_ignored() -> None:
         g.add((u("A"), RDFS.subClassOf, r))
     s = build_shapes(g, INFO)
     assert _counts(s, "A.p") == (None, None)
+
+
+OM = "https://open-metadata.org/ontology/"
+VOCAB = (SKOS.Concept, SKOS.ConceptScheme, URIRef(OM + "Glossary"), URIRef(OM + "GlossaryTerm"))
+
+
+def vocabulary_graph() -> Graph:
+    """A model graph that also declares the vocabulary classes, as the merged graph does."""
+    g = build_graph([cls("A")], [], [])
+    for v in (*VOCAB, OWL.Thing, RDFS.Resource):
+        g.add((v, RDF.type, OWL.Class))
+    return g
+
+
+def test_vocabulary_classes_get_no_node_shape() -> None:
+    g = vocabulary_graph()
+    assert model_classes(g) == [u("A")]
+    s = build_shapes(g, INFO)
+    assert set(s.subjects(RDF.type, SH.NodeShape)) == {u("A/shape")}
+    for v in VOCAB:
+        assert not set(s.subjects(SH.targetClass, v)), v

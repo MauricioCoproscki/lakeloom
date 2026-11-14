@@ -17,7 +17,14 @@ from rdflib.term import Node
 from lakeloom.core.models import ModelInfo
 from lakeloom.rdf.canonical import serialize
 
-__all__ = ["SH", "build_shapes", "model_classes", "shapes_turtle"]
+__all__ = [
+    "SH",
+    "VOCABULARY_NAMESPACES",
+    "build_shapes",
+    "is_vocabulary",
+    "model_classes",
+    "shapes_turtle",
+]
 
 SH = Namespace("http://www.w3.org/ns/shacl#")
 _XSD = str(XSD)
@@ -29,13 +36,32 @@ _COUNT_PREDICATES = (
 )
 
 
+# Vocabulary namespaces whose classes the merged graph declares (``skos:Concept``,
+# ``om:Glossary``...) but which are not concepts of the model. A denylist, not a base-IRI
+# allowlist: paired native ontologies keep their own IRIs.
+VOCABULARY_NAMESPACES = (
+    str(SKOS),
+    str(OWL),
+    str(RDF),
+    str(RDFS),
+    str(XSD),
+    "https://open-metadata.org/ontology/",  # the `om` prefix of rdf/canonical.py
+)
+
+
+def is_vocabulary(iri: URIRef) -> bool:
+    """Whether ``iri`` lies in one of the ``VOCABULARY_NAMESPACES``."""
+    return str(iri).startswith(VOCABULARY_NAMESPACES)
+
+
 def model_classes(graph: Graph) -> list[URIRef]:
-    """Sorted IRIs typed ``owl:Class`` or ``skos:Concept`` (blank nodes excluded)."""
+    """Sorted IRIs typed ``owl:Class`` or ``skos:Concept``; blank nodes and vocabulary
+    classes (``VOCABULARY_NAMESPACES``) excluded."""
     found = {
         s
         for t in (OWL.Class, SKOS.Concept)
         for s in graph.subjects(RDF.type, t)
-        if isinstance(s, URIRef)
+        if isinstance(s, URIRef) and not is_vocabulary(s)
     }
     return sorted(found)
 

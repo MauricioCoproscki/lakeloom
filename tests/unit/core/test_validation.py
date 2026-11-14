@@ -195,3 +195,15 @@ def test_duplicate_group_message_capped() -> None:
         g.add((u(f"D{i}"), SKOS.broader, u("A")))
     dup = [i for i in run(g).issues if i.code == "duplicate_label"]
     assert len(dup) == 1 and "and 10 more" in dup[0].message
+
+
+def test_vocabulary_classes_raise_no_warning() -> None:
+    g = clean()
+    om = "https://open-metadata.org/ontology/"
+    vocab = [SKOS.Concept, SKOS.ConceptScheme, URIRef(om + "Glossary"), URIRef(om + "GlossaryTerm")]
+    for v in vocab:
+        g.add((v, RDF.type, OWL.Class))
+    r = run(g)
+    assert r.conforms and codes(r, "warning") == []
+    assert not [i for i in r.issues if i.subject in {str(v) for v in vocab}]
+    assert r.counts["concepts"] == 2
