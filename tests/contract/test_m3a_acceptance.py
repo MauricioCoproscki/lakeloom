@@ -38,7 +38,7 @@ import pytest
 import pytest_asyncio
 from deltalake import DeltaTable
 from mcp.types import CallToolResult, TextContent
-from rdflib import RDF, RDFS, XSD, Graph, Literal, Namespace, URIRef
+from rdflib import OWL, RDF, RDFS, SKOS, XSD, Graph, Literal, Namespace, URIRef
 from rdflib.term import Node
 from stack import mcp_session
 
@@ -56,6 +56,7 @@ LAKE = Path(__file__).resolve().parents[1] / "fixtures" / "lake"
 OM_TABLE = "lakeloom_fixture.retail.sales.{}"
 CACHE_WAIT_SECONDS = 90  # > the dev stack's model_cache_ttl_seconds (60)
 SH = Namespace("http://www.w3.org/ns/shacl#")
+OM_VOCAB = "https://open-metadata.org/ontology/"
 ROW = "urn:lakeloom:m3a:{}/{}"
 POLICY = MappingPolicy(model=MODEL)
 NUMERIC = {str(XSD[t]) for t in ("decimal", "double", "float", "integer", "long", "int")}
@@ -196,7 +197,7 @@ async def _table_tags(om: httpx.AsyncClient, table: str) -> set[str]:
     return tags
 
 
-async def _teardown(run: Run) -> None:
+async def _discard_open(run: Run) -> None:
     agent = run.tokens.agent
     for pid in run.proposals:
         preview = await call(run.url, agent, "discard_proposal", {"proposal_id": pid})
@@ -204,8 +205,11 @@ async def _teardown(run: Run) -> None:
             continue  # applied or already discarded
         args = {"proposal_id": pid, "confirm_token": data(preview)["confirm_token"]}
         await call(run.url, agent, "discard_proposal", args)
+
+
+async def _collect_change_sets(run: Run) -> None:
     for pid in run.proposals:
-        shown = await call(run.url, agent, "get_proposal", {"proposal_id": pid})
+        shown = await call(run.url, run.tokens.agent, "get_proposal", {"proposal_id": pid})
         if not shown.is_error:
             proposal = data(shown)["proposal"]
             run.change_sets |= _change_sets(proposal)
@@ -213,10 +217,10 @@ async def _teardown(run: Run) -> None:
                 run.change_sets |= {
                     s for s in part.get("superseded_change_set_ids", []) if isinstance(s, str)
                 }
+
+
+async def _check_gone(run: Run) -> None:
     om = run.om
-    for cs_id in run.change_sets:
-        await om.delete(f"/api/v1/ontologyChangeSets/{cs_id}", params={"hardDelete": "true"})
-    await _delete_model(om, MODEL)
     assert not await _exists(om, MODEL), MODEL
     for cs_id in run.change_sets:
         r = await om.get(f"/api/v1/ontologyChangeSets/{cs_id}", params={"include": "all"})
@@ -224,6 +228,25 @@ async def _teardown(run: Run) -> None:
     for table in TABLES:
         left = {t for t in await _table_tags(om, table) if t.startswith(f"{MODEL}.")}
         assert not left, (table, left)
+
+
+async def _teardown(run: Run) -> None:
+    """Each phase runs even when an earlier one fails: the model is always hard-deleted."""
+    om = run.om
+    try:
+        await _discard_open(run)
+    finally:
+        try:
+            await _collect_change_sets(run)
+        finally:
+            try:
+                for cs_id in run.change_sets:
+                    await om.delete(
+                        f"/api/v1/ontologyChangeSets/{cs_id}", params={"hardDelete": "true"}
+                    )
+            finally:
+                await _delete_model(om, MODEL)
+    await _check_gone(run)
 
 
 async def _wait_for_lakeloom_caches(run: Run) -> None:
@@ -425,7 +448,9 @@ async def test_m3a_shapes_validate_fixture_data(run: Run) -> None:
     # Break one orders row: a non-numeric total amount (sh:datatype), or, when the amount is
     # not numerically typed, a missing order identifier (sh:minCount 1).
     orders = tables["orders"]
-    broken = URIRef(ROW.format("orders", 7))
+    order_rows = _rows("orders")
+    assert order_rows, "the orders fixture is empty"
+    broken = URIRef(ROW.format("orders", len(order_rows) - 1))  # the last row
     prop, datatype = orders.columns["total_amount"]
     if datatype is not None and str(datatype) in NUMERIC:
         instances.remove((broken, prop, None))
@@ -491,6 +516,17 @@ async def test_m3a_validate_model(run: Run) -> None:
         counts.get("info", 0),
     ]
     assert "- Conforms: yes" in text_of(result)
+    # No issue is about a vocabulary class (skos:Concept, om:Glossary...), and isolated
+    # concepts are model concepts only.
+    vocabulary = (str(SKOS), str(OWL), str(RDF), str(RDFS), OM_VOCAB)
+    for issue in report["issues"]:
+        if issue["severity"] == "warning":
+            assert not issue["subject"].startswith(vocabulary), issue
+    model_classes = {str(c) for c in _shapes(run)[1].objects(None, SH.targetClass)}
+    base = _get(run, "/context.jsonld", "application/ld+json").json()["@context"]["@vocab"]
+    for issue in report["issues"]:
+        if issue["code"] == "isolated_concept":
+            assert issue["subject"] in model_classes and issue["subject"].startswith(base), issue
 
 
 async def test_m3a_git_commit_has_shapes_and_context(run: Run) -> None:

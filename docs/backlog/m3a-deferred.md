@@ -21,10 +21,12 @@ deliberately deferred. Triage when planning M3b. Decisions and known limits:
   value, which can be stricter than the model).
 - Make the `owl:oneOf` choice fully deterministic when two lists share lexical values but differ
   in datatype or language.
-- Do not generate node shapes for the OpenMetadata vocabulary classes (`skos:Concept`,
-  `skos:ConceptScheme`, `om:Glossary`, `om:GlossaryTerm`) that every merged model graph carries;
-  `validate_model` should not warn about them either (every fresh model shows eight such
-  warnings).
+- Make the vocabulary denylist (`VOCABULARY_NAMESPACES`: SKOS, OWL, RDF, RDFS, XSD,
+  OpenMetadata's ontology namespace) configurable per model, for models that import other
+  vocabularies.
+- Revisit the IRI scheme of class-specific property shapes, `<C>/shape/<percent-encoded P IRI>`
+  (introduced instead of one shared multi-domain shape so one class's cardinality restriction
+  does not leak onto other domains): long, opaque IRIs that change if the scheme changes.
 - Give `date` attributes a datatype constraint: their OpenMetadata range is `rdfs:Literal`, so
   `shapes.ttl` cannot reject a malformed date. A side channel for the precise datatype (kept in
   the proposal) would let the shapes carry `xsd:date`.
@@ -39,6 +41,7 @@ deliberately deferred. Triage when planning M3b. Decisions and known limits:
 ## validate_model
 - Do not report a concept as isolated when its only links are external parents or restriction
   blank nodes.
+- Drop the redundant loop over `(SKOS.related,)` in the isolation check.
 - Quote untrusted label text in the structured `message` too (today only the Markdown escapes
   it).
 
@@ -56,3 +59,7 @@ deliberately deferred. Triage when planning M3b. Decisions and known limits:
   deep chains and dual-typed concepts, and language-tagged or typed `owl:oneOf` values.
 - Make the large-model timing test independent of `build_shapes` (it may flake on slow CI), and
   move the CLI cases into `test_cli`.
+- Extend `test_artifacts` to `shapes_artifact` (media types, ETag, Link) instead of covering it
+  only through the HTTP and resource tests.
+- Simplify the `Customer.misc` context test, and make the context determinism property test
+  generate non-ASCII names too.

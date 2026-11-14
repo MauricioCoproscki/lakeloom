@@ -12,7 +12,13 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
 
 ## Decision
 
-- **Input graph.** Classes are `owl:Class` and `skos:Concept` subjects (blank nodes excluded).
+- **Input graph.** Classes are `owl:Class` and `skos:Concept` subjects (blank nodes excluded),
+  minus a denylist of vocabulary namespaces (`VOCABULARY_NAMESPACES` in `shacl_gen`: SKOS, OWL,
+  RDF, RDFS, XSD and OpenMetadata's `https://open-metadata.org/ontology/`). The merged graph
+  declares `skos:Concept`, `skos:ConceptScheme`, `om:Glossary` and `om:GlossaryTerm` as classes;
+  they are not model concepts. A denylist rather than a base-IRI allowlist, because paired
+  native ontologies keep their own IRIs. Shapes, the context and `validate_model` share
+  `model_classes`, so all three leave them out.
   Attributes are `owl:DatatypeProperty` (range, `owl:oneOf`, `qudt:unit`; identifiers are also
   `owl:FunctionalProperty`), relations `owl:ObjectProperty`. Cardinality comes from
   `rdfs:subClassOf` `owl:Restriction`s.
@@ -66,9 +72,8 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
 - An attribute whose datatype has no OWL 2 equivalent (such as `xsd:date`) is stored with the
   range `rdfs:Literal` (M2b), so its shape has no `sh:datatype` and `validate_model` reports it
   as `untyped_attribute`.
-- The merged model graph types the OpenMetadata vocabulary classes (`skos:Concept`,
-  `skos:ConceptScheme`, `om:Glossary`, `om:GlossaryTerm`) as classes, so every model gets node
-  shapes for them and `validate_model` warns that they are isolated and undefined.
+- A class in a namespace outside the denylist that is still vocabulary (for example a third
+  party's ontology imported into the model graph) is treated as a model class.
 - Context keys that contain `:` or percent-encoded characters are kept as they are; strict
   JSON-LD processors may treat a `:` key as a compact IRI. Alias uniqueness counts only the
   properties that received a term.

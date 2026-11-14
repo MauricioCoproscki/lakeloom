@@ -269,13 +269,17 @@ listed. A model fresh from `propose_from_scan` conforms with warnings (for examp
 `untyped_attribute` for a `date` column, whose OpenMetadata range is `rdfs:Literal`).
 
 **Shapes and JSON-LD context (ADR 0014).** Every model also publishes generated SHACL shapes
-(`shapes.ttl`: one `sh:NodeShape` per class with `sh:targetClass`, one property shape per
+(`shapes.ttl`: one `sh:NodeShape` per model class with `sh:targetClass`, one property shape per
 attribute or relation with `sh:datatype`, `sh:class`, `sh:in` from enumerations and
 `sh:minCount`/`sh:maxCount` from identifiers and cardinality restrictions; open shapes, units not
 constrained) and a full JSON-LD `@context` (one term per class and per property, keyed
 `<Class>.<attribute>` and typed by datatype, plus a short alias such as `email` when the name is
-unique in the model). Lakeloom does not validate lake data itself: consumers run the shapes, for
-example `pyshacl -s shapes.ttl data.ttl`, and use the context to read JSON records as RDF.
+unique in the model). Vocabulary classes the model graph also declares (`skos:Concept`,
+`skos:ConceptScheme`, `om:Glossary`, `om:GlossaryTerm`, anything in the SKOS, OWL, RDF, RDFS, XSD
+or OpenMetadata `https://open-metadata.org/ontology/` namespaces) get no shape, no context term
+and no `validate_model` issue. Lakeloom does not validate lake data itself: consumers run the
+shapes, for example `pyshacl -s shapes.ttl data.ttl`, and use the context to read JSON records
+as RDF.
 
 Models, OpenMetadata tables and realizing-asset lists are cached for
 `LAKELOOM_MODEL_CACHE_TTL_SECONDS` (default 60 s; `0` disables the cache). A change made directly
