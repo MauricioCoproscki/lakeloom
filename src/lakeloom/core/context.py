@@ -609,12 +609,19 @@ def minimal_jsonld_context(model: ModelInfo | None) -> dict[str, str]:
 
 
 def render_jsonld(
-    ctx: AssetContext, model: ModelInfo | None = None, *, max_tokens: int | None = None
+    ctx: AssetContext,
+    model: ModelInfo | None = None,
+    *,
+    max_tokens: int | None = None,
+    context: dict[str, Any] | None = None,
 ) -> Rendered[dict[str, Any]]:
-    """JSON-LD with a minimal ``@context``; concepts link through ``dcterms:subject``."""
+    """JSON-LD whose ``@context`` is ``context`` (the model's full one) or the minimal one.
+
+    Concepts link through ``dcterms:subject``.
+    """
+    full_context = context if context is not None else minimal_jsonld_context(model)
 
     def build(c: AssetContext) -> dict[str, Any]:
-        context = minimal_jsonld_context(model)
 
         def subjects(refs: list[ConceptRef]) -> list[dict[str, str]]:
             return [{"@id": r.iri} for r in refs if r.iri]
@@ -635,6 +642,6 @@ def render_jsonld(
                     "dcterms:subject": subjects(col.concepts),
                 }
             )
-        return {"@context": context, "@graph": graph}
+        return {"@context": full_context, "@graph": graph}
 
     return _fit(ctx, max_tokens, build)

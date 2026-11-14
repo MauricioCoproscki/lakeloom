@@ -1,5 +1,6 @@
 import random
 
+from _graphs import B, cls, data, rel, restriction
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pyshacl import validate
@@ -11,52 +12,11 @@ from lakeloom.core.models import ModelInfo
 from lakeloom.om.native_rdf import build_graph
 from lakeloom.publish.shacl_gen import SH, build_shapes, model_classes, shapes_turtle
 
-B = "https://example.org/m/"
 INFO = ModelInfo(slug="m", glossary_id="g", fqn="g", base_iri=B, prefixes={"ex": B})
 
 
 def u(name: str) -> URIRef:
     return URIRef(B + name)
-
-
-def cls(name: str, label: str | None = None) -> dict:
-    return {"iri": B + name, "conceptType": "OWL_CLASS", "displayName": label or name}
-
-
-def data(name: str, domain: list[str], range_: str, **extra) -> dict:
-    return {
-        "iri": B + name,
-        "kind": "DATA",
-        "domain": [B + d for d in domain],
-        "range": [range_],
-        "displayName": name,
-        **extra,
-    }
-
-
-def rel(name: str, domain: str, range_: str) -> dict:
-    return {
-        "iri": B + name,
-        "kind": "OBJECT",
-        "domain": [B + domain],
-        "range": [B + range_],
-        "displayName": name,
-    }
-
-
-def restriction(subject: str, prop: str, kind: str, n: int) -> dict:
-    return {
-        "subjectIri": B + subject,
-        "axiomType": "SUBCLASS_OF",
-        "expressions": [
-            {
-                "kind": "RESTRICTION",
-                "propertyIri": B + prop,
-                "restrictionKind": kind,
-                "cardinality": n,
-            }
-        ],
-    }
 
 
 def shapes(concepts=(), props=(), axioms=()) -> Graph:
