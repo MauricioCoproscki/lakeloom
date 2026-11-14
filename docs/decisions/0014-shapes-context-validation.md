@@ -1,6 +1,6 @@
 # 0014. SHACL shapes, JSON-LD context and model validation
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-14
 - Requirements: FR-PUB-01, FR-PUB-02, FR-PUB-04, FR-PUB-05, FR-PUB-07, FR-CTX-02, FR-GIT-02, FR-GIT-03
 
@@ -41,3 +41,40 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
 - A property with several distinct `xsd:` ranges gets no `sh:datatype` (the conjunction would be
   unsatisfiable).
 - Properties whose domain is not a model class produce no shape.
+- `shapes.ttl` and `context.jsonld` are produced by the same functions for HTTP, MCP resources
+  and Git (`shapes_turtle`, `build_context`), so the committed files equal the served bytes
+  (checked live by the M3a acceptance test).
+- The shapes are a contract for consumers: Lakeloom publishes them and does not validate lake
+  data itself. The M3a acceptance test builds instance data from the four fixture Delta tables
+  (one node per row, columns mapped through the mapper's attribute naming to the model's
+  `rdfs:label`s), and the published shapes accept it with `pyshacl`; one broken `orders` row
+  (a non-numeric `total_amount`) fails on exactly that focus node.
+- The context gives property terms the key `<Class>.<attribute>` (for example
+  `Customer.customer_id`); a short alias (`email`) exists only when the attribute name is unique
+  in the model, so a JSON record of a table whose columns repeat elsewhere uses the qualified
+  keys.
+
+### Known limits
+
+- Units (`qudt:unit`) are not constraints, and shapes are open; a closed-shape option is a
+  follow-up.
+- Some modelling forms are simplified: non-literal `owl:oneOf` members are dropped (the `sh:in`
+  list is narrower), a qualified cardinality ignores `owl:onClass` / `owl:onDataRange`, and a
+  relation whose range is not a model class (`owl:Thing`, `skos:Concept`) still becomes
+  `sh:class`. When two `owl:oneOf` lists have the same lexical values with different datatypes
+  or languages, the one used depends on iteration order.
+- An attribute whose datatype has no OWL 2 equivalent (such as `xsd:date`) is stored with the
+  range `rdfs:Literal` (M2b), so its shape has no `sh:datatype` and `validate_model` reports it
+  as `untyped_attribute`.
+- The merged model graph types the OpenMetadata vocabulary classes (`skos:Concept`,
+  `skos:ConceptScheme`, `om:Glossary`, `om:GlossaryTerm`) as classes, so every model gets node
+  shapes for them and `validate_model` warns that they are isolated and undefined.
+- Context keys that contain `:` or percent-encoded characters are kept as they are; strict
+  JSON-LD processors may treat a `:` key as a compact IRI. Alias uniqueness counts only the
+  properties that received a term.
+- `validate_model` reports a concept linked only to external parents or restriction blank
+  nodes as isolated, and its messages carry the untrusted label text in the structured output
+  (the Markdown quotes it).
+- Shapes turtle is re-serialised per request, and an invalidation during a build can pair a new
+  graph with the previous shapes counts in one report. A Git snapshot reads its five exports and
+  the model version in separate calls, so a model change in between can mix states.

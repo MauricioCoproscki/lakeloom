@@ -236,7 +236,7 @@ the fixture registrations; re-seed them with
 ### Semantic tools
 
 The semantic read path serves the business vocabulary kept in OpenMetadata (one glossary is one
-model; its `slug` is the glossary name). All seven tools need scope `lakeloom:read` and are
+model; its `slug` is the glossary name). All eight tools need scope `lakeloom:read` and are
 read-only.
 
 | Tool | What it does |
@@ -252,6 +252,7 @@ one concept across the models resolves to it; several matches give `validation_e
 the candidate FQNs, none gives `not_found` (use `find_concepts`).
 | `get_asset_context` | Everything known about an asset: description, owners, concepts per column, related assets, lineage. |
 | `export_model` | The model as Turtle, RDF/XML (OWL), N-Triples, JSON-LD or SKOS, byte-identical for the same model state. |
+| `validate_model` | A structural check of the model: errors (duplicate labels, hierarchy cycles, properties whose domain is not a concept), warnings (relations to outside concepts, isolated or undefined concepts, untyped attributes) and the count of generated SHACL shapes. |
 
 `get_asset_context` takes the asset in any of three forms: an OpenMetadata FQN
 (`lakeloom_fixture.retail.sales.orders`), a Unity Catalog name (`retail.sales.orders`) or the
@@ -261,6 +262,20 @@ or `jsonld`. Every response carries a `token_estimate` (about one token per four
 `max_tokens` cuts the content at section (or column) boundaries and sets `truncated: true`.
 Descriptions and definitions come from OpenMetadata and the lake: they are shown as quoted
 blocks and flagged untrusted. An `export_model` result above 8 MiB is refused; use the CLI.
+
+`validate_model` returns Markdown plus the structured report (`model`, `conforms`, `counts`,
+`issues`, `truncated`); `conforms` is false only when an error exists, and at most 200 issues are
+listed. A model fresh from `propose_from_scan` conforms with warnings (for example
+`untyped_attribute` for a `date` column, whose OpenMetadata range is `rdfs:Literal`).
+
+**Shapes and JSON-LD context (ADR 0014).** Every model also publishes generated SHACL shapes
+(`shapes.ttl`: one `sh:NodeShape` per class with `sh:targetClass`, one property shape per
+attribute or relation with `sh:datatype`, `sh:class`, `sh:in` from enumerations and
+`sh:minCount`/`sh:maxCount` from identifiers and cardinality restrictions; open shapes, units not
+constrained) and a full JSON-LD `@context` (one term per class and per property, keyed
+`<Class>.<attribute>` and typed by datatype, plus a short alias such as `email` when the name is
+unique in the model). Lakeloom does not validate lake data itself: consumers run the shapes, for
+example `pyshacl -s shapes.ttl data.ttl`, and use the context to read JSON records as RDF.
 
 Models, OpenMetadata tables and realizing-asset lists are cached for
 `LAKELOOM_MODEL_CACHE_TTL_SECONDS` (default 60 s; `0` disables the cache). A change made directly
@@ -274,6 +289,7 @@ lakeloom models
 lakeloom concept Customer                       # or an FQN or IRI
 lakeloom context lakeloom_fixture.retail.sales.orders --format md --max-tokens 2000
 lakeloom export retail --format turtle --out retail.ttl
+lakeloom validate retail                        # exit code 1 when the model does not conform
 ```
 
 ### Proposals
@@ -413,7 +429,8 @@ becomes one commit in the ontology repository (ADR 0013). OpenMetadata stays the
 truth: Git is a published copy, and a Git problem never fails or undoes an approval.
 
 - **What is committed.** `ontologies/<slug>/ontology.ttl`, `ontology.jsonld` and
-  `ontology.owl` (the same deterministic bytes as `export_model`), `ontologies/<slug>/manifest.yaml`
+  `ontology.owl` (the same deterministic bytes as `export_model`), `shapes.ttl` and
+  `context.jsonld` (the same bytes as the HTTP API), `ontologies/<slug>/manifest.yaml`
   (model, glossary, base IRI, versions, source tables), one line appended to
   `provenance/<slug>.jsonl`, and a regenerated root `README.md`. An empty repository first gets
   the commit `chore: initialise ontology repository`.
@@ -472,8 +489,8 @@ truth: Git is a published copy, and a Git problem never fails or undoes an appro
   Gitea admin's password as token (DEV ONLY); the throwaway model `retail_m2c_pr` uses
   `pull_request` mode (`deploy/compose/lakeloom-sources.yaml`). The contract tests delete their
   models from OpenMetadata, close their pull requests and delete their branches, but the
-  direct commits of their throwaway models (`ontologies/retail_m2c/`) stay in the dev
-  repository's history.
+  direct commits of their throwaway models (`ontologies/retail_m2c/`, `ontologies/retail_m3a/`)
+  stay in the dev repository's history.
 
 ### Surfaces overview
 
@@ -484,6 +501,8 @@ truth: Git is a published copy, and a Git problem never fails or undoes an appro
 | Versions | | | `GET /v1/models/{slug}/versions`, `GET /v1/models/{slug}/versions/{version}` |
 | Ontology export | `export_model` | `lakeloom://models/{slug}/ontology.{ttl,jsonld,owl,nt}` | `GET /v1/models/{slug}` (`Accept`) |
 | JSON-LD context | | `lakeloom://models/{slug}/context.jsonld` | `GET /v1/models/{slug}/context.jsonld` |
+| SHACL shapes | | `lakeloom://models/{slug}/shapes.ttl` | `GET /v1/models/{slug}/shapes` (`Accept`) |
+| Model validation | `validate_model` | | none (CLI `lakeloom validate`) |
 | Concept lookup | `explain_concept`, `find_concepts` | | `GET /v1/concepts/{concept}` (IRI, FQN, id or name, percent-encoded) |
 | Asset context | `get_asset_context` | `lakeloom://assets/{fqn}/context.md` | `GET /v1/assets/{fqn}/context` |
 
@@ -499,14 +518,14 @@ regenerate with `uv run python scripts/gen_openapi.py`).
 | `/v1/models` (`cursor`, `limit` 1-200) | `application/json` |
 | `/v1/models/{slug}`, `/v1/models/{slug}/versions/{version}` | `text/turtle`, `application/ld+json`, `application/rdf+xml`, `application/n-triples` |
 | `/v1/models/{slug}/versions` | `application/json` |
-| `/v1/models/{slug}/context.jsonld` | `application/ld+json` (minimal context; the full one arrives in M3) |
+| `/v1/models/{slug}/shapes` | `text/turtle`, `application/ld+json`, `application/n-triples` |
+| `/v1/models/{slug}/context.jsonld` | `application/ld+json` (the full context) |
 | `/v1/concepts/{iri-or-fqn-or-id-or-name}` | `text/markdown`, `application/json` |
 | `/v1/assets/{fqn}/context` (`max_tokens`) | `text/markdown`, `application/json`, `application/ld+json` |
 
 Pick the representation with `Accept` (q-values are honoured; no `Accept` or `*/*` gives the
 default; an unsupported type gives `406` listing the supported ones). IRIs and FQNs in paths may be
-percent-encoded. Only `latest` exists until releases arrive in M3 (any other version is `404`);
-`shapes.ttl` is also M3.
+percent-encoded. Only `latest` exists until releases arrive in M3b (any other version is `404`).
 
 Every `200` carries a strong `ETag` (`"sha256:<hex of the body>"`), `Last-Modified` (the
 OpenMetadata `updatedAt` of the glossary or table, never earlier than the model load), a `Link`
@@ -524,12 +543,13 @@ and readable with the `lakeloom:read` scope (`forbidden` without it):
 | --- | --- |
 | `lakeloom://models` | `application/json`, the model list |
 | `lakeloom://models/{slug}/ontology.{ext}` | `ttl` `text/turtle`, `jsonld` `application/ld+json`, `owl` `application/rdf+xml`, `nt` `application/n-triples` |
-| `lakeloom://models/{slug}/context.jsonld` | `application/ld+json`, the minimal context (full one in M3) |
+| `lakeloom://models/{slug}/shapes.ttl` | `text/turtle`, the SHACL shapes |
+| `lakeloom://models/{slug}/context.jsonld` | `application/ld+json`, the full JSON-LD context |
 | `lakeloom://assets/{fqn}/context.md` | `text/markdown`; percent-encode the table FQN |
 
-`resources/list` names `lakeloom://models` and, for up to 100 models, their ontology and context
-URIs; `resources/templates/list` gives the parameterised forms. Append `?version=latest` to pin
-(any other version is `not_found` until releases arrive in M3; `shapes.ttl` is also M3). Errors are
+`resources/list` names `lakeloom://models` and, for up to 100 models, their ontology, shapes and
+context URIs; `resources/templates/list` gives the parameterised forms. Append `?version=latest`
+to pin (any other version is `not_found` until releases arrive in M3b). Errors are
 MCP errors whose `data` is `{"error": {"code", "message", "hint"}}`: `not_found` and
 `validation_error` (for example an unknown `ext`, which lists `ttl, jsonld, owl, nt`) use the
 invalid-params code, the rest the internal-error code.

@@ -21,7 +21,8 @@ yet (M2/M3).
   headers select the route default and never fail; `None` means nothing offered is acceptable
   (406 with the supported list). Defaults per route: models and versions `text/turtle`;
   concepts and asset context `text/markdown`; lists `application/json`; `context.jsonld`
-  `application/ld+json`.
+  `application/ld+json`; `shapes` (M3a) `text/turtle`, also `application/ld+json` and
+  `application/n-triples`.
 - **ETag.** Strong, `"sha256:<hex of body>"`. `If-None-Match` handles `*`, comma lists and weak
   (`W/`) validators with weak comparison, and answers 304 with the same ETag. Bodies are
   deterministic (canonical RDF serialisation, sorted-key JSON), so equal content gives an
@@ -48,6 +49,12 @@ yet (M2/M3).
 - **Model context.** `context.jsonld` proper (FR-PUB-05) is M3. M1c serves the minimal
   `@context` already used by the asset JSON-LD (`@vocab` = the model base IRI, the model
   prefixes, `dcterms`, `skos`), built by the single function `minimal_jsonld_context`.
+  *Superseded in M3a (ADR 0014):* `GET /v1/models/{slug}/context.jsonld` and
+  `lakeloom://models/{slug}/context.jsonld` serve the full context (one term per class and per
+  property, typed, plus unique short aliases) that starts with the minimal entries.
+- **Shapes (M3a, ADR 0014).** `GET /v1/models/{slug}/shapes` and
+  `lakeloom://models/{slug}/shapes.ttl` serve the model's SHACL shapes with the same ETag,
+  Last-Modified and Link rules as the ontology; only `latest` exists.
 - **Concept names.** A plain name resolves when the best-ranked tier of matches (exact name
   1.0 > synonym 0.95 > local name 0.9) holds exactly one concept; otherwise a
   `validation_error` lists the candidates. The HTTP route and the resources rely on this.

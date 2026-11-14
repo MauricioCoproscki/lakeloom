@@ -125,6 +125,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Contract tests: the publisher against throwaway Gitea repositories, and the M2c acceptance
     test (an approval by alice is committed with all trailers, the export equals the committed
     Turtle byte for byte, pull-request mode opens a PR).
+- M3a shapes, JSON-LD context and validation (ADR 0014):
+  - Generated SHACL shapes per model: a node shape per class, property shapes with
+    `sh:datatype`, `sh:class`, `sh:in` and counts from identifiers and cardinality
+    restrictions, a class-specific shape when a restriction applies (FR-PUB-04). Served at
+    `GET /v1/models/{slug}/shapes` (Turtle, JSON-LD, N-Triples) and as the MCP resource
+    `lakeloom://models/{slug}/shapes.ttl`.
+  - The full JSON-LD `@context` of a model (a typed term per class and per property, unique
+    short aliases) at `GET /v1/models/{slug}/context.jsonld` and
+    `lakeloom://models/{slug}/context.jsonld`, also embedded in asset JSON-LD (FR-PUB-05,
+    FR-CTX-02).
+  - MCP tool `validate_model` and CLI command `lakeloom validate` (exit code 1 when the model
+    does not conform): duplicate labels, hierarchy cycles, dangling domains, external ranges,
+    isolated or undefined concepts, untyped attributes, shapes counts.
+  - Git publications also commit `ontologies/<slug>/shapes.ttl` and `context.jsonld`, the same
+    bytes as the HTTP API (FR-GIT-02, FR-GIT-03).
+  - `pyshacl` as a dev dependency; the M3a acceptance test validates the fixture lake's data
+    against a throwaway model's published shapes and reads a JSON record through its context.
 
 ### Fixed
 
