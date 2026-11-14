@@ -20,8 +20,6 @@ from lakeloom.gitstore.layout import (
     provenance_record,
 )
 from lakeloom.om.client import OMClient
-from lakeloom.publish.artifacts import context_bytes
-from lakeloom.publish.shacl_gen import shapes_turtle
 
 __all__ = ["base_snapshot", "fill_exports", "take_snapshot"]
 
@@ -38,8 +36,8 @@ async def fill_exports(models: ModelService, om: OMClient, snapshot: Snapshot) -
     ttl = await models.export(slug, "turtle")
     jsonld = await models.export(slug, "jsonld")
     owl = await models.export(slug, "rdfxml")
-    shapes = await asyncio.to_thread(shapes_turtle, await models.shapes(slug), info)
-    context = context_bytes(await models.jsonld_context(slug))
+    shapes = await models.shapes_bytes(slug, "text/turtle")  # cached: same bytes as HTTP
+    context = await models.jsonld_context_bytes(slug)
     version = await models.version(slug)
     caps = await om.get_capabilities()
     return snapshot.model_copy(

@@ -6,7 +6,6 @@ the time the model graph was loaded) and ``Link`` values pointing at the OpenMet
 artefact was built from (``rel="via"``; Git links arrive with M2, ADR 0010).
 """
 
-import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
@@ -27,8 +26,7 @@ from lakeloom.core.models import ModelInfo, ModelService
 from lakeloom.errors import LakeloomError
 from lakeloom.om.client import OMClient
 from lakeloom.publish.negotiation import FORMAT_BY_MEDIA, MediaType
-from lakeloom.publish.shacl_gen import SH, shapes_turtle
-from lakeloom.rdf.canonical import serialize
+from lakeloom.publish.shacl_gen import ShapesMedia
 from lakeloom.sources.base import LakeSource
 
 __all__ = [
@@ -166,28 +164,23 @@ async def model_context_artifact(
     """The model's full JSON-LD ``@context`` (FR-PUB-05)."""
     check_version(version)
     info = await models.get_model(slug)
-    context = await models.jsonld_context(slug)  # also fails like the other artefacts
+    body = await models.jsonld_context_bytes(slug)  # also fails like the other artefacts
     modified, links = await _model_stamp(models, info)
-    return _make(context_bytes(context), "application/ld+json", modified, links)
+    return _make(body, "application/ld+json", modified, links)
 
 
 async def shapes_artifact(
     models: ModelService,
     slug: str,
-    media: Literal["text/turtle", "application/ld+json", "application/n-triples"],
+    media: ShapesMedia,
     *,
     version: str | None,
 ) -> Artifact:
-    """The model's SHACL shapes (FR-PUB-04); turtle is the bytes the Git file carries."""
+    """The model's SHACL shapes (FR-PUB-04); turtle is the bytes the Git file carries.
+    The bytes are serialised once per model version and media type."""
     check_version(version)
     info = await models.get_model(slug)
-    shapes = await models.shapes(slug)
-    if media == "text/turtle":
-        body = await asyncio.to_thread(shapes_turtle, shapes, info)
-    else:
-        fmt = "jsonld" if media == "application/ld+json" else "ntriples"
-        prefixes = {"sh": str(SH), **info.prefixes}
-        body = await asyncio.to_thread(serialize, shapes, fmt, prefixes=prefixes)
+    body = await models.shapes_bytes(slug, media)
     modified, links = await _model_stamp(models, info)
     return _make(body, media, modified, links)
 

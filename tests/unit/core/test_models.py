@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from typing import Any
 
 import pytest
 from rdflib import RDF, RDFS, Graph, URIRef
@@ -491,3 +492,64 @@ async def test_fill_exports_adds_shapes_and_context() -> None:
     assert filled.exports["ontology.ttl"].encode() == await svc.export("retail", "turtle")
     again = await fill_exports(svc, FakeOMClient(), base)  # pyright: ignore[reportArgumentType]
     assert again.exports == filled.exports
+
+
+@pytest.mark.parametrize("media", ["text/turtle", "application/ld+json", "application/n-triples"])
+async def test_shapes_artifact_serialises_once_per_version(
+    monkeypatch: pytest.MonkeyPatch, media: str
+) -> None:
+    import lakeloom.publish.shacl_gen as sg
+    from lakeloom.publish.artifacts import shapes_artifact
+
+    calls: list[str] = []
+
+    def counting(real: Any) -> Any:
+        def wrapper(*a: Any, **k: Any) -> Any:
+            calls.append(media)
+            return real(*a, **k)
+
+        return wrapper
+
+    monkeypatch.setattr(sg, "serialize", counting(sg.serialize))
+    svc, _, _ = make()
+    first = await shapes_artifact(svc, "retail", media, version=None)  # pyright: ignore[reportArgumentType]
+    second = await shapes_artifact(svc, "retail", media, version=None)  # pyright: ignore[reportArgumentType]
+    assert first.body == second.body and first.etag == second.etag
+    assert len(calls) == 1
+    svc.invalidate("retail")
+    third = await shapes_artifact(svc, "retail", media, version=None)  # pyright: ignore[reportArgumentType]
+    assert len(calls) == 2
+    if media == "text/turtle":  # the Git file's bytes
+        info = await svc.get_model("retail")
+        assert third.body == sg.shapes_turtle(await svc.shapes("retail"), info)
+
+
+async def test_validation_pairs_graph_and_shapes_of_one_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lakeloom.core.validation as val
+    import lakeloom.publish.shacl_gen as sg
+
+    svc, _, _ = make()
+    built_from: list[Graph] = []
+    real_build = sg.build_shapes
+
+    def build(graph: Graph, info: Any) -> Graph:
+        built_from.append(graph)
+        out = real_build(graph, info)
+        if len(built_from) == 1:
+            svc.invalidate("retail")  # a model change lands while the shapes are built
+        return out
+
+    seen: list[tuple[Graph, Graph]] = []
+    real_validate = val.validate_model
+
+    def validate(graph: Graph, info: Any, shapes: Graph) -> Any:
+        seen.append((graph, shapes))
+        return real_validate(graph, info, shapes)
+
+    monkeypatch.setattr(sg, "build_shapes", build)
+    monkeypatch.setattr(val, "validate_model", validate)
+    await svc.validation("retail")
+    assert len(seen) == 1
+    assert seen[0][0] is built_from[0]  # graph and shapes come from the same entry

@@ -31,6 +31,7 @@ from lakeloom.untrusted import UntrustedText
 
 if TYPE_CHECKING:
     from lakeloom.core.validation import ValidationReport
+    from lakeloom.publish.shacl_gen import ShapesMedia
 
 __all__ = ["ModelInfo", "ModelService"]
 
@@ -239,7 +240,12 @@ class ModelService:
         """Like :meth:`derived`, but ``build`` runs in a worker thread (CPU-bound work off the
         event loop). The in-flight task is cached on the entry, so concurrent callers share one
         build; a failed build is not cached."""
-        entry = await self._load(slug)
+        return await self._on_entry(await self._load(slug), key, build)
+
+    @staticmethod
+    async def _on_entry[T](entry: _Entry, key: str, build: Callable[[_Entry], T]) -> T:
+        """:meth:`_derived_threaded` on a given ``entry``: values derived from one another
+        (shapes, their bytes, the validation report) all come from the same graph."""
         task = entry.derived.get(key)
         if task is None:
             task = asyncio.ensure_future(asyncio.to_thread(build, entry))
@@ -251,36 +257,67 @@ class ModelService:
                 del entry.derived[key]
             raise
 
-    async def shapes(self, slug: str) -> Graph:
-        """The model's SHACL shapes (FR-PUB-04), built once per graph version."""
-
-        def build(entry: _Entry) -> Graph:
+    async def _shapes_of(self, entry: _Entry) -> Graph:
+        def build(e: _Entry) -> Graph:
             from lakeloom.publish.shacl_gen import build_shapes
 
-            return build_shapes(entry.graph, entry.info)
+            return build_shapes(e.graph, e.info)
 
-        return await self._derived_threaded(slug, "shapes", build)
+        return await self._on_entry(entry, "shapes", build)
+
+    async def shapes(self, slug: str) -> Graph:
+        """The model's SHACL shapes (FR-PUB-04), built once per graph version."""
+        return await self._shapes_of(await self._load(slug))
+
+    async def shapes_bytes(self, slug: str, media: "ShapesMedia") -> bytes:
+        """The shapes serialised as ``media``, once per graph version (FR-PUB-04); the turtle
+        is the ``shapes.ttl`` Git file (:func:`~lakeloom.publish.shacl_gen.shapes_turtle`)."""
+        entry = await self._load(slug)
+        shapes = await self._shapes_of(entry)
+
+        def build(e: _Entry) -> bytes:
+            from lakeloom.publish.shacl_gen import shapes_bytes
+
+            return shapes_bytes(shapes, e.info, media)
+
+        return await self._on_entry(entry, f"shapes:{media}", build)
+
+    async def _context_of(self, entry: _Entry) -> dict[str, Any]:
+        def build(e: _Entry) -> dict[str, Any]:
+            from lakeloom.publish.jsonld_context import build_context
+
+            return build_context(e.graph, e.info)
+
+        return await self._on_entry(entry, "jsonld_context", build)
 
     async def jsonld_context(self, slug: str) -> dict[str, Any]:
         """The model's full JSON-LD ``@context`` object (FR-PUB-05), built once per version."""
+        return await self._context_of(await self._load(slug))
 
-        def build(entry: _Entry) -> dict[str, Any]:
-            from lakeloom.publish.jsonld_context import build_context
+    async def jsonld_context_bytes(self, slug: str) -> bytes:
+        """The ``context.jsonld`` document (HTTP body and Git file), once per version."""
+        entry = await self._load(slug)
+        context = await self._context_of(entry)
 
-            return build_context(entry.graph, entry.info)
+        def build(_: _Entry) -> bytes:
+            from lakeloom.publish.artifacts import context_bytes
 
-        return await self._derived_threaded(slug, "jsonld_context", build)
+            return context_bytes(context)
+
+        return await self._on_entry(entry, "jsonld_context:bytes", build)
 
     async def validation(self, slug: str) -> "ValidationReport":
-        """The model's validation report, built once per version from graph and shapes."""
-        shapes = await self.shapes(slug)
+        """The model's validation report, built once per version from one entry's graph and
+        shapes (an invalidation mid-build cannot pair old shapes with a new graph)."""
+        entry = await self._load(slug)
+        shapes = await self._shapes_of(entry)
 
-        def build(entry: _Entry) -> "ValidationReport":
+        def build(e: _Entry) -> "ValidationReport":
             from lakeloom.core.validation import validate_model
 
-            return validate_model(entry.graph, entry.info, shapes)
+            return validate_model(e.graph, e.info, shapes)
 
-        return await self._derived_threaded(slug, "validation", build)
+        return await self._on_entry(entry, "validation", build)
 
     async def _load(self, slug: str) -> _Entry:
         cached = self._fresh(slug)

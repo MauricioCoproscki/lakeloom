@@ -7,6 +7,7 @@ Shapes are open (no ``sh:closed``); units are not constrained.
 """
 
 from collections.abc import Iterable
+from typing import Literal as Lit
 from urllib.parse import quote
 
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
@@ -20,9 +21,11 @@ from lakeloom.rdf.canonical import serialize
 __all__ = [
     "SH",
     "VOCABULARY_NAMESPACES",
+    "ShapesMedia",
     "build_shapes",
     "is_vocabulary",
     "model_classes",
+    "shapes_bytes",
     "shapes_turtle",
 ]
 
@@ -214,3 +217,14 @@ def build_shapes(graph: Graph, info: ModelInfo) -> Graph:
 def shapes_turtle(shapes: Graph, info: ModelInfo) -> bytes:
     """Canonical turtle of ``shapes`` (prefix ``sh`` plus the model prefixes), for HTTP and Git."""
     return serialize(shapes, "turtle", prefixes={"sh": str(SH), **info.prefixes})
+
+
+type ShapesMedia = Lit["text/turtle", "application/ld+json", "application/n-triples"]
+
+
+def shapes_bytes(shapes: Graph, info: ModelInfo, media: ShapesMedia) -> bytes:
+    """``shapes`` serialised as ``media``; turtle is :func:`shapes_turtle` (the Git file)."""
+    if media == "text/turtle":
+        return shapes_turtle(shapes, info)
+    fmt = "jsonld" if media == "application/ld+json" else "ntriples"
+    return serialize(shapes, fmt, prefixes={"sh": str(SH), **info.prefixes})
