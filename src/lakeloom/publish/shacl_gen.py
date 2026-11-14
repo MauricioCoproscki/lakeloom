@@ -25,6 +25,7 @@ __all__ = [
     "build_shapes",
     "is_vocabulary",
     "model_classes",
+    "model_properties",
     "shapes_bytes",
     "shapes_turtle",
 ]
@@ -63,6 +64,18 @@ def model_classes(graph: Graph) -> list[URIRef]:
     found = {
         s
         for t in (OWL.Class, SKOS.Concept)
+        for s in graph.subjects(RDF.type, t)
+        if isinstance(s, URIRef) and not is_vocabulary(s)
+    }
+    return sorted(found)
+
+
+def model_properties(graph: Graph) -> list[URIRef]:
+    """Sorted IRIs typed ``owl:DatatypeProperty`` or ``owl:ObjectProperty``; blank nodes and
+    vocabulary properties (``VOCABULARY_NAMESPACES``) excluded."""
+    found = {
+        s
+        for t in (OWL.DatatypeProperty, OWL.ObjectProperty)
         for s in graph.subjects(RDF.type, t)
         if isinstance(s, URIRef) and not is_vocabulary(s)
     }
@@ -187,15 +200,7 @@ def build_shapes(graph: Graph, info: ModelInfo) -> Graph:
             shapes.add((shape, SH.maxCount, Literal(hi)))
 
     restricted = {c: _restriction_counts(graph, c) for c in classes}
-    properties = sorted(
-        {
-            s
-            for t in (OWL.DatatypeProperty, OWL.ObjectProperty)
-            for s in graph.subjects(RDF.type, t)
-            if isinstance(s, URIRef)
-        }
-    )
-    for p in properties:
+    for p in model_properties(graph):
         domains = sorted(
             d for d in graph.objects(p, RDFS.domain) if isinstance(d, URIRef) and d in class_set
         )

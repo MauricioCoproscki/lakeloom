@@ -359,3 +359,28 @@ def test_vocabulary_classes_get_no_node_shape() -> None:
     assert set(s.subjects(RDF.type, SH.NodeShape)) == {u("A/shape")}
     for v in VOCAB:
         assert not set(s.subjects(SH.targetClass, v)), v
+
+
+VOCAB_PROPS = (
+    (SKOS.related, OWL.ObjectProperty, "related"),
+    (URIRef(OM + "fullyQualifiedName"), OWL.DatatypeProperty, "fullyQualifiedName"),
+)
+
+
+def test_vocabulary_properties_are_ignored() -> None:
+    from lakeloom.core.validation import validate_model
+    from lakeloom.publish.jsonld_context import build_context
+
+    g = build_graph([cls("A")], [data("A.p", ["A"], str(XSD.string))], [])
+    for prop, kind, _ in VOCAB_PROPS:
+        g.add((prop, RDF.type, kind))
+        g.add((prop, RDFS.domain, u("A")))
+        g.add((prop, RDFS.domain, URIRef("http://elsewhere/X")))  # would be dangling
+    s = build_shapes(g, INFO)
+    assert set(s.objects(None, SH.path)) == {u("A.p")}
+    context = build_context(g, INFO)
+    report = validate_model(g, INFO, s)
+    for prop, _, key in VOCAB_PROPS:
+        assert key not in context, key
+        assert all(i.subject != str(prop) for i in report.issues), prop
+    assert report.counts["properties"] == 1

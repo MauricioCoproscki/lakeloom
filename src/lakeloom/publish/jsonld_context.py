@@ -12,11 +12,10 @@ from typing import Any
 
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD, split_uri
-from rdflib.term import Node
 
 from lakeloom.core.context import minimal_jsonld_context
 from lakeloom.core.models import ModelInfo
-from lakeloom.publish.shacl_gen import model_classes
+from lakeloom.publish.shacl_gen import model_classes, model_properties
 
 __all__ = ["build_context"]
 
@@ -46,13 +45,6 @@ def _property_term(graph: Graph, prop: URIRef) -> dict[str, str]:
     return term
 
 
-def _properties(graph: Graph) -> list[URIRef]:
-    found: set[Node] = set()
-    for kind in (OWL.DatatypeProperty, OWL.ObjectProperty):
-        found.update(s for s in graph.subjects(RDF.type, kind) if isinstance(s, URIRef))
-    return sorted(p for p in found if isinstance(p, URIRef))
-
-
 def build_context(graph: Graph, info: ModelInfo) -> dict[str, Any]:
     """The model's full JSON-LD context (the value of ``@context``)."""
     context: dict[str, Any] = {"@version": 1.1}
@@ -70,7 +62,7 @@ def build_context(graph: Graph, info: ModelInfo) -> dict[str, Any]:
         add(_key(cls, info.base_iri), str(cls))
 
     terms: dict[str, dict[str, str]] = {}
-    for prop in _properties(graph):
+    for prop in model_properties(graph):
         key = _key(prop, info.base_iri)
         term = _property_term(graph, prop)
         if add(key, term) and key:

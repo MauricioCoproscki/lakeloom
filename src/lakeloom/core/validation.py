@@ -19,7 +19,7 @@ from rdflib import Literal as RdfLiteral
 from rdflib.namespace import OWL, RDF, RDFS, SKOS
 
 from lakeloom.core.models import ModelInfo
-from lakeloom.publish.shacl_gen import SH, model_classes
+from lakeloom.publish.shacl_gen import SH, model_classes, model_properties
 from lakeloom.untrusted import code_span, single_line
 
 __all__ = [
@@ -123,14 +123,7 @@ def validate_model(graph: Graph, info: ModelInfo, shapes: Graph) -> ValidationRe
 
     concepts = model_classes(graph)
     concept_set = set(concepts)
-    props = sorted(
-        {
-            s
-            for t in (OWL.DatatypeProperty, OWL.ObjectProperty)
-            for s in graph.subjects(RDF.type, t)
-            if isinstance(s, URIRef)
-        }
-    )
+    props = model_properties(graph)
 
     # duplicate_label: same prefLabel, case-folded, same language
     by_label: dict[tuple[str, str], set[URIRef]] = defaultdict(set)
