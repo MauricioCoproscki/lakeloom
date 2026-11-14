@@ -1,9 +1,10 @@
 """The snapshot an applied proposal is published from (ADR 0013 § Snapshot at apply).
 
-:func:`take_snapshot` runs right after ``applied`` is stored: the commit message and the
-provenance record are always built; the three exports, the model version and the OM version
-come from OpenMetadata (bot client, reads only) and are left empty when that fails, so the
-publisher exports at publish time through :func:`fill_exports` (its ``exporter``).
+:func:`base_snapshot` (no OpenMetadata read: commit message, provenance record, source tables)
+is what the publication row is stored with right after ``applied``. :func:`take_snapshot` then
+adds the three exports, the model version and the OM version from OpenMetadata (bot client,
+reads only); they are left empty when that fails, so the publisher exports at publish time
+through :func:`fill_exports` (its ``exporter``).
 """
 
 import asyncio
@@ -20,7 +21,7 @@ from lakeloom.gitstore.layout import (
 )
 from lakeloom.om.client import OMClient
 
-__all__ = ["fill_exports", "take_snapshot"]
+__all__ = ["base_snapshot", "fill_exports", "take_snapshot"]
 
 _log = logging.getLogger(__name__)
 
@@ -54,6 +55,33 @@ async def fill_exports(models: ModelService, om: OMClient, snapshot: Snapshot) -
     )
 
 
+def base_snapshot(
+    p: Proposal,
+    approval: ReviewRecord,
+    publication_id: str,
+    *,
+    info: ModelInfo | None = None,
+) -> Snapshot:
+    """The snapshot of applied ``p`` without anything read from OM (``exports`` is ``None``).
+
+    ``info`` (the model as the approve saw it) fills the manifest fields.
+    """
+    changes = applied_change_sets(p)
+    return Snapshot(
+        model=p.model,
+        glossary_id=info.glossary_id if info is not None else "",
+        glossary_fqn=info.fqn if info is not None else p.model,
+        base_iri=info.base_iri if info is not None else None,
+        prefixes=dict(info.prefixes) if info is not None else {},
+        model_version="",
+        last_change_set=changes[-1] if changes else None,
+        proposal_id=p.id,
+        source_tables=list(p.provenance.tables),
+        provenance=provenance_record(p, approval, publication_id),
+        message=build_message(p, approval, publication_id),
+    )
+
+
 async def take_snapshot(
     models: ModelService,
     om: OMClient,
@@ -67,20 +95,7 @@ async def take_snapshot(
 
     ``info`` (the model as the approve saw it) fills the manifest fields when OM is gone.
     """
-    changes = applied_change_sets(p)
-    base = Snapshot(
-        model=p.model,
-        glossary_id=info.glossary_id if info is not None else "",
-        glossary_fqn=info.fqn if info is not None else p.model,
-        base_iri=info.base_iri if info is not None else None,
-        prefixes=dict(info.prefixes) if info is not None else {},
-        model_version="",
-        last_change_set=changes[-1] if changes else None,
-        proposal_id=p.id,
-        source_tables=list(p.provenance.tables),
-        provenance=provenance_record(p, approval, publication_id),
-        message=build_message(p, approval, publication_id),
-    )
+    base = base_snapshot(p, approval, publication_id, info=info)
     try:
         return await fill_exports(models, om, base)
     except asyncio.CancelledError:

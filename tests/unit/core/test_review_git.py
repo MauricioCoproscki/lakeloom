@@ -27,6 +27,7 @@ from lakeloom.core.model_policy import ModelPolicyEntry, git_mode_for
 from lakeloom.core.review import ReviewService
 from lakeloom.errors import LakeloomError
 from lakeloom.gitstore import GitRunner, WorkingCopy
+from lakeloom.gitstore.layout import Snapshot
 from lakeloom.gitstore.publisher import GitPublisher
 from lakeloom.om.client import OMUnavailable
 from lakeloom.om.models import OMCapabilities
@@ -34,6 +35,7 @@ from lakeloom.state.publications import Publication, PublicationRepository
 
 SECRET = b"s" * 32
 INTERNAL = "Git: queued (internal error); it is retried automatically"
+NOT_QUEUED = "Git: not queued (internal error); an operator must re-publish it"
 
 
 class FakePublisher:
@@ -50,6 +52,7 @@ class FakePublisher:
         self.processed = 0
         self.processing = asyncio.Event()
         self.fail_enqueue: Exception | None = None
+        self.fail_fill: Exception | None = None
 
     async def enqueue(self, pub: Publication) -> Publication:
         if self.fail_enqueue is not None:
@@ -57,6 +60,16 @@ class FakePublisher:
         self.events.append(f"enqueue:{pub.proposal_id}")
         self.rows[pub.proposal_id] = pub
         return pub
+
+    async def fill_snapshot(self, pub_id: str, snap: Snapshot) -> bool:
+        if self.fail_fill is not None:
+            raise self.fail_fill
+        for pid, pub in self.rows.items():
+            if pub.id == pub_id and pub.status == "pending" and pub.attempts == 0:
+                self.events.append(f"fill:{pid}")
+                self.rows[pid] = pub.model_copy(update={"payload": snap})
+                return True
+        return False
 
     async def process(self, *, now: datetime | None = None) -> list[Publication]:
         self.processing.set()
@@ -168,7 +181,11 @@ async def test_approve_enqueues_snapshot_and_publishes_inline(
     assert pub is not None and pub.status == "done" and pub.mode == "direct"
     assert pub.branch == "main" and pub.commit_sha
     snap = pub.payload
-    assert snap.exports is not None and snap.exports["ontology.ttl"]
+    assert snap.exports is None  # cleared once done; the commit holds them
+    assert _git("ls-tree", "--name-only", "main", "ontologies/shop/", cwd=bare).split() == [
+        f"ontologies/shop/{n}"
+        for n in ("manifest.yaml", "ontology.jsonld", "ontology.owl", "ontology.ttl")
+    ]
     assert snap.om_version == "1.12.0" and snap.model_version
     assert snap.glossary_id == "id-shop" and snap.proposal_id == p.id
     assert [t.fqn for t in snap.source_tables] == [t.fqn for t in p.provenance.tables]
@@ -187,13 +204,65 @@ async def test_git_failure_never_fails_approval(
     kit = with_git(ReviewKit(engine), fake)
     p = await kit.submitted()
 
+    with caplog.at_level("ERROR", logger="lakeloom.core.review_git"):
+        out = await kit.approve(p)
+
+    assert out.status == "applied"
+    assert git_warnings(out) == [NOT_QUEUED]  # no row exists: never "queued"
+    stored = await kit.repo.get(p.id)
+    assert stored.status == "applied" and git_warnings(stored) == [NOT_QUEUED]
+    assert any(r.levelname == "ERROR" and p.id in r.getMessage() for r in caplog.records)
+    assert "tok-secret" not in caplog.text and "git.example" not in caplog.text
+    assert fake.processed == 0
+
+
+async def test_row_is_queued_before_any_openmetadata_read(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakePublisher()
+    kit = with_git(ReviewKit(engine), fake)
+    p = await kit.submitted()
+    real_export, real_get = kit.models.export, kit.models.get_model
+
+    async def export(slug: str, fmt: Any) -> bytes:
+        fake.events.append(f"om:export:{fmt}")
+        return await real_export(slug, fmt)
+
+    async def get_model(slug: str, **kw: Any) -> Any:
+        fake.events.append("om:get_model")
+        return await real_get(slug, **kw)
+
+    monkeypatch.setattr(kit.models, "export", export)
+    monkeypatch.setattr(kit.models, "get_model", get_model)
+    reads_before = len(fake.events)
+
+    out = await kit.approve(p)
+
+    assert out.status == "applied" and git_warnings(out) == []
+    events = fake.events[reads_before:]
+    git_events = [e for e in events if not e.startswith("om:")]
+    first_read = next(i for i, e in enumerate(events) if e.startswith("om:export"))
+    assert events.index(f"enqueue:{p.id}") < first_read
+    assert git_events == [f"enqueue:{p.id}", f"fill:{p.id}"]
+    snap = fake.rows[p.id].payload
+    assert snap.exports is not None and snap.om_version == "1.12.0" and snap.model_version
+
+
+async def test_fill_failure_leaves_queued_row_without_exports(engine: AsyncEngine) -> None:
+    fake = FakePublisher()
+    fake.fail_fill = RuntimeError("db gone")
+    fake.outcome = {"status": "pending", "attempts": 1, "last_error": "export failed: down"}
+    kit = with_git(ReviewKit(engine), fake)
+    p = await kit.submitted()
+
     out = await kit.approve(p)
 
     assert out.status == "applied"
-    assert git_warnings(out) == [INTERNAL]
-    stored = await kit.repo.get(p.id)
-    assert stored.status == "applied" and git_warnings(stored) == [INTERNAL]
-    assert "tok-secret" not in caplog.text and "git.example" not in caplog.text
+    row = fake.rows[p.id]
+    assert row.status == "pending" and row.payload.exports is None
+    warnings = git_warnings(out)
+    assert any("exported again" in w for w in warnings), warnings
+    assert NOT_QUEUED not in warnings
 
 
 async def test_process_raising_is_internal_warning(engine: AsyncEngine) -> None:
@@ -224,8 +293,11 @@ async def test_export_failure_enqueues_snapshot_without_exports(
     out = await kit.approve(p)
 
     assert out.status == "applied"
-    snap = fake.rows[p.id].payload
+    row = fake.rows[p.id]
+    assert row.status == "pending"  # queued before the export, which then failed
+    snap = row.payload
     assert snap.exports is None and snap.om_version is None and snap.model_version == ""
+    assert fake.events[-1] == f"enqueue:{p.id}"  # no fill: there was nothing to store
     assert f"Lakeloom-Proposal: {p.id}" in snap.message
     assert snap.provenance["proposal_id"] == p.id
     warnings = git_warnings(out)
@@ -272,6 +344,7 @@ async def test_snapshots_enqueued_in_apply_order(
     engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = FakePublisher()
+    fake.outcome = {"status": "pending"}  # unattempted: the second fill is not pre-empted
     kit = with_git(ReviewKit(engine), fake)
     a = await kit.submitted(widened(1)[0])
     b = await kit.submitted(customers())
@@ -289,14 +362,16 @@ async def test_snapshots_enqueued_in_apply_order(
 
     assert [p.status for p in done] == ["applied", "applied"]
     ev = fake.events
-    assert len(ev) == 4
+    assert len(ev) == 6
     first = ev[0].split(":", 1)[1]
-    second = ev[2].split(":", 1)[1]
+    second = ev[3].split(":", 1)[1]
     assert ev == [
-        f"snapshot:{first}",
         f"enqueue:{first}",
-        f"snapshot:{second}",
+        f"snapshot:{first}",
+        f"fill:{first}",
         f"enqueue:{second}",
+        f"snapshot:{second}",
+        f"fill:{second}",
     ]
     assert {first, second} == {a.id, b.id}
 

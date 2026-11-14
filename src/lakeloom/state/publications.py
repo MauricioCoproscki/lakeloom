@@ -3,13 +3,16 @@
 One row per applied proposal that must reach Git. The :class:`~lakeloom.gitstore.layout.Snapshot`
 taken at apply is the JSON ``payload``; the columns hold the queue state. ``seq`` orders one
 repository's queue (``repo`` is the sha256 of the remote URL, so the URL itself, which may
-carry user info, is never stored).
+carry user info, is never stored). A ``done`` row keeps its payload without the exports (the
+publisher clears them). A payload that no longer validates is read as ``blocked`` with
+``last_error`` "invalid stored snapshot" (and stored so by :meth:`PublicationRepository.head`),
+so the queue stops visibly instead of failing on every tick.
 """
 
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import JSON, DateTime, Index, Integer, String, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -31,6 +34,7 @@ __all__ = [
 PublicationStatus = Literal["pending", "done", "blocked"]
 PublicationMode = Literal["direct", "pull_request"]
 STATUSES: tuple[PublicationStatus, ...] = ("pending", "done", "blocked")
+INVALID_SNAPSHOT = "invalid stored snapshot"
 _WIDTHS = {"last_error": 500, "branch": 255, "pr_url": 1024, "commit_sha": 64}
 
 
@@ -103,7 +107,30 @@ def _fill_state(row: PublicationRow, pub: Publication) -> None:
     row.payload = pub.payload.model_dump(mode="json")
 
 
+def _payload(row: PublicationRow) -> Snapshot | None:
+    """The stored snapshot, or ``None`` when it no longer validates."""
+    try:
+        return Snapshot.model_validate(row.payload)
+    except ValidationError:
+        return None
+
+
+def _placeholder(row: PublicationRow) -> Snapshot:
+    """Stands in for an invalid stored snapshot (it is never published)."""
+    return Snapshot(
+        model=row.model,
+        glossary_id="",
+        glossary_fqn=row.model,
+        model_version="",
+        proposal_id=row.proposal_id,
+        message="",
+    )
+
+
 def _from_row(row: PublicationRow) -> Publication:
+    """The publication of ``row``; an invalid stored snapshot makes it ``blocked``."""
+    snap = _payload(row)
+    invalid = snap is None
     return Publication(
         seq=row.seq,
         id=row.id,
@@ -111,16 +138,16 @@ def _from_row(row: PublicationRow) -> Publication:
         model=row.model,
         proposal_id=row.proposal_id,
         mode=row.mode,  # type: ignore[arg-type]
-        status=row.status,  # type: ignore[arg-type]
+        status="blocked" if invalid else row.status,  # type: ignore[arg-type]
         attempts=row.attempts,
         next_attempt_at=None if row.next_attempt_at is None else _utc(row.next_attempt_at),
-        last_error=row.last_error,
+        last_error=INVALID_SNAPSHOT if invalid else row.last_error,
         commit_sha=row.commit_sha,
         branch=row.branch,
         pr_url=row.pr_url,
         created_at=_utc(row.created_at),
         updated_at=_utc(row.updated_at),
-        payload=Snapshot.model_validate(row.payload),
+        payload=_placeholder(row) if snap is None else snap,
     )
 
 
@@ -152,16 +179,30 @@ class PublicationRepository:
         return _from_row(row)
 
     async def head(self, repo: str) -> Publication | None:
-        """The oldest publication of ``repo`` that is not done (pending or blocked)."""
+        """The oldest publication of ``repo`` that is not done (pending or blocked).
+
+        A head whose stored snapshot no longer validates is marked ``blocked`` with
+        ``last_error`` "invalid stored snapshot" (on the row too), so the queue stops visibly
+        instead of failing on every tick.
+        """
         stmt = (
             select(PublicationRow)
             .where(PublicationRow.repo == repo, PublicationRow.status != "done")
             .order_by(PublicationRow.seq)
             .limit(1)
         )
-        async with self._sessions() as session:
+        async with self._sessions() as session, session.begin():
             row = (await session.execute(stmt)).scalar_one_or_none()
-        return None if row is None else _from_row(row)
+            if row is None:
+                return None
+            pub = _from_row(row)
+            if _payload(row) is None and (
+                row.status != "blocked" or row.last_error != INVALID_SNAPSHOT
+            ):
+                row.status = "blocked"
+                row.last_error = INVALID_SNAPSHOT
+                row.next_attempt_at = None
+        return pub
 
     async def update(self, pub: Publication) -> None:
         """Store the queue state, result and payload of ``pub`` (``LookupError`` if unknown)."""
@@ -171,6 +212,26 @@ class PublicationRepository:
             if row is None:
                 raise LookupError(f"publication {pub.id!r} does not exist")
             _fill_state(row, pub)
+
+    async def fill_payload(self, pub_id: str, payload: Snapshot) -> bool:
+        """Replace the payload of a publication no worker has attempted yet.
+
+        Only a ``pending`` row with no attempt is changed (one atomic ``UPDATE``), so a row a
+        worker already published, failed or blocked keeps what the worker stored. Returns
+        whether the row was changed.
+        """
+        stmt = (
+            update(PublicationRow)
+            .where(
+                PublicationRow.id == pub_id,
+                PublicationRow.status == "pending",
+                PublicationRow.attempts == 0,
+            )
+            .values(payload=payload.model_dump(mode="json"))
+        )
+        async with self._sessions() as session, session.begin():
+            result = await session.execute(stmt)
+        return bool(result.rowcount)  # type: ignore[attr-defined]
 
     async def for_proposal(self, proposal_id: str) -> Publication | None:
         stmt = select(PublicationRow).where(PublicationRow.proposal_id == proposal_id)

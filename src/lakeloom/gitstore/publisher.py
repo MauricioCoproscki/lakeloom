@@ -4,9 +4,11 @@
 lock. Each attempt renders the stored snapshot over the current remote tip, commits once and
 pushes, directly or to a ``lakeloom/<slug>/<proposal-id>`` branch with a pull request. A
 rejected push resets to the new tip and renders again (never ``git rebase``). Before any
-commit the remote is searched for the ``Lakeloom-Publication`` trailer, so a retry after a
-crash never commits twice. Failures are classified (ADR 0013 § Retry): transient ones stay
-``pending`` with exponential backoff, permanent ones become ``blocked`` and stop the queue.
+commit the remote is searched for the ``Lakeloom-Publication`` trailer (in pull-request mode
+on the target branch too, for a PR merged before its row was marked done), so a retry after a
+crash never commits twice. A done row drops its exports (the commit holds them). Failures are
+classified (ADR 0013 § Retry): transient ones stay ``pending`` with exponential backoff,
+permanent ones become ``blocked`` and stop the queue.
 """
 
 from __future__ import annotations
@@ -101,6 +103,12 @@ class GitPublisher:
             return pub
         return await self._repo.add(pub.model_copy(update={"repo": self.repo_key}))
 
+    async def fill_snapshot(self, pub_id: str, snap: Snapshot) -> bool:
+        """Store ``snap`` (with its exports) on a publication no worker has attempted yet."""
+        if not self.enabled:
+            return False
+        return await self._repo.fill_payload(pub_id, snap)
+
     async def for_proposal(self, proposal_id: str) -> Publication | None:
         """The publication of a proposal (``None`` when Git is off or there is none)."""
         if not self.enabled:
@@ -115,7 +123,10 @@ class GitPublisher:
             return await self._repo.requeue_blocked(self.repo_key)
 
     async def status(self) -> dict[str, Any]:
-        """For ``server_info``: enabled, mode, pending and blocked counts, the head's error."""
+        """For ``server_info``: enabled, mode, pending and blocked counts, the head's error.
+
+        Never raises: a store failure is reported in ``last_error``.
+        """
         out: dict[str, Any] = {
             "enabled": self.enabled,
             "mode": self._settings.git_mode,
@@ -125,8 +136,13 @@ class GitPublisher:
         }
         if not self.enabled:
             return out
-        counts = await self._repo.counts(self.repo_key)
-        head = await self._repo.head(self.repo_key)
+        try:
+            head = await self._repo.head(self.repo_key)  # marks an invalid head blocked first
+            counts = await self._repo.counts(self.repo_key)
+        except Exception as exc:
+            logger.warning("git publication queue unavailable: %s", _error_text(exc))
+            out["last_error"] = f"publication queue unavailable ({type(exc).__name__})"
+            return out
         out.update(pending=counts["pending"], blocked=counts["blocked"])
         out["last_error"] = head.last_error if head is not None else None
         return out
@@ -186,6 +202,8 @@ class GitPublisher:
         else:
             metrics.GIT_PUBLICATIONS.labels(result="done").inc()
             pub.status = "done"
+            # The commit holds the exports; a done row keeps only the rest (store growth).
+            pub.payload = pub.payload.model_copy(update={"exports": None})
             pub.next_attempt_at = None
             pub.last_error = None
             logger.info("published %s as %s on %s", pub.id, pub.commit_sha, pub.branch)
@@ -218,6 +236,13 @@ class GitPublisher:
             await self._push(wc, target, target)
         if pub.mode == "direct" or forge is None:
             pub.commit_sha = await self._commit_direct(wc, pub, target)
+            pub.branch = target
+            return
+        # A PR merged (and its branch deleted) before the row was marked done is on the target.
+        await wc.checkout_tip(target)
+        merged = await wc.find_trailer(f"origin/{target}", TRAILER_KEY, pub.id)
+        if merged is not None:
+            pub.commit_sha = merged
             pub.branch = target
             return
         branch = f"lakeloom/{pub.model}/{pub.proposal_id}"

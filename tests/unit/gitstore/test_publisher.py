@@ -513,7 +513,8 @@ async def test_missing_exports_filled_at_publish(
     await pub_.enqueue(make_pub(exports=None))
     [result] = await pub_.process()
     assert result.status == "done" and len(seen) == 1
-    assert result.payload.exports is not None and result.payload.om_version == "2.0"
+    assert result.payload.om_version == "2.0"
+    assert result.payload.exports is None  # cleared once done (the commit holds them)
     main = clone(git_cmd, tmp_path, remote_url)
     assert (main / "ontologies/shop/ontology.jsonld").read_text() == '{"late": true}\n'
     assert 'om_version: "2.0"' in (main / "ontologies/shop/manifest.yaml").read_text()
@@ -611,3 +612,110 @@ async def test_process_survives_unexpected_errors(
 
     monkeypatch.setattr(pubs, "head", boom)
     assert await publisher.process() == []
+
+
+# --- final review fixes --------------------------------------------------------------------
+
+
+async def test_done_row_drops_its_exports(
+    publisher: GitPublisher, pubs: PublicationRepository, push_foreign: PushForeign
+) -> None:
+    push_foreign("seed", {"README.md": "old\n"})
+    await publisher.enqueue(make_pub())
+    [result] = await publisher.process()
+    assert result.status == "done" and result.payload.exports is None
+    stored = await pubs.for_proposal("prop_1")
+    assert stored is not None and stored.status == "done"
+    assert stored.payload.exports is None  # the store does not keep three exports per row
+    assert stored.payload.message and stored.payload.provenance  # the rest is kept
+
+
+async def test_pull_request_merged_and_deleted_before_done_is_detected(
+    publisher: GitPublisher,
+    pubs: PublicationRepository,
+    forge: FakeForge,
+    work: WorkingCopy,
+    push_foreign: PushForeign,
+    git_cmd: Git,
+    tmp_path: Path,
+    remote_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    push_foreign("seed", {"README.md": "old\n"})
+    pub = await publisher.enqueue(make_pub(mode="pull_request"))
+    real_update = pubs.update
+    failed = False
+
+    async def update_fails_once(p: Publication) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("database went away")
+        await real_update(p)
+
+    monkeypatch.setattr(pubs, "update", update_fails_once)
+    await publisher.process()  # branch pushed and PR opened, but the row stays pending
+    stored = await pubs.for_proposal("prop_1")
+    assert stored is not None and stored.status == "pending" and len(forge.calls) == 1
+    branch = "lakeloom/shop/prop_1"
+    # A human merges the PR and the forge deletes its branch.
+    other = clone(git_cmd, tmp_path, remote_url)
+    git_cmd("fetch", "origin", branch, cwd=other)
+    git_cmd("merge", "--no-ff", "-m", "Merge PR 1", "FETCH_HEAD", cwd=other)
+    git_cmd("push", "origin", "main", cwd=other)
+    git_cmd("push", "origin", "--delete", branch, cwd=other)
+    pr_commit = git_cmd("rev-parse", "HEAD^2", cwd=other).strip()
+    commit_calls = 0
+    real_commit = work.commit
+
+    async def counting_commit(message: str) -> str:
+        nonlocal commit_calls
+        commit_calls += 1
+        return await real_commit(message)
+
+    monkeypatch.setattr(work, "commit", counting_commit)
+
+    [result] = await publisher.process()
+
+    assert result.status == "done" and result.id == pub.id
+    assert result.commit_sha == pr_commit and result.branch == "main"
+    assert commit_calls == 0 and len(forge.calls) == 1  # no second commit, no second PR
+    assert await work.remote_head(branch) is None  # the branch was not pushed again
+    main = clone(git_cmd, tmp_path, remote_url)
+    log = commits(git_cmd, main)
+    assert log[0] == "Merge PR 1"
+    assert sorted(log[1:]) == ["ontology(shop): add_concept x1", "seed"]
+
+
+async def test_corrupt_payload_blocks_visibly_and_status_never_raises(
+    publisher: GitPublisher,
+    pubs: PublicationRepository,
+    engine: AsyncEngine,
+    push_foreign: PushForeign,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import update
+
+    from lakeloom.state.publications import PublicationRow
+
+    push_foreign("seed", {"README.md": "old\n"})
+    bad = await publisher.enqueue(make_pub("p1"))
+    await publisher.enqueue(make_pub("p2"))
+    async with engine.begin() as conn:
+        await conn.execute(
+            update(PublicationRow).where(PublicationRow.id == bad.id).values(payload={"bad": 1})
+        )
+
+    assert await publisher.process() == []  # the queue stops on the blocked head
+    status = await publisher.status()
+    assert status["blocked"] == 1 and status["pending"] == 1
+    assert status["last_error"] == "invalid stored snapshot"
+    later = await pubs.for_proposal("p2")
+    assert later is not None and later.status == "pending" and later.attempts == 0
+
+    async def down(repo: str) -> Any:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(pubs, "counts", down)
+    broken = await publisher.status()  # never raises
+    assert broken["enabled"] is True and "unavailable" in str(broken["last_error"])

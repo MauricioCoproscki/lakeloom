@@ -1,21 +1,29 @@
-"""Publish an applied proposal to Git (FR-GIT-04, FR-GIT-05; ADR 0013 § Inline attempt).
+"""Publish an applied proposal to Git (FR-GIT-04/05/09; ADR 0013 § Inline attempt).
 
 :class:`GitHook` runs after a successful approve has stored ``applied``:
 
-1. under a per-model lock, :func:`~lakeloom.gitstore.snapshot.take_snapshot` and
-   ``enqueue`` (so queue order equals OM state order), in a task of its own;
+1. under a per-model lock (so queue order equals apply order), in a task of its own: first
+   ``enqueue`` a row whose snapshot needs no OpenMetadata read
+   (:func:`~lakeloom.gitstore.snapshot.base_snapshot`: message, provenance, source tables,
+   ``exports=None``), then :func:`~lakeloom.gitstore.snapshot.take_snapshot` and
+   ``fill_snapshot`` to store the exports, model version and OM version on that row while no
+   worker has attempted it yet. A row without exports is always valid: the publisher exports
+   at publish time. So once ``applied`` is stored, nothing but the row insert itself stands
+   between the approval and a publication that is retried until it is done;
 2. one ``process()`` in a background task, awaited for at most
    ``LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS`` (the task keeps running after a timeout);
 3. when the publication is not ``done``, a warning on the approving review record, then a
-   store of the proposal that runs to completion.
+   store of the proposal that runs to completion. When the row could not be inserted the
+   warning is ``Git: not queued (internal error); an operator must re-publish it`` (and an
+   error is logged with the proposal id); every ``Git: queued`` text means a row exists.
 
 It never raises: OM has applied the proposal, and Git must never fail or undo that. Failures
 are logged by type only (no remote URL, no credential).
 
 **Cancellation.** The approval is already stored when the hook starts, so a cancel of the
 calling request (a client that went away) is absorbed rather than turned into a failed
-approve: the snapshot and enqueue task always completes (FR-GIT-09: the publication is never
-lost), the inline wait is abandoned (the ``process()`` task keeps running), the record gets
+approve: the enqueue task always completes (FR-GIT-09: the publication is never lost), the
+inline wait is abandoned (the ``process()`` task keeps running), the record gets
 ``Git: queued (request cancelled); it is retried automatically``, and the cancel request is
 withdrawn (``Task.uncancel``), so the approve returns and is audited as what it is: applied.
 A cancel scope that delivers the cancel again at a later await (anyio) still ends the
@@ -34,12 +42,13 @@ from lakeloom.core.models import ModelInfo, ModelService
 from lakeloom.core.proposals import Proposal
 from lakeloom.gitstore.git import redact
 from lakeloom.gitstore.layout import Snapshot
-from lakeloom.gitstore.snapshot import take_snapshot
+from lakeloom.gitstore.snapshot import base_snapshot, take_snapshot
 from lakeloom.state.publications import Publication, new_publication_id
 
-__all__ = ["CANCELLED_WARNING", "INTERNAL_WARNING", "GitHook", "Publisher"]
+__all__ = ["CANCELLED_WARNING", "INTERNAL_WARNING", "NOT_QUEUED_WARNING", "GitHook", "Publisher"]
 
 INTERNAL_WARNING: Final = "Git: queued (internal error); it is retried automatically"
+NOT_QUEUED_WARNING: Final = "Git: not queued (internal error); an operator must re-publish it"
 CANCELLED_WARNING: Final = "Git: queued (request cancelled); it is retried automatically"
 _ERROR_MAX: Final = 300
 _log = logging.getLogger(__name__)
@@ -52,6 +61,8 @@ class Publisher(Protocol):
     repo_key: str
 
     async def enqueue(self, pub: Publication) -> Publication: ...
+
+    async def fill_snapshot(self, pub_id: str, snap: Snapshot) -> bool: ...
 
     async def process(self, *, now: datetime | None = None) -> list[Publication]: ...
 
@@ -99,6 +110,12 @@ async def _complete[T](task: asyncio.Task[T]) -> bool:
     return cancelled
 
 
+class _Enqueue:
+    """Whether the publication row of one approval exists (set once it is inserted)."""
+
+    queued: bool = False
+
+
 class GitHook:
     def __init__(
         self,
@@ -130,17 +147,26 @@ class GitHook:
         """Snapshot, enqueue and try to publish applied ``p``; warn on its review record."""
         if not self._publisher.enabled:
             return
+        state = _Enqueue()
         try:
-            warnings = await self._publish(p, info)
+            warnings = await self._publish(p, info, state)
         except Exception as exc:
-            _log.error("proposal %s: Git publication failed (%s)", p.id, type(exc).__name__)
-            warnings = [INTERNAL_WARNING]
+            if state.queued:
+                _log.error("proposal %s: Git publication failed (%s)", p.id, type(exc).__name__)
+                warnings = [INTERNAL_WARNING]
+            else:
+                _log.error(
+                    "proposal %s: Git publication NOT queued (%s); re-publish it",
+                    p.id,
+                    type(exc).__name__,
+                )
+                warnings = [NOT_QUEUED_WARNING]
         if warnings:
             p.reviews[-1].warnings.extend(warnings)
             await _complete(self._spawn(save(p)))
 
-    async def _publish(self, p: Proposal, info: ModelInfo | None) -> list[str]:
-        enqueued = self._spawn(self._enqueue(p, info))
+    async def _publish(self, p: Proposal, info: ModelInfo | None, state: _Enqueue) -> list[str]:
+        enqueued = self._spawn(self._enqueue(p, info, state))
         cancelled = await _complete(enqueued)
         if enqueued.cancelled():  # only at shutdown: nobody cancels it otherwise
             raise RuntimeError("the Git snapshot was cancelled")
@@ -175,17 +201,20 @@ class GitHook:
             warnings.append(_queued(error or ("timed out" if timed_out else "pending")))
         return warnings
 
-    async def _enqueue(self, p: Proposal, info: ModelInfo | None) -> Snapshot:
-        """Snapshot and enqueue under the model's lock (queue order = OM state order)."""
+    async def _enqueue(self, p: Proposal, info: ModelInfo | None, state: _Enqueue) -> Snapshot:
+        """Enqueue, then snapshot, under the model's lock (queue order = apply order).
+
+        The row is inserted before any OpenMetadata read, with ``exports=None``; the exports
+        are then stored on it unless a worker has already attempted it. Returns the snapshot
+        the row holds as far as this call knows.
+        """
         approval = p.reviews[-1]
         pub_id = new_publication_id()
         lock = self._locks.setdefault(p.model, asyncio.Lock())
         async with lock:
-            snap = await take_snapshot(
-                self._models, self._models.om, p, approval, pub_id, info=info
-            )
+            base = base_snapshot(p, approval, pub_id, info=info)
             now = datetime.now(UTC)
-            await self._publisher.enqueue(
+            stored = await self._publisher.enqueue(
                 Publication(
                     id=pub_id,
                     repo=self._publisher.repo_key,
@@ -194,9 +223,26 @@ class GitHook:
                     mode=git_mode_for(self._policies, p.model, self._settings.git_mode),
                     created_at=now,
                     updated_at=now,
-                    payload=snap,
+                    payload=base,
                 )
             )
+            state.queued = True
+            if stored.id != pub_id:  # an earlier row for this proposal wins
+                return stored.payload
+            snap = await take_snapshot(
+                self._models, self._models.om, p, approval, pub_id, info=info
+            )
+            if snap.exports is None:
+                return base
+            try:
+                filled = await self._publisher.fill_snapshot(pub_id, snap)
+            except Exception as exc:
+                _log.warning(
+                    "proposal %s: could not store the Git exports (%s)", p.id, type(exc).__name__
+                )
+                return base
+        if not filled:  # a worker attempted the row first; it exports at publish time
+            _log.info("proposal %s: Git row already attempted; exports not stored", p.id)
         return snap
 
     def _done(self, task: asyncio.Task[Any]) -> None:

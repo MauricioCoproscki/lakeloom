@@ -8,13 +8,18 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import inspect
+from sqlalchemy import inspect, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from lakeloom.gitstore.layout import Snapshot
 from lakeloom.state.db import create_engine, upgrade
-from lakeloom.state.publications import Publication, PublicationRepository, new_publication_id
+from lakeloom.state.publications import (
+    Publication,
+    PublicationRepository,
+    PublicationRow,
+    new_publication_id,
+)
 
 NOW = datetime(2026, 11, 13, 10, 0, tzinfo=UTC)
 REPO = "a" * 64
@@ -139,6 +144,50 @@ async def test_list_counts_and_requeue(repo: PublicationRepository) -> None:
     got = await repo.for_proposal("p2")
     assert got is not None and got.status == "pending"
     assert got.attempts == 0 and got.next_attempt_at is None
+
+
+async def test_fill_payload_only_before_any_attempt(repo: PublicationRepository) -> None:
+    a = await repo.add(_pub("p1"))
+    filled = a.payload.model_copy(update={"exports": {"ontology.ttl": "x"}, "om_version": "1"})
+    assert await repo.fill_payload(a.id, filled)
+    got = await repo.for_proposal("p1")
+    assert got is not None and got.payload.exports == {"ontology.ttl": "x"}
+
+    b = await repo.add(_pub("p2"))
+    tried = b.model_copy(update={"attempts": 1, "last_error": "down"})
+    await repo.update(tried)
+    assert not await repo.fill_payload(b.id, filled.model_copy(update={"proposal_id": "p2"}))
+    c = await repo.add(_pub("p3"))
+    await repo.update(c.model_copy(update={"status": "done"}))
+    assert not await repo.fill_payload(c.id, filled.model_copy(update={"proposal_id": "p3"}))
+    for pid in ("p2", "p3"):
+        row = await repo.for_proposal(pid)
+        assert row is not None and row.payload.exports is None
+    assert not await repo.fill_payload("pub_missing", filled)
+
+
+async def test_corrupt_payload_is_surfaced_as_blocked(
+    repo: PublicationRepository, engine: AsyncEngine
+) -> None:
+    bad = await repo.add(_pub("p1"))
+    await repo.add(_pub("p2"))
+    async with engine.begin() as conn:
+        await conn.execute(
+            update(PublicationRow).where(PublicationRow.id == bad.id).values(payload={"x": 1})
+        )
+
+    head = await repo.head(REPO)  # never raises: the queue owner sees a blocked head
+
+    assert head is not None and head.id == bad.id
+    assert head.status == "blocked" and head.last_error == "invalid stored snapshot"
+    assert (await repo.counts(REPO))["blocked"] == 1  # persisted on the row
+    listed = await repo.list("blocked")
+    assert [r.id for r in listed] == [bad.id] and listed[0].last_error == "invalid stored snapshot"
+    one = await repo.for_proposal("p1")
+    assert one is not None and one.status == "blocked"
+    assert await repo.requeue_blocked(REPO) == 1
+    again = await repo.head(REPO)  # still invalid: blocked again, not raised
+    assert again is not None and again.status == "blocked"
 
 
 async def test_0003_creates_publications_and_downgrades(tmp_path: Path) -> None:
