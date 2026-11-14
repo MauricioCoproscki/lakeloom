@@ -329,12 +329,13 @@ def test_openapi_lists_shapes_route(client: TestClient, auth: dict[str, str]) ->
     assert set(op["responses"]["200"]["content"]) == set(SHAPES_TYPES)
 
 
-def test_asset_context_jsonld_has_model_terms(client: TestClient, auth: dict[str, str]) -> None:
+def test_asset_context_jsonld_context_is_pruned(client: TestClient, auth: dict[str, str]) -> None:
     r = get(client, auth, f"/v1/assets/{ORDERS}/context", "application/ld+json")
 
     assert r.status_code == 200, r.text
     ctx = r.json()["@context"]
-    assert ctx["Order"] == IRI
+    assert "Order" not in ctx  # the payload uses no model term: pruned from the full context
+    assert ctx["@version"] == 1.1 and ctx["dcterms"] == "http://purl.org/dc/terms/"
     assert ctx["@vocab"] == "https://lakeloom.test/ontology/retail/"
     assert r.json()["@graph"]
 

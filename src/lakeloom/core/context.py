@@ -13,7 +13,7 @@ estimate and whole-section truncation (FR-CTX-02, FR-CTX-06); free text is quote
 import asyncio
 import json
 import posixpath
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -47,6 +47,8 @@ __all__ = [
     "Rendered",
     "ResolvedAsset",
     "get_asset_context",
+    "minimal_jsonld_context",
+    "prune_context",
     "render_json",
     "render_jsonld",
     "render_markdown",
@@ -608,6 +610,43 @@ def minimal_jsonld_context(model: ModelInfo | None) -> dict[str, str]:
     return context
 
 
+def _tokens(value: Any, out: set[str]) -> None:
+    """Every key and string value under ``value`` and, for ``a:b``, the prefix ``a``."""
+    items: list[Any] = []
+    if isinstance(value, dict):
+        for k, v in value.items():  # pyright: ignore[reportUnknownVariableType]
+            items += [k, v]
+    elif isinstance(value, list):
+        items = value  # pyright: ignore[reportUnknownVariableType]
+    elif isinstance(value, str):
+        out.add(value)
+        out.add(value.split(":", 1)[0])
+    for item in items:
+        _tokens(item, out)
+
+
+def prune_context(
+    context: dict[str, Any], payload: dict[str, Any], keep: Iterable[str] = ()
+) -> dict[str, Any]:
+    """``context`` reduced to the entries ``payload`` can use: keywords (``@version``,
+    ``@vocab``...), the keys in ``keep`` (the minimal context) and every term or prefix whose
+    key appears in the payload as a key or a (compact) string value, plus what those terms
+    reference in turn. The payload's own ``@context`` is not looked at (FR-CTX-02, FR-CTX-06).
+    """
+    used: set[str] = set()
+    _tokens({k: v for k, v in payload.items() if k != "@context"}, used)
+    wanted = {k for k in context if k.startswith("@")} | set(keep)
+    pending = (used | wanted) & context.keys()
+    kept: set[str] = set()
+    while pending:
+        key = pending.pop()
+        kept.add(key)
+        refs: set[str] = set()
+        _tokens(context[key], refs)
+        pending |= (refs & context.keys()) - kept
+    return {k: v for k, v in context.items() if k in kept}
+
+
 def render_jsonld(
     ctx: AssetContext,
     model: ModelInfo | None = None,
@@ -615,11 +654,12 @@ def render_jsonld(
     max_tokens: int | None = None,
     context: dict[str, Any] | None = None,
 ) -> Rendered[dict[str, Any]]:
-    """JSON-LD whose ``@context`` is ``context`` (the model's full one) or the minimal one.
+    """JSON-LD whose ``@context`` is ``context`` (the model's full one) pruned to the terms the
+    payload uses (:func:`prune_context`; the budget counts the pruned one), or the minimal one.
 
     Concepts link through ``dcterms:subject``.
     """
-    full_context = context if context is not None else minimal_jsonld_context(model)
+    minimal = minimal_jsonld_context(model)
 
     def build(c: AssetContext) -> dict[str, Any]:
 
@@ -642,6 +682,9 @@ def render_jsonld(
                     "dcterms:subject": subjects(col.concepts),
                 }
             )
-        return {"@context": full_context, "@graph": graph}
+        if context is None:
+            return {"@context": minimal, "@graph": graph}
+        pruned = prune_context(context, {"@graph": graph}, keep=minimal)
+        return {"@context": pruned, "@graph": graph}
 
     return _fit(ctx, max_tokens, build)

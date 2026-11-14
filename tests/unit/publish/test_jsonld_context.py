@@ -6,10 +6,13 @@ from hypothesis import strategies as st
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
+from lakeloom.core.concepts import ConceptRef
 from lakeloom.core.context import (
     AssetContext,
+    ColumnContext,
     ResolvedAsset,
     minimal_jsonld_context,
+    prune_context,
     render_jsonld,
 )
 from lakeloom.core.models import ModelInfo
@@ -153,12 +156,63 @@ def _asset_ctx() -> AssetContext:
     return AssetContext(asset=ResolvedAsset(fqn="s.d.sc.t", table_fqn="s.d.sc.t", om_id="1"))
 
 
-def test_asset_jsonld_uses_full_context() -> None:
+def test_asset_jsonld_context_is_pruned_full_context() -> None:
     full = ctx_of(*BASIC)
     doc = render_jsonld(_asset_ctx(), INFO, max_tokens=None, context=full).payload
-    assert doc["@context"] == full
+    # the payload uses no model term: the minimal context (plus @version) is what remains
+    assert doc["@context"] == {"@version": 1.1, **minimal_jsonld_context(INFO)}
     # without a full context the minimal one is kept
     assert render_jsonld(_asset_ctx(), INFO).payload["@context"] == minimal_jsonld_context(INFO)
+
+
+def test_prune_context_keeps_used_terms_and_prefixes() -> None:
+    full = ctx_of(*BASIC)
+    payload = {
+        "@context": full,
+        "@graph": [{"@id": "urn:x:1", "@type": "Customer", "Customer.email": "a@b"}],
+        "xsd:note": "ex:thing",
+    }
+    pruned = prune_context(full, payload, keep=minimal_jsonld_context(INFO))
+    assert pruned["Customer"] == full["Customer"]
+    assert pruned["Customer.email"] == full["Customer.email"]
+    assert pruned["xsd"] == full["xsd"] and pruned["@version"] == 1.1
+    assert "Order" not in pruned and "Customer.age" not in pruned
+    assert "Order.customer" not in pruned and "customer" not in pruned
+    assert set(minimal_jsonld_context(INFO)) <= set(pruned)
+
+
+def _big_model() -> tuple[ModelInfo, dict, AssetContext]:
+    classes = [cls(f"C{i}") for i in range(50)]
+    props = [data(f"C{i % 50}.p{i:03d}", [f"C{i % 50}"], STR) for i in range(500)]
+    full = ctx_of(classes, props)
+    ref = [ConceptRef(iri=B + f"C{i}", fqn=f"m.C{i}", model="m", label=f"C{i}") for i in range(50)]
+    asset = _asset_ctx().model_copy(
+        update={
+            "model": "m",
+            "table_concepts": ref[:1],
+            "columns": [ColumnContext(name=f"col{i}", concepts=[ref[i]]) for i in range(50)],
+        }
+    )
+    return INFO, full, asset
+
+
+def test_asset_jsonld_context_stays_small_for_a_large_model() -> None:
+    info, full, asset = _big_model()
+    assert len(json.dumps(full)) > 40_000  # ~500 property terms
+    whole = render_jsonld(asset, info, context=full)
+    assert len(json.dumps(whole.payload["@context"])) < 500
+    cut = render_jsonld(asset, info, max_tokens=1500, context=full)
+    assert cut.token_estimate <= 1500
+    assert len(cut.payload["@graph"]) > 10  # columns survive the budget
+
+
+def test_pruned_context_expands_to_the_same_triples() -> None:
+    info, full, asset = _big_model()
+    doc = render_jsonld(asset, info, context=full).payload
+    pruned = Graph().parse(data=json.dumps(doc), format="json-ld")
+    unpruned = Graph().parse(data=json.dumps({**doc, "@context": full}), format="json-ld")
+    assert len(pruned) > 50
+    assert set(pruned) == set(unpruned)
 
 
 def test_vocabulary_classes_get_no_context_term() -> None:
