@@ -1,0 +1,592 @@
+{
+ "om": [
+  {
+   "description": "Lakeloom proposal `<proposal>`, part 1 (glossary change set) for model `shop`.\n\nSource tables: `sales.customers`, `sales.orders`. Operations in this part: 9.\nOperations may be appended later; the Lakeloom store is authoritative.\n\n- add_attribute: 4 (`attr:Customer.customer_id`, `attr:Customer.name`, `attr:Order.order_id`, `attr:Order.customer_id`)\n- add_axiom: 2 (`axiom:Customer.CustomerPrimaryKey`, `axiom:Order.OrderPrimaryKey`)\n- add_concept: 2 (`concept:Customer`, `concept:Order`)\n- add_relation: 1 (`rel:Order|hasCustomer|Customer`)\n\n```lakeloom-provenance\n{\"ai_generated\":false,\"at\":\"<at>\",\"client\":\"pytest\",\"lakeloom_provenance\":1,\"model\":\"shop\",\"operations\":[{\"key\":\"concept:Customer\",\"rule_ids\":[\"R-TABLE\",\"R-COMMENT\"],\"truncated\":false},{\"key\":\"attr:Customer.customer_id\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\",\"R-PK\"],\"truncated\":false},{\"key\":\"attr:Customer.name\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\"],\"truncated\":false},{\"key\":\"axiom:Customer.CustomerPrimaryKey\",\"rule_ids\":[\"R-PK\"],\"truncated\":false},{\"key\":\"concept:Order\",\"rule_ids\":[\"R-TABLE\",\"R-COMMENT\"],\"truncated\":false},{\"key\":\"attr:Order.order_id\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\",\"R-PK\"],\"truncated\":false},{\"key\":\"attr:Order.customer_id\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\"],\"truncated\":false},{\"key\":\"rel:Order|hasCustomer|Customer\",\"rule_ids\":[\"R-FK\"],\"truncated\":false},{\"key\":\"axiom:Order.OrderPrimaryKey\",\"rule_ids\":[\"R-PK\"],\"truncated\":false}],\"part\":1,\"principal_subject\":\"agent-7\",\"principal_type\":\"agent\",\"proposal_id\":\"<proposal>\",\"rule_ids\":[\"R-COLUMN\",\"R-COMMENT\",\"R-FK\",\"R-PK\",\"R-TABLE\",\"R-TYPE\"],\"scan_id\":\"<scan>\",\"tables\":[{\"fqn\":\"sales.customers\",\"om_fqn\":\"svc.db.sales.customers\",\"version\":3},{\"fqn\":\"sales.orders\",\"om_fqn\":\"svc.db.sales.orders\",\"version\":3}]}\n```",
+   "display_name": "Lakeloom proposal <proposal> part 1 (glossary)",
+   "glossary_id": "shop",
+   "name": "lakeloom-<proposal>-1",
+   "operations": [
+    {
+     "id": "<uuid>",
+     "operationType": "CREATE_TERM",
+     "term": {
+      "description": "People who buy",
+      "glossary": {
+       "id": "id-shop",
+       "type": "glossary"
+      },
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Customer",
+      "name": "Customer"
+     }
+    },
+    {
+     "id": "<uuid>",
+     "operationType": "CREATE_TERM",
+     "term": {
+      "description": "Customer orders",
+      "glossary": {
+       "id": "id-shop",
+       "type": "glossary"
+      },
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Order",
+      "name": "Order"
+     }
+    },
+    {
+     "id": "<uuid>",
+     "operationType": "ADD_RELATIONSHIP",
+     "relationship": {
+      "createdAt": 0,
+      "createdBy": "lakeloom",
+      "fromTerm": {
+       "id": "<uuid>",
+       "type": "glossaryTerm"
+      },
+      "id": "<uuid>",
+      "provenance": "Manual",
+      "relationshipType": {
+       "id": "rt-cust",
+       "type": "relationshipType"
+      },
+      "status": "Draft",
+      "toTerm": {
+       "id": "<uuid>",
+       "type": "glossaryTerm"
+      }
+     },
+     "targetId": "<uuid>"
+    }
+   ]
+  },
+  {
+   "base_working_revision": 5,
+   "description": "Lakeloom proposal `<proposal>`, part 1 (native change set) for model `shop`.\n\nSource tables: `sales.customers`, `sales.orders`. Operations in this part: 9.\nOperations may be appended later; the Lakeloom store is authoritative.\n\n- add_attribute: 4 (`attr:Customer.customer_id`, `attr:Customer.name`, `attr:Order.order_id`, `attr:Order.customer_id`)\n- add_axiom: 2 (`axiom:Customer.CustomerPrimaryKey`, `axiom:Order.OrderPrimaryKey`)\n- add_concept: 2 (`concept:Customer`, `concept:Order`)\n- add_relation: 1 (`rel:Order|hasCustomer|Customer`)\n\n```lakeloom-provenance\n{\"ai_generated\":false,\"at\":\"<at>\",\"client\":\"pytest\",\"lakeloom_provenance\":1,\"model\":\"shop\",\"operations\":[{\"key\":\"concept:Customer\",\"rule_ids\":[\"R-TABLE\",\"R-COMMENT\"],\"truncated\":false},{\"key\":\"attr:Customer.customer_id\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\",\"R-PK\"],\"truncated\":false},{\"key\":\"attr:Customer.name\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\"],\"truncated\":false},{\"key\":\"axiom:Customer.CustomerPrimaryKey\",\"rule_ids\":[\"R-PK\"],\"truncated\":false},{\"key\":\"concept:Order\",\"rule_ids\":[\"R-TABLE\",\"R-COMMENT\"],\"truncated\":false},{\"key\":\"attr:Order.order_id\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\",\"R-PK\"],\"truncated\":false},{\"key\":\"attr:Order.customer_id\",\"rule_ids\":[\"R-COLUMN\",\"R-TYPE\"],\"truncated\":false},{\"key\":\"rel:Order|hasCustomer|Customer\",\"rule_ids\":[\"R-FK\"],\"truncated\":false},{\"key\":\"axiom:Order.OrderPrimaryKey\",\"rule_ids\":[\"R-PK\"],\"truncated\":false}],\"part\":1,\"principal_subject\":\"agent-7\",\"principal_type\":\"agent\",\"proposal_id\":\"<proposal>\",\"rule_ids\":[\"R-COLUMN\",\"R-COMMENT\",\"R-FK\",\"R-PK\",\"R-TABLE\",\"R-TYPE\"],\"scan_id\":\"<scan>\",\"tables\":[{\"fqn\":\"sales.customers\",\"om_fqn\":\"svc.db.sales.customers\",\"version\":3},{\"fqn\":\"sales.orders\",\"om_fqn\":\"svc.db.sales.orders\",\"version\":3}]}\n```",
+   "display_name": "Lakeloom proposal <proposal> part 1 (native)",
+   "glossary_id": null,
+   "name": "lakeloom-<proposal>-1-native",
+   "ontology": "shop",
+   "operations": [
+    {
+     "concept": {
+      "conceptType": "OWL_CLASS",
+      "description": "People who buy",
+      "fullyQualifiedName": "shop.Customer",
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Customer",
+      "name": "Customer",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      }
+     },
+     "id": "<uuid>",
+     "operationType": "UPSERT_CONCEPT"
+    },
+    {
+     "concept": {
+      "conceptType": "OWL_CLASS",
+      "description": "Customer orders",
+      "fullyQualifiedName": "shop.Order",
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Order",
+      "name": "Order",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      }
+     },
+     "id": "<uuid>",
+     "operationType": "UPSERT_CONCEPT"
+    },
+    {
+     "id": "<uuid>",
+     "operationType": "UPSERT_PROPERTY",
+     "property": {
+      "displayName": "customer_id",
+      "domain": [
+       "http://x/ontology/shop/Customer"
+      ],
+      "fullyQualifiedName": "shop.Customer.customer_id",
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Customer.customer_id",
+      "isIdentifier": true,
+      "kind": "DATA",
+      "name": "Customer.customer_id",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      },
+      "range": [
+       "http://www.w3.org/2001/XMLSchema#long"
+      ]
+     }
+    },
+    {
+     "id": "<uuid>",
+     "operationType": "UPSERT_PROPERTY",
+     "property": {
+      "displayName": "name",
+      "domain": [
+       "http://x/ontology/shop/Customer"
+      ],
+      "fullyQualifiedName": "shop.Customer.name",
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Customer.name",
+      "isIdentifier": false,
+      "kind": "DATA",
+      "name": "Customer.name",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      },
+      "range": [
+       "http://www.w3.org/2001/XMLSchema#string"
+      ]
+     }
+    },
+    {
+     "axiom": {
+      "axiomType": "SUBCLASS_OF",
+      "description": "Primary key of table sales.customers.",
+      "displayName": "Customer primary key",
+      "expressions": [
+       {
+        "cardinality": 1,
+        "kind": "RESTRICTION",
+        "propertyIri": "http://x/ontology/shop/Customer.customer_id",
+        "restrictionKind": "EXACT"
+       }
+      ],
+      "fullyQualifiedName": "shop.CustomerPrimaryKey",
+      "id": "<uuid>",
+      "name": "CustomerPrimaryKey",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      },
+      "provenance": "Manual",
+      "subjectIri": "http://x/ontology/shop/Customer"
+     },
+     "id": "<uuid>",
+     "operationType": "UPSERT_AXIOM"
+    },
+    {
+     "id": "<uuid>",
+     "operationType": "UPSERT_PROPERTY",
+     "property": {
+      "displayName": "order_id",
+      "domain": [
+       "http://x/ontology/shop/Order"
+      ],
+      "fullyQualifiedName": "shop.Order.order_id",
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Order.order_id",
+      "isIdentifier": true,
+      "kind": "DATA",
+      "name": "Order.order_id",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      },
+      "range": [
+       "http://www.w3.org/2001/XMLSchema#long"
+      ]
+     }
+    },
+    {
+     "id": "<uuid>",
+     "operationType": "UPSERT_PROPERTY",
+     "property": {
+      "displayName": "customer_id",
+      "domain": [
+       "http://x/ontology/shop/Order"
+      ],
+      "fullyQualifiedName": "shop.Order.customer_id",
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Order.customer_id",
+      "isIdentifier": false,
+      "kind": "DATA",
+      "name": "Order.customer_id",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      },
+      "range": [
+       "http://www.w3.org/2001/XMLSchema#long"
+      ]
+     }
+    },
+    {
+     "id": "<uuid>",
+     "operationType": "UPSERT_PROPERTY",
+     "property": {
+      "displayName": "hasCustomer",
+      "domain": [
+       "http://x/ontology/shop/Order"
+      ],
+      "fullyQualifiedName": "shop.Order.hasCustomer",
+      "id": "<uuid>",
+      "iri": "http://x/ontology/shop/Order.hasCustomer",
+      "kind": "OBJECT",
+      "name": "Order.hasCustomer",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      },
+      "range": [
+       "http://x/ontology/shop/Customer"
+      ]
+     }
+    },
+    {
+     "axiom": {
+      "axiomType": "SUBCLASS_OF",
+      "description": "Primary key of table sales.orders.",
+      "displayName": "Order primary key",
+      "expressions": [
+       {
+        "cardinality": 1,
+        "kind": "RESTRICTION",
+        "propertyIri": "http://x/ontology/shop/Order.order_id",
+        "restrictionKind": "EXACT"
+       }
+      ],
+      "fullyQualifiedName": "shop.OrderPrimaryKey",
+      "id": "<uuid>",
+      "name": "OrderPrimaryKey",
+      "ontology": {
+       "id": "onto-shop",
+       "type": "ontology"
+      },
+      "provenance": "Manual",
+      "subjectIri": "http://x/ontology/shop/Order"
+     },
+     "id": "<uuid>",
+     "operationType": "UPSERT_AXIOM"
+    }
+   ]
+  }
+ ],
+ "proposal": {
+  "abandoned_change_sets": [],
+  "created_at": "<at>",
+  "id": "<proposal>",
+  "matches": [],
+  "model": "shop",
+  "parts": [
+   {
+    "change_set_ids": {
+     "glossary": "cs-1",
+     "native": "cs-2"
+    },
+    "change_set_names": {
+     "glossary": "lakeloom-<proposal>-1",
+     "native": "lakeloom-<proposal>-1-native"
+    },
+    "n": 1,
+    "om_state": {
+     "glossary": "DRAFT",
+     "native": "DRAFT"
+    },
+    "operations": [
+     {
+      "description": {
+       "source": "delta:test",
+       "text": "People who buy",
+       "untrusted": true
+      },
+      "display_name": null,
+      "evidence": [
+       {
+        "detail": null,
+        "kind": "table",
+        "ref": "sales.customers",
+        "truncated": false
+       },
+       {
+        "detail": null,
+        "kind": "comment",
+        "ref": "sales.customers",
+        "truncated": false
+       }
+      ],
+      "name": "Customer",
+      "op": "add_concept",
+      "parent": null,
+      "rationale": null,
+      "rule_ids": [
+       "R-TABLE",
+       "R-COMMENT"
+      ],
+      "synonyms": []
+     },
+     {
+      "allowed_values": [],
+      "concept": "Customer",
+      "datatype": "xsd:long",
+      "description": null,
+      "evidence": [
+       {
+        "detail": "bigint",
+        "kind": "column",
+        "ref": "sales.customers.customer_id",
+        "truncated": false
+       },
+       {
+        "detail": null,
+        "kind": "pk",
+        "ref": "sales.customers.customer_id",
+        "truncated": false
+       }
+      ],
+      "is_identifier": true,
+      "name": "customer_id",
+      "op": "add_attribute",
+      "rationale": null,
+      "rule_ids": [
+       "R-COLUMN",
+       "R-TYPE",
+       "R-PK"
+      ],
+      "unit": null
+     },
+     {
+      "allowed_values": [],
+      "concept": "Customer",
+      "datatype": "xsd:string",
+      "description": null,
+      "evidence": [
+       {
+        "detail": "string",
+        "kind": "column",
+        "ref": "sales.customers.name",
+        "truncated": false
+       }
+      ],
+      "is_identifier": false,
+      "name": "name",
+      "op": "add_attribute",
+      "rationale": null,
+      "rule_ids": [
+       "R-COLUMN",
+       "R-TYPE"
+      ],
+      "unit": null
+     },
+     {
+      "axiom": {
+       "axiomType": "SUBCLASS_OF",
+       "description": "Primary key of table sales.customers.",
+       "displayName": "Customer primary key",
+       "expressions": [
+        {
+         "cardinality": 1,
+         "kind": "RESTRICTION",
+         "propertyName": "customer_id",
+         "restrictionKind": "EXACT"
+        }
+       ],
+       "name": "CustomerPrimaryKey"
+      },
+      "concept": "Customer",
+      "evidence": [
+       {
+        "detail": null,
+        "kind": "pk",
+        "ref": "sales.customers.customer_id",
+        "truncated": false
+       }
+      ],
+      "op": "add_axiom",
+      "rationale": null,
+      "rule_ids": [
+       "R-PK"
+      ]
+     },
+     {
+      "description": {
+       "source": "delta:test",
+       "text": "Customer orders",
+       "untrusted": true
+      },
+      "display_name": null,
+      "evidence": [
+       {
+        "detail": null,
+        "kind": "table",
+        "ref": "sales.orders",
+        "truncated": false
+       },
+       {
+        "detail": null,
+        "kind": "comment",
+        "ref": "sales.orders",
+        "truncated": false
+       }
+      ],
+      "name": "Order",
+      "op": "add_concept",
+      "parent": null,
+      "rationale": null,
+      "rule_ids": [
+       "R-TABLE",
+       "R-COMMENT"
+      ],
+      "synonyms": []
+     },
+     {
+      "allowed_values": [],
+      "concept": "Order",
+      "datatype": "xsd:long",
+      "description": null,
+      "evidence": [
+       {
+        "detail": "bigint",
+        "kind": "column",
+        "ref": "sales.orders.order_id",
+        "truncated": false
+       },
+       {
+        "detail": null,
+        "kind": "pk",
+        "ref": "sales.orders.order_id",
+        "truncated": false
+       }
+      ],
+      "is_identifier": true,
+      "name": "order_id",
+      "op": "add_attribute",
+      "rationale": null,
+      "rule_ids": [
+       "R-COLUMN",
+       "R-TYPE",
+       "R-PK"
+      ],
+      "unit": null
+     },
+     {
+      "allowed_values": [],
+      "concept": "Order",
+      "datatype": "xsd:long",
+      "description": null,
+      "evidence": [
+       {
+        "detail": "bigint",
+        "kind": "column",
+        "ref": "sales.orders.customer_id",
+        "truncated": false
+       }
+      ],
+      "is_identifier": false,
+      "name": "customer_id",
+      "op": "add_attribute",
+      "rationale": null,
+      "rule_ids": [
+       "R-COLUMN",
+       "R-TYPE"
+      ],
+      "unit": null
+     },
+     {
+      "description": null,
+      "evidence": [
+       {
+        "detail": "references sales.customers(customer_id)",
+        "kind": "fk",
+        "ref": "sales.orders.customer_id",
+        "truncated": false
+       }
+      ],
+      "op": "add_relation",
+      "rationale": null,
+      "relation_type": "hasCustomer",
+      "rule_ids": [
+       "R-FK"
+      ],
+      "source": "Order",
+      "target": "Customer"
+     },
+     {
+      "axiom": {
+       "axiomType": "SUBCLASS_OF",
+       "description": "Primary key of table sales.orders.",
+       "displayName": "Order primary key",
+       "expressions": [
+        {
+         "cardinality": 1,
+         "kind": "RESTRICTION",
+         "propertyName": "order_id",
+         "restrictionKind": "EXACT"
+        }
+       ],
+       "name": "OrderPrimaryKey"
+      },
+      "concept": "Order",
+      "evidence": [
+       {
+        "detail": null,
+        "kind": "pk",
+        "ref": "sales.orders.order_id",
+        "truncated": false
+       }
+      ],
+      "op": "add_axiom",
+      "rationale": null,
+      "rule_ids": [
+       "R-PK"
+      ]
+     }
+    ],
+    "original_names": {
+     "glossary": null,
+     "native": null
+    },
+    "rebuilds": 0,
+    "superseded_change_set_ids": [],
+    "table": null,
+    "tables": [
+     "sales.customers",
+     "sales.orders"
+    ]
+   }
+  ],
+  "provenance": {
+   "ai_generated": false,
+   "at": "<at>",
+   "client": "pytest",
+   "principal_subject": "agent-7",
+   "principal_type": "agent",
+   "rule_ids": [
+    "R-COLUMN",
+    "R-COMMENT",
+    "R-FK",
+    "R-PK",
+    "R-TABLE",
+    "R-TYPE"
+   ],
+   "scan_id": "<scan>",
+   "tables": [
+    {
+     "fqn": "sales.customers",
+     "om_fqn": "svc.db.sales.customers",
+     "version": 3
+    },
+    {
+     "fqn": "sales.orders",
+     "om_fqn": "svc.db.sales.orders",
+     "version": 3
+    }
+   ]
+  },
+  "realizations_applied": [],
+  "rebase_pending": false,
+  "reviews": [],
+  "revision": 1,
+  "scan_id": "<scan>",
+  "status": "draft",
+  "updated_at": "<at>",
+  "warnings": []
+ }
+}

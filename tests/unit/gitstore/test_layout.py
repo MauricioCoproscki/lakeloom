@@ -14,6 +14,7 @@ from lakeloom.core.proposals import (
     ProposalPart,
     Provenance,
     ReviewRecord,
+    SourceDocument,
     TableProvenance,
 )
 from lakeloom.gitstore import Snapshot, build_message, provenance_record, render, sanitize_trailer
@@ -153,6 +154,63 @@ def test_message_has_all_trailers_in_order() -> None:
         ("Lakeloom-Publication", "pub_1"),
     ]
     assert msg.endswith("\n")
+
+
+def _with_origin(p: Proposal, origin: str, doc: SourceDocument | None) -> Proposal:
+    prov = p.provenance.model_copy(update={"origin": origin, "source_document": doc})
+    return p.model_copy(update={"provenance": prov})
+
+
+def _after_proposed_by(msg: str) -> list[tuple[str, str]]:
+    got = trailers(msg)
+    at = [k for k, _ in got].index("Lakeloom-Proposed-By")
+    return got[at + 1 :]
+
+
+def test_trailers_for_import_and_git_origin() -> None:
+    base = make_proposal(scan_id=None, tables=[])
+    doc = SourceDocument(format="turtle", sha256="ab" * 32, bytes=10)
+    msg = build_message(_with_origin(base, "import", doc), make_review(), "pub_1")
+    assert _after_proposed_by(msg) == [
+        ("Lakeloom-Origin", "import"),
+        ("Lakeloom-Import", "sha256:" + "ab" * 32),
+        ("Lakeloom-AI-Generated", "true"),
+        ("Lakeloom-Publication", "pub_1"),
+    ]
+    git = doc.model_copy(update={"git_ref": "main\nEvil: x", "git_commit": "0123456789abcdef" * 2})
+    msg = build_message(_with_origin(base, "git", git), make_review(), "pub_1")
+    assert _after_proposed_by(msg)[:2] == [
+        ("Lakeloom-Origin", "git"),
+        ("Lakeloom-Import", "main Evil: x@0123456789ab"),
+    ]
+    msg = build_message(_with_origin(make_proposal(), "drift", None), make_review(), "pub_1")
+    assert _after_proposed_by(msg)[:2] == [
+        ("Lakeloom-Origin", "drift"),
+        ("Lakeloom-AI-Generated", "true"),
+    ]
+
+
+def test_scan_commit_message_unchanged() -> None:
+    p = make_proposal()
+    assert p.provenance.origin == "scan"
+    msg = build_message(p, make_review(), "pub_1")
+    assert msg == (
+        "ontology(shop): add_concept x1\n"
+        "\n"
+        "- concept:Order\n"
+        "\n"
+        "Lakeloom-Proposal: prop_1\n"
+        "Lakeloom-ChangeSet: cs-g1\n"
+        "Lakeloom-ChangeSet: cs-n1\n"
+        "Lakeloom-ChangeSet: cs-g2\n"
+        "Approved-By: om.rev\n"
+        "Lake-Source-Version: lake.s.orders@3\n"
+        "Lake-Source-Version: lake.s.items@unknown\n"
+        "Lakeloom-Scan: scan_1\n"
+        "Lakeloom-Proposed-By: agent-1 (agent)\n"
+        "Lakeloom-AI-Generated: true\n"
+        "Lakeloom-Publication: pub_1\n"
+    )
 
 
 def test_scan_trailer_omitted_without_scan() -> None:

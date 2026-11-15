@@ -13,7 +13,9 @@ exist in OM (with a warning), splits by table (tables sorted by full name, opera
 mapper order; whole tables are packed into a part, a table larger than the limit is split
 into consecutive parts with a warning) and creates the change sets part by part. Every change
 set description carries a Markdown summary of the part and a fenced ``lakeloom-provenance``
-JSON block (FR-PRO-03).
+JSON block (FR-PRO-03). ``propose_operations`` creates a proposal of operations computed
+elsewhere (import, Git restore, drift) through the same creation path; its provenance
+``origin`` and ``source_document`` say where they came from.
 
 Consistency with OM: all OM payloads are built (and fail closed) before the first write; each
 part is stored right after its change sets exist; a change set whose companion write failed
@@ -28,7 +30,7 @@ re-drafts parts against OM's current state with the client it is given (the bot 
 applied and refreshes agent-supplied base versions with a warning. ``propose_change`` and
 ``submit`` accept a ``changes_requested`` proposal and rebuild it first.
 
-Per-model access (NFR-SEC-07): ``propose_from_scan``, ``propose_change``,
+Per-model access (NFR-SEC-07): ``propose_from_scan``, ``propose_operations``, ``propose_change``,
 ``propose_realization`` and ``rebase`` require the model's ``propose_groups``
 (:func:`~lakeloom.core.model_policy.require_group`; empty = anyone, the CLI Actor exempt).
 
@@ -143,6 +145,7 @@ __all__ = [
     "Provenance",
     "ReviewDecision",
     "ReviewRecord",
+    "SourceDocument",
     "TableProvenance",
     "applied_parts_note",
     "fully_applied",
@@ -211,8 +214,22 @@ class TableProvenance(BaseModel):
     version: int | None = None
 
 
+class SourceDocument(BaseModel):
+    """The document an imported proposal was read from (FR-PRO-03, FR-IO-02)."""
+
+    format: str
+    sha256: str
+    bytes: int
+    git_ref: str | None = None
+    git_commit: str | None = None
+
+
+Origin = Literal["scan", "agent", "import", "git", "drift"]
+
+
 class Provenance(BaseModel):
-    """FR-PRO-03: where a proposal came from."""
+    """FR-PRO-03: where a proposal came from. ``origin`` defaults to ``scan`` so rows
+    stored before it existed stay valid."""
 
     scan_id: str | None
     tables: list[TableProvenance] = []
@@ -222,6 +239,8 @@ class Provenance(BaseModel):
     client: str | None = None
     at: datetime
     ai_generated: bool = False
+    origin: Origin = "scan"
+    source_document: SourceDocument | None = None
 
 
 class ProposalMatch(BaseModel):
@@ -498,7 +517,7 @@ def provenance_block(proposal: Proposal, part: ProposalPart) -> dict[str, Any]:
     """The machine-readable provenance of one part (FR-PRO-03)."""
     prov = proposal.provenance
     tables = [t for t in prov.tables if t.fqn in part.tables] if part.tables else prov.tables
-    return {
+    block: dict[str, Any] = {
         "lakeloom_provenance": 1,
         "proposal_id": proposal.id,
         "part": part.n,
@@ -515,7 +534,11 @@ def provenance_block(proposal: Proposal, part: ProposalPart) -> dict[str, Any]:
             {"key": op_key(op), "rule_ids": list(op.rule_ids), "truncated": _truncated(op)}
             for op in part.operations
         ],
+        "origin": prov.origin,
     }
+    if prov.source_document is not None:
+        block["source_document"] = prov.source_document.model_dump(mode="json")
+    return block
 
 
 def _count_line(ops: Sequence[ProposalOperation]) -> list[str]:
@@ -1402,14 +1425,8 @@ class ProposalService:
         ops = result.operations
         if not ops:
             raise NothingToPropose(matches, sorted(set(warnings)))
-        self._require_pair(target, ops)
         names = [t.ref.full_name for t in rec.tables]
-        groups, split_warnings = split_parts(ops, names, self.max_ops)
-        ctx = await self._context(target, ops)
-        planned = [(tbls, chunk, to_om_all(chunk, ctx)) for tbls, chunk in groups]  # fail closed
-        warnings += self._relation_warnings(ops, ctx)
-        used = {t for tbls, _, _ in planned for t in tbls}
-        now = _now()
+        used = {t for op in ops if (t := _table_of(op, names)) is not None}  # tables of parts
         provenance = Provenance(
             scan_id=rec.id,
             tables=[
@@ -1421,16 +1438,50 @@ class ProposalService:
             principal_subject=caller.subject,
             principal_type=str(caller.type),
             client=client,
-            at=now,
+            at=_now(),
         )
+        return await self._create(
+            trail,
+            model,
+            target,
+            ops,
+            provenance=provenance,
+            matches=matches,
+            warnings=warnings,
+            tables=names,
+            tool="propose_from_scan",
+        )
+
+    async def _create(
+        self,
+        trail: AuditContext,
+        model: str,
+        target: _Target,
+        ops: Sequence[ProposalOperation],
+        *,
+        provenance: Provenance,
+        matches: Sequence[ProposalMatch],
+        warnings: Sequence[str],
+        tables: Sequence[str],
+        tool: str,
+    ) -> tuple[Proposal, str | None]:
+        """Create a draft proposal of ``ops`` (the one creation path of scans, imports and
+        drift): split into parts by ``tables``, build every OM payload (fail closed) before
+        the first write, then write and store part by part (see the module docstring)."""
+        self._require_pair(target, ops)
+        groups, split_warnings = split_parts(ops, tables, self.max_ops)
+        ctx = await self._context(target, ops)
+        planned = [(tbls, chunk, to_om_all(chunk, ctx)) for tbls, chunk in groups]  # fail closed
+        notes = [*warnings, *self._relation_warnings(ops, ctx)]
+        now = provenance.at
         p = Proposal(
             id=new_ulid_id("prop_"),
             model=model,
             status="draft",
-            scan_id=rec.id,
+            scan_id=provenance.scan_id,
             provenance=provenance,
-            matches=matches,
-            warnings=sorted(set(warnings)) + split_warnings,
+            matches=list(matches),
+            warnings=sorted(set(notes)) + split_warnings,
             created_at=now,
             updated_at=now,
         )
@@ -1444,7 +1495,7 @@ class ProposalService:
                 except LakeloomError as exc:
                     if not p.parts:
                         raise
-                    return await self._partial(p, n, len(planned), len(chunk), exc)
+                    return await self._partial(p, n, len(planned), len(chunk), exc, tool)
                 p.parts.append(part)
                 await self._save_or_undo(p, part, done, chunk, new_part=True)
                 ids = p.change_set_ids()
@@ -1456,16 +1507,70 @@ class ProposalService:
         return p, None
 
     async def _partial(
-        self, p: Proposal, n: int, total: int, count: int, exc: LakeloomError
+        self, p: Proposal, n: int, total: int, count: int, exc: LakeloomError, tool: str
     ) -> tuple[Proposal, str | None]:
         """Part ``n`` (> 1) failed: keep the stored parts and say so."""
         p.warnings.append(
             f"part {n} of {total} could not be created ({exc.code}: {exc.message}); its "
             f"{count} operations and those of later parts are not in this proposal; run "
-            "propose_from_scan again to propose them"
+            f"{tool} again to propose them"
         )
         await self._save(p)
         return p, exc.code
+
+    # -- propose_operations ------------------------------------------------------------------
+
+    async def propose_operations(
+        self,
+        model: str,
+        operations: Sequence[ProposalOperation],
+        *,
+        origin: Literal["import", "git", "drift"],
+        principal: Caller,
+        client: str | None,
+        tool: str,
+        scan_id: str | None = None,
+        tables: Sequence[TableProvenance] = (),
+        source_document: SourceDocument | None = None,
+        matches: Sequence[ProposalMatch] = (),
+        warnings: Sequence[str] = (),
+    ) -> Proposal:
+        """A draft proposal of operations computed elsewhere (import, Git restore, drift),
+        created exactly like a scan's (:meth:`_create`), audited as ``tool``. Operations
+        without a table (imports) are packed into parts in their order."""
+
+        async def run(trail: AuditContext) -> tuple[Proposal, str | None]:
+            trail.model = model
+            self._require_propose(model, principal)
+            async with self._lock(f"model:{model}"):
+                ops = list(operations)
+                if not ops:
+                    raise NothingToPropose(list(matches), sorted(set(warnings)))
+                target = await self._target(model)
+                provenance = Provenance(
+                    scan_id=scan_id,
+                    tables=list(tables),
+                    rule_ids=_rule_ids(ops),
+                    principal_subject=principal.subject,
+                    principal_type=str(principal.type),
+                    client=client,
+                    at=_now(),
+                    origin=origin,
+                    source_document=source_document,
+                )
+                return await self._create(
+                    trail,
+                    model,
+                    target,
+                    ops,
+                    provenance=provenance,
+                    matches=matches,
+                    warnings=warnings,
+                    tables=[t.fqn for t in tables],
+                    tool=tool,
+                )
+
+        return await self._audited(tool, principal, client, run)
 
     # -- propose_change ----------------------------------------------------------------------
 

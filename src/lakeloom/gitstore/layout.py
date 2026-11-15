@@ -106,6 +106,22 @@ def _subject(p: Proposal) -> str:
     return subject if len(subject) <= SUBJECT_MAX else subject[: SUBJECT_MAX - 1] + "…"
 
 
+def _origin_trailers(p: Proposal) -> list[str]:
+    """``Lakeloom-Origin`` and ``Lakeloom-Import`` of import, Git and drift proposals
+    (FR-PRO-03); scan-origin messages are unchanged."""
+    prov = p.provenance
+    if prov.origin not in ("import", "git", "drift"):
+        return []
+    lines = [_trailer("Lakeloom-Origin", prov.origin)]
+    doc = prov.source_document
+    if doc is not None and prov.origin == "import":
+        lines.append(_trailer("Lakeloom-Import", f"sha256:{doc.sha256}"))
+    elif doc is not None and prov.origin == "git":
+        commit = (doc.git_commit or "unknown")[:12]
+        lines.append(_trailer("Lakeloom-Import", f"{doc.git_ref or 'unknown'}@{commit}"))
+    return lines
+
+
 def build_message(p: Proposal, approval: ReviewRecord, publication_id: str) -> str:
     """Subject, a body of operation keys, then the trailers (FR-GIT-04, FR-PRO-03 c)."""
     lines = [_subject(p), ""]
@@ -131,6 +147,7 @@ def build_message(p: Proposal, approval: ReviewRecord, publication_id: str) -> s
     lines.append(
         _trailer("Lakeloom-Proposed-By", f"{prov.principal_subject} ({prov.principal_type})")
     )
+    lines += _origin_trailers(p)
     lines.append(_trailer("Lakeloom-AI-Generated", "true" if prov.ai_generated else "false"))
     lines.append(_trailer("Lakeloom-Publication", publication_id))
     return "\n".join(lines) + "\n"

@@ -38,6 +38,8 @@ from lakeloom.core.proposals import (
     NothingToPropose,
     Proposal,
     ProposalService,
+    Provenance,
+    SourceDocument,
     diff,
     parse_provenance,
     split_parts,
@@ -1537,3 +1539,179 @@ async def test_scan_refuses_tombstoned_concept(make) -> None:
     assert info.value.message == (
         "concept Customer was deleted in OpenMetadata and cannot be created again"
     )
+
+
+# --- one proposal path (Task 4, FR-PRO-03) ------------------------------------------------
+
+GOLDEN = Path(__file__).parent / "golden" / "propose_from_scan.json"
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_STAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)"
+
+
+def _normalised(data: Any, *, proposal_id: str, scan_id: str) -> Any:
+    """Volatile values (ids, timestamps, OM operation uuids) replaced by placeholders."""
+    import re
+
+    text = json.dumps(data, sort_keys=True, indent=1, ensure_ascii=True)
+    text = text.replace(proposal_id, "<proposal>").replace(scan_id, "<scan>")
+    text = re.sub(_UUID, "<uuid>", text)
+    text = re.sub(_STAMP, "<at>", text)
+    return json.loads(text)
+
+
+async def _golden_run(kit: Kit) -> Any:
+    scan_id = await kit.scan(customers(), orders())
+    p = await kit.service.propose_from_scan(scan_id, "shop", principal=AGENT, client="pytest")
+    stored = await kit.repo.get(p.id)
+    sent = [kw for name, kw in kit.om.calls if name in ("create_change_set", "add_operations")]
+    return _normalised(
+        {"proposal": stored.model_dump(mode="json"), "om": sent},
+        proposal_id=p.id,
+        scan_id=scan_id,
+    )
+
+
+def _with_origin(golden: Any) -> Any:
+    """The golden file was captured before the refactor; the only intended change is the
+    provenance ``origin`` (and a null ``source_document`` in the stored payload)."""
+    golden["proposal"]["provenance"] |= {"origin": "scan", "source_document": None}
+    for call in golden["om"]:
+        if "description" in call:
+            head, block = call["description"].split("```lakeloom-provenance\n")
+            assert block.count(',"part":') == 1
+            block = block.replace(',"part":', ',"origin":"scan","part":')
+            call["description"] = head + "```lakeloom-provenance\n" + block
+    return golden
+
+
+async def test_propose_from_scan_unchanged_after_refactor(make) -> None:
+    got = await _golden_run(make())
+    want = json.loads(GOLDEN.read_text(encoding="utf-8"))  # captured before the refactor
+    assert got == _with_origin(want)
+
+
+def _imported(n: int) -> list[ProposalOperation]:
+    return [
+        AddConcept(op="add_concept", name=f"Imp{i:03d}", rule_ids=["R-IMPORT"]) for i in range(n)
+    ]
+
+
+DOC = SourceDocument(format="turtle", sha256="ab" * 32, bytes=123)
+
+
+async def test_propose_operations_creates_draft_with_origin(make) -> None:
+    kit = make()
+    p = await kit.service.propose_operations(
+        "shop",
+        _imported(2),
+        origin="import",
+        principal=AGENT,
+        client="pytest",
+        tool="import_model",
+        source_document=DOC,
+        warnings=["skipped 1 foreign subject"],
+    )
+    stored = await kit.repo.get(p.id)
+    assert stored.status == "draft" and stored.scan_id is None
+    assert stored.provenance.origin == "import"
+    assert stored.provenance.source_document == DOC
+    assert stored.provenance.rule_ids == ["R-IMPORT"]
+    assert stored.provenance.tables == []
+    assert stored.warnings == ["skipped 1 foreign subject"]
+    assert [op_key(op) for op in stored.operations()] == ["concept:Imp000", "concept:Imp001"]
+    assert len(kit.om.created()) == 2  # glossary + native, like a scan
+    rows = await kit.audit_rows()
+    assert [(r.tool, r.result, r.proposal_id) for r in rows] == [("import_model", "ok", p.id)]
+
+
+async def test_propose_operations_empty_is_nothing_to_propose(make) -> None:
+    kit = make()
+    with pytest.raises(NothingToPropose):
+        await kit.service.propose_operations(
+            "shop", [], origin="drift", principal=AGENT, client=None, tool="detect_drift"
+        )
+    assert kit.om.created() == []
+
+
+async def test_propose_operations_splits_parts_in_order(make) -> None:
+    kit = make(max_ops=50)
+    ops = _imported(120)
+    p = await kit.service.propose_operations(
+        "shop", ops, origin="import", principal=AGENT, client=None, tool="import_model"
+    )
+    assert [len(part.operations) for part in p.parts] == [50, 50, 20]
+    assert [op_key(op) for op in p.operations()] == [op_key(op) for op in ops]
+    assert all(part.tables == [] for part in p.parts)
+
+
+async def test_propose_operations_requires_propose_group(make) -> None:
+    from test_proposals_rebase import SHOP_STEWARDS, Human
+
+    kit = make(policies=SHOP_STEWARDS)
+    outsider = Human("bob", groups=frozenset({"staff"}))
+    with pytest.raises(LakeloomError) as info:
+        await kit.service.propose_operations(
+            "shop",
+            _imported(1),
+            origin="import",
+            principal=outsider,  # pyright: ignore[reportArgumentType]
+            client=None,
+            tool="import_model",
+        )
+    assert info.value.code == "forbidden"
+    assert kit.om.created() == []
+    assert [(r.tool, r.result) for r in await kit.audit_rows()] == [("import_model", "forbidden")]
+
+
+async def test_propose_operations_fails_closed_before_any_write(make) -> None:
+    kit = make()
+    ghost = AddRelation(op="add_relation", source="Imp000", relation_type="relatedTo", target="X")
+    with pytest.raises(LakeloomError):
+        await kit.service.propose_operations(
+            "shop",
+            [*_imported(1), ghost],
+            origin="git",
+            principal=AGENT,
+            client=None,
+            tool="import_from_git",
+        )
+    assert kit.om.created() == []
+    async with kit.repo._sessions() as session:  # pyright: ignore[reportPrivateUsage]
+        assert list((await session.execute(select(ProposalRow))).scalars()) == []
+
+
+async def test_provenance_block_has_origin_and_document(make) -> None:
+    kit = make()
+    doc = SourceDocument(
+        format="turtle", sha256="cd" * 32, bytes=9, git_ref="main", git_commit="f" * 40
+    )
+    await kit.service.propose_operations(
+        "shop",
+        _imported(1),
+        origin="git",
+        principal=AGENT,
+        client=None,
+        tool="import_from_git",
+        source_document=doc,
+    )
+    for kw in kit.om.created():
+        block = parse_provenance(kw["description"])
+        assert block["origin"] == "git"
+        assert block["source_document"] == doc.model_dump(mode="json")
+        assert block["scan_id"] is None
+
+
+async def test_scan_provenance_block_has_origin_but_no_document(make) -> None:
+    kit = make()
+    await _shop_proposal(kit)
+    block = parse_provenance(kit.om.created()[0]["description"])
+    assert block["origin"] == "scan" and "source_document" not in block
+
+
+def test_old_rows_default_origin_scan() -> None:
+    stored = Provenance(
+        scan_id="scan_1", principal_subject="a", principal_type="agent", at=NOW_UTC
+    ).model_dump(mode="json")
+    del stored["origin"], stored["source_document"]
+    loaded = Provenance.model_validate(stored)
+    assert loaded.origin == "scan" and loaded.source_document is None

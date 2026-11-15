@@ -190,6 +190,22 @@ class ProposalRepository:
         more = len(rows) > limit
         return [_from_row(r) for r in page], encode_cursor(page[-1].id) if more else None
 
+    async def applied_scan_ids(self, model: str) -> list[str]:
+        """The distinct scan ids of ``applied`` proposals of ``model``, newest proposal first
+        (ids are ULIDs); proposals without a scan are skipped (drift baseline, FR-PRO-07)."""
+        stmt = (
+            select(ProposalRow.scan_id)
+            .where(
+                ProposalRow.model == model,
+                ProposalRow.status == "applied",
+                ProposalRow.scan_id.is_not(None),
+            )
+            .order_by(ProposalRow.id.desc())
+        )
+        async with self._sessions() as session:
+            found = list((await session.execute(stmt)).scalars())
+        return list(dict.fromkeys(s for s in found if s is not None))
+
     async def pending_op_keys(self, model: str) -> dict[str, str]:
         """``op_key`` -> proposal id of every operation in an open proposal of ``model``
         (the ``pending`` callable of :func:`lakeloom.core.dedupe.dedupe`)."""
