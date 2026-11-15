@@ -70,7 +70,7 @@ from lakeloom.om.client import OMClient
 from lakeloom.rdf.canonical import parse_rdf
 from lakeloom.state.audit import AuditRepository
 from lakeloom.state.publications import PublicationRepository
-from lakeloom.state.releases import Release, ReleaseRepository
+from lakeloom.state.releases import Release, ReleaseRepository, SinkStatus
 
 __all__ = ["CREATE_RELEASE_TOOL", "ReleasePlan", "ReleaseResult", "ReleaseService"]
 
@@ -98,11 +98,19 @@ class ReleasePlan(BaseModel):
     expires_at: int
 
 
+_TRIPLESTORE: dict[SinkStatus, Literal["off", "queued", "done", "failed"]] = {
+    "none": "off",
+    "pending": "queued",
+    "done": "done",
+    "failed": "failed",
+}
+
+
 class ReleaseResult(BaseModel):
     release: Release
     plan: ReleasePlan
     already_done: bool
-    triplestore: Literal["off", "queued"]
+    triplestore: Literal["off", "queued", "done", "failed"]
 
 
 @dataclass
@@ -486,7 +494,7 @@ class ReleaseService:
             release=rel,
             plan=plan,
             already_done=already_done,
-            triplestore="queued" if rel.sink_status != "none" else "off",
+            triplestore=_TRIPLESTORE[rel.sink_status],
         )
 
     # --- shared planning ------------------------------------------------------------------

@@ -14,7 +14,7 @@ import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Any, cast
 
 import asyncpg  # pyright: ignore[reportMissingTypeStubs]
 import httpx
@@ -54,6 +54,7 @@ from lakeloom.logging import request_id_var
 from lakeloom.metrics import HTTP_REQUESTS, REGISTRY
 from lakeloom.om.client import OMClient
 from lakeloom.publish.artifacts import GitLinks
+from lakeloom.publish.triplestore import GraphStoreSink, SinkWorker
 from lakeloom.server.auth import (
     PRM_PATH,
     PUBLIC_PATHS,
@@ -80,12 +81,13 @@ from lakeloom.state.audit import AuditRepository
 from lakeloom.state.db import create_engine, upgrade
 from lakeloom.state.proposals import ProposalRepository
 from lakeloom.state.publications import PublicationRepository
-from lakeloom.state.releases import ReleaseRepository
+from lakeloom.state.releases import Release, ReleaseRepository
 from lakeloom.state.scans import ScanRepository
 from lakeloom.telemetry import configure_telemetry, is_active, start_span
 
 _log = logging.getLogger("lakeloom.http")
 _IDP_TIMEOUT = 5.0
+SINK_TIMEOUT = 30.0  # one Graph Store PUT
 # Probes and scrapes would drown the traces.
 _UNTRACED_PATHS = frozenset({"/healthz", "/readyz", "/metrics"})
 _CONNECTION_ERRORS: tuple[type[BaseException], ...] = (
@@ -127,6 +129,12 @@ class AppDeps:
     reader: ReleaseReader | None = field(init=False, default=None)
     release_service: ReleaseService | None = field(init=False, default=None)
     git_links: GitLinks | None = field(init=False, default=None)
+    # Optional triple-store sink (FR-TS): only with Git releases and LAKELOOM_TRIPLESTORE_ENABLED.
+    sink_http: httpx.AsyncClient | None = field(init=False, default=None)
+    sink_worker: SinkWorker | None = field(init=False, default=None)
+    sink_tasks: set["asyncio.Task[Any]"] = field(
+        init=False, default_factory=set["asyncio.Task[Any]"]
+    )
 
     def __post_init__(self) -> None:
         self.confirm = confirm_tokens_from_settings(self.settings)
@@ -166,6 +174,23 @@ class AppDeps:
         if wc is not None:
             key = self.publisher.repo_key
             self.reader = ReleaseReader(wc, key)
+            on_released = None
+            if self.settings.triplestore_enabled and self.settings.triplestore_url:
+                self.sink_http = httpx.AsyncClient(timeout=SINK_TIMEOUT)  # closed by the lifespan
+                self.sink_worker = SinkWorker(
+                    self.settings,
+                    self.releases_repo,
+                    self.reader,
+                    self.models,
+                    GraphStoreSink(
+                        self.sink_http,
+                        self.settings.triplestore_url,
+                        self.settings.triplestore_username,
+                        self.settings.triplestore_password,
+                    ),
+                    self.policies,
+                )
+                on_released = self._sink_inline
             # create_release is audited by guarded() (audit=None here, as for proposals).
             self.release_service = ReleaseService(
                 self.settings,
@@ -178,6 +203,7 @@ class AppDeps:
                 self.confirm,
                 None,
                 self.policies,
+                on_released=on_released,
             )
             base = web_base(self.settings)
             if base is not None:
@@ -194,6 +220,15 @@ class AppDeps:
             self.policies,
             publisher=self.publisher,
         )
+
+    async def _sink_inline(self, release: Release) -> None:
+        """One attempt right after a release, in the background: the tool never waits for it."""
+        worker = self.sink_worker
+        if worker is None or release.sink_status != "pending":
+            return
+        task = asyncio.create_task(worker.attempt(release.id), name="lakeloom-sink-inline")
+        self.sink_tasks.add(task)
+        task.add_done_callback(self.sink_tasks.discard)
 
     async def _last_commit(self, slug: str) -> str | None:
         """The commit of ``slug``'s last done Git publication (the latest artefacts' link)."""
@@ -413,6 +448,11 @@ def create_app(
                 await deps.publisher.process()
             except Exception as exc:  # process() never raises; belt and braces
                 _log.error("git publication worker failed (%s)", type(exc).__name__)
+            if deps.sink_worker is not None:
+                try:
+                    await deps.sink_worker.process()
+                except Exception as exc:  # process() never raises; belt and braces
+                    _log.error("triple store worker failed (%s)", type(exc).__name__)
             await asyncio.sleep(settings.git_retry_interval_seconds)
 
     @asynccontextmanager
@@ -447,7 +487,7 @@ def create_app(
                     await stack.enter_async_context(factory())
                 yield
         finally:
-            for task in (worker, retry):
+            for task in (worker, retry, *deps.sink_tasks):
                 if task is not None:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
@@ -456,6 +496,8 @@ def create_app(
                 await deps.idp_http.aclose()
             if deps.git_http is not None:
                 await deps.git_http.aclose()
+            if deps.sink_http is not None:
+                await deps.sink_http.aclose()
             await deps.om.aclose()
             await deps.engine.dispose()
             if owns_telemetry:

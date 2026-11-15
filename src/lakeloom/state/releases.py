@@ -197,3 +197,18 @@ class ReleaseRepository:
         async with self._sessions() as session, session.begin():
             result = await session.execute(stmt)
         return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
+    async def sink_last_error(self, repo: str) -> str | None:
+        """The error of the most recently released row still pending or failed, if any."""
+        stmt = (
+            select(ReleaseRow.sink_last_error)
+            .where(
+                ReleaseRow.repo == repo,
+                ReleaseRow.sink_status.in_(("pending", "failed")),
+                ReleaseRow.sink_last_error.is_not(None),
+            )
+            .order_by(ReleaseRow.created_at.desc(), ReleaseRow.id)
+            .limit(1)
+        )
+        async with self._sessions() as session:
+            return (await session.execute(stmt)).scalar_one_or_none()

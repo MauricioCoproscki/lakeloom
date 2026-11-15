@@ -585,3 +585,62 @@ def test_cli_release_when_git_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         result = runner.invoke(app, args)
         assert result.exit_code == 0, result.output
         assert "Git publishing is off" in result.output
+
+
+def test_sink_retry_cli_requeues_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import asyncio
+    import hashlib
+    from datetime import UTC, datetime
+
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.releases import Release, ReleaseRepository
+
+    remote = "file:///nowhere/remote.git"
+    repo_key = hashlib.sha256(remote.encode()).hexdigest()
+    db = f"sqlite:///{tmp_path}/l.db"
+    for name, value in {
+        "LAKELOOM_DATA_DIR": str(tmp_path),
+        "LAKELOOM_DB_URL": db,
+        "LAKELOOM_GIT_REMOTE": remote,
+        "LAKELOOM_LOG_LEVEL": "WARNING",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    async def seed() -> None:
+        engine = create_engine(db)
+        await upgrade(engine)
+        repo = ReleaseRepository(engine)
+        now = datetime.now(UTC)
+        for n, status in enumerate(("failed", "failed", "done")):
+            await repo.add(
+                Release(
+                    id=f"rel_{n}", repo=repo_key, model="shop", version=f"1.{n}.0",
+                    tag=f"shop/v1.{n}.0", commit_sha="b" * 40, released_by="alice",
+                    created_at=now, sink_status=status, sink_attempts=10,  # type: ignore[arg-type]
+                )
+            )  # fmt: skip
+        await engine.dispose()
+
+    async def counts() -> dict[str, int]:
+        engine = create_engine(db)
+        try:
+            return await ReleaseRepository(engine).sink_counts(repo_key)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(seed())
+    runner = CliRunner()
+
+    off = runner.invoke(app, ["release", "sink-retry"])
+    assert off.exit_code == 0 and "triple store is off" in off.output
+    assert asyncio.run(counts())["failed"] == 2
+
+    monkeypatch.setenv("LAKELOOM_TRIPLESTORE_ENABLED", "true")
+    monkeypatch.setenv("LAKELOOM_TRIPLESTORE_URL", "http://ts:3030/x/data")
+    out = runner.invoke(app, ["release", "sink-retry"])
+
+    assert out.exit_code == 0, out.output
+    assert "requeued 2 failed triple-store push(es)" in out.output
+    after = asyncio.run(counts())
+    assert (after["failed"], after["pending"], after["done"]) == (0, 2, 1)
+    assert "ts:3030" not in out.output and str(tmp_path) not in out.output

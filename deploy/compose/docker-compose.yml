@@ -367,6 +367,10 @@ services:
 
   # Optional RDF store (profile `rdf`). OM ships no prebuilt Fuseki image; the release's
   # docs build it from docker/rdf-store in the OM repo, so we build from the same tag.
+  # Optional release sink (off by default): to push Lakeloom releases here too, create a dataset
+  # (e.g. `lakeloom`) and set LAKELOOM_TRIPLESTORE_ENABLED=true,
+  # LAKELOOM_TRIPLESTORE_URL=http://fuseki:3030/lakeloom/data, LAKELOOM_TRIPLESTORE_USERNAME=admin
+  # and LAKELOOM_TRIPLESTORE_PASSWORD_FILE (the FUSEKI_ADMIN_PASSWORD) on the lakeloom service.
   fuseki:
     profiles: ["rdf"]
     build:

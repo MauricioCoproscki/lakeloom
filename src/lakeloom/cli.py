@@ -12,7 +12,8 @@ proposals awaiting review and ``lakeloom rebase ID`` rebases one. ``lakeloom git
 lists the queued and blocked Git publications and ``lakeloom git retry`` requeues the blocked
 ones and publishes once (FR-GIT-09). ``lakeloom release create MODEL`` prints the release dry
 run and, with ``--yes``, releases (FR-GIT-06); ``lakeloom release list MODEL`` lists the
-released versions. There is no review command:
+released versions; ``lakeloom release sink-retry`` requeues failed triple-store pushes
+(FR-TS-03). There is no review command:
 approving and rejecting are for human reviewers through MCP (ADR 0012). They write their own
 audit rows. Typed
 errors (``not_found``, ``upstream_unavailable``, ...) exit with code 1.
@@ -856,6 +857,35 @@ def release_list_cmd(model: Annotated[str, typer.Argument(help="Model slug.")]) 
             typer.echo("version\ttag\tcommit\treleased_at")
             for r in releases:
                 typer.echo(f"{r.version}\t{r.tag}\t{r.commit_sha[:7]}\t{r.released_at.isoformat()}")
+
+    _run(_go())
+
+
+@release_app.command("sink-retry")
+def release_sink_retry_cmd() -> None:
+    """Requeue the releases whose triple-store push failed; the server retries them."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        import hashlib
+
+        from lakeloom.state.db import create_engine, upgrade
+        from lakeloom.state.releases import ReleaseRepository
+
+        if not settings.git_remote:
+            typer.echo(_GIT_OFF)
+            return
+        if not settings.triplestore_enabled:
+            typer.echo("The triple store is off (LAKELOOM_TRIPLESTORE_ENABLED is not true).")
+            return
+        engine = create_engine(settings.db_url)
+        try:
+            await upgrade(engine)
+            repo = hashlib.sha256(settings.git_remote.encode()).hexdigest()
+            requeued = await ReleaseRepository(engine).requeue_failed_sinks(repo)
+        finally:
+            await engine.dispose()
+        typer.echo(f"requeued {requeued} failed triple-store push(es); the server retries them")
 
     _run(_go())
 

@@ -50,6 +50,13 @@ class ServerInfo(BaseModel):
             "and the queue head's last error. Never carries the remote URL or credentials."
         ),
     )
+    triplestore: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Triple-store sink (FR-TS): enabled, pending, failed and done release counts and "
+            "the last error. Never carries the endpoint URL or the password."
+        ),
+    )
     review_identity: OboMode = Field(
         description=(
             "How human review reaches OpenMetadata: 'exchange' (RFC 8693), 'forward' (the "
@@ -85,6 +92,7 @@ async def build_server_info(deps: AppDeps, principal: Principal | None) -> Serve
             "releases": deps.release_service is not None,
         },
         git=await _git_status(deps),
+        triplestore=await deps.sink_worker.status() if deps.sink_worker is not None else None,
         review_identity=deps.obo.mode,
         sources=[source_status(n, s) for n, s in deps.sources.items()],
         models=[],
@@ -130,6 +138,11 @@ def summarize(info: ServerInfo) -> str:
         )
     else:
         lines.append("- Git: off")
+    ts = info.triplestore
+    if ts is not None and ts.get("enabled"):
+        lines.append(
+            f"- Triple store: {ts.get('pending', 0)} pending, {ts.get('failed', 0)} failed"
+        )
     if info.caller is not None:
         scopes = ", ".join(info.caller.scopes) or "none"
         lines.append(f"- Caller: {info.caller.type} `{info.caller.subject}` (scopes: {scopes})")

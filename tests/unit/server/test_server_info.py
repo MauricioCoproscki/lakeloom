@@ -23,7 +23,9 @@ def principal(scopes: frozenset[str] = frozenset({"lakeloom:read"})) -> Principa
 
 
 async def test_fr_om_06_server_info_reports_om_version_and_rdf(make_deps: DepsFactory) -> None:
-    deps = make_deps(triplestore_enabled=True, oidc_token_exchange=False)
+    deps = make_deps(
+        triplestore_enabled=True, triplestore_url="http://ts/data", oidc_token_exchange=False
+    )
 
     info = await build_server_info(deps, principal())
 
@@ -120,3 +122,97 @@ async def test_server_info_reports_releases_feature(make_deps: DepsFactory) -> N
     assert off.features["releases"] is False
     assert on.features["releases"] is True
     assert "releases" in summarize(on) and "releases" not in summarize(off)
+
+
+async def test_server_info_triplestore_block(make_deps: DepsFactory) -> None:
+    from datetime import UTC, datetime
+
+    from lakeloom.state.db import upgrade
+    from lakeloom.state.releases import Release
+
+    password = "ts-password-4711"  # noqa: S105
+    url = "http://triples.internal:3030/lakeloom/data"
+    deps = make_deps(
+        git_remote="https://git.example.test/acme/onto.git",
+        git_mode="direct",
+        forge="none",
+        triplestore_enabled=True,
+        triplestore_url=url,
+        triplestore_username="admin",
+        triplestore_password=SecretStr(password),
+    )
+    await upgrade(deps.engine)
+    assert deps.sink_worker is not None
+    now = datetime(2026, 11, 15, tzinfo=UTC)
+    for n, (status, error) in enumerate(
+        [("failed", "triple store answered HTTP 401"), ("done", None)]
+    ):
+        await deps.releases_repo.add(
+            Release(
+                id=f"rel_{n}",
+                repo=deps.sink_worker.repo_key,
+                model="shop",
+                version=f"1.{n}.0",
+                tag=f"shop/v1.{n}.0",
+                commit_sha="b" * 40,
+                released_by="alice",
+                created_at=now,
+                sink_status=status,  # type: ignore[arg-type]
+                sink_attempts=1,
+                sink_last_error=error,
+            )
+        )
+
+    info = await build_server_info(deps, principal())
+
+    assert info.triplestore == {
+        "enabled": True,
+        "pending": 0,
+        "failed": 1,
+        "done": 1,
+        "last_error": "triple store answered HTTP 401",
+    }
+    assert info.features["triplestore"] is True
+    dumped = info.model_dump_json() + summarize(info)
+    assert password not in dumped and "triples.internal" not in dumped
+    assert "1 failed" in summarize(info)
+
+
+async def test_server_info_triplestore_off(make_deps: DepsFactory) -> None:
+    info = await build_server_info(make_deps(), None)
+    assert info.triplestore is None and "Triple store" not in summarize(info)
+
+
+async def test_release_hook_runs_the_attempt_in_the_background(make_deps: DepsFactory) -> None:
+    import asyncio
+    from datetime import UTC, datetime
+
+    from lakeloom.state.releases import Release
+
+    deps = make_deps(
+        git_remote="https://git.example.test/acme/onto.git",
+        git_mode="direct",
+        forge="none",
+        triplestore_enabled=True,
+        triplestore_url="http://ts/data",
+    )
+    assert deps.sink_worker is not None and deps.release_service is not None
+    release_gate = asyncio.Event()
+    seen: list[str] = []
+
+    async def slow_attempt(release_id: str) -> None:
+        await release_gate.wait()
+        seen.append(release_id)
+
+    deps.sink_worker.attempt = slow_attempt  # type: ignore[method-assign]
+    rel = Release(
+        id="rel_1", repo="r", model="shop", version="1.0.0", tag="shop/v1.0.0",
+        commit_sha="b" * 40, released_by="a", created_at=datetime.now(UTC), sink_status="pending",
+    )  # fmt: skip
+    hook = deps.release_service._on_released
+    assert hook is not None
+    await asyncio.wait_for(hook(rel), 1)  # returns although the attempt is still blocked
+    assert seen == [] and len(deps.sink_tasks) == 1
+    release_gate.set()
+    await asyncio.gather(*deps.sink_tasks)
+    assert seen == ["rel_1"] and not deps.sink_tasks

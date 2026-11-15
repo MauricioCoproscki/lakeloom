@@ -701,7 +701,7 @@ async def test_sink_queued_when_enabled(env: Env) -> None:
         calls.append(rel.id)
         raise RuntimeError("sink hook failed")
 
-    env.build(triplestore_enabled=True, on_released=boom)
+    env.build(triplestore_enabled=True, triplestore_url="http://ts/data", on_released=boom)
     res = await env.release()
     assert res.triplestore == "queued" and res.release.sink_status == "pending"
     assert calls == [res.release.id]  # the hook's failure never fails the release
@@ -713,7 +713,7 @@ async def test_sink_off_for_model_policy(env: Env) -> None:
     policies = [
         ModelPolicyEntry.model_validate({"name": "shop", "triplestore": {"enabled": False}})
     ]
-    env.build(triplestore_enabled=True, policies=policies)
+    env.build(triplestore_enabled=True, triplestore_url="http://ts/data", policies=policies)
     res = await env.release()
     assert res.triplestore == "off" and res.release.sink_status == "none"
 
@@ -767,3 +767,54 @@ async def test_unrecorded_release_raises_and_retry_records(env: Env) -> None:
     again = await env.svc.create(human(), "shop", **args)
     assert again.already_done and flaky.adds == 2 and env.released == [res.release]
     assert env.remote_tags() == ["shop/v1.0.0"]
+
+
+async def test_sink_down_never_blocks_release(env: Env) -> None:
+    from lakeloom.publish.triplestore import SinkError, SinkWorker
+
+    class DownSink:
+        calls = 0
+
+        async def replace_graph(self, graph_iri: str, turtle: bytes) -> None:
+            self.calls += 1
+            raise SinkError(True, "triple store unreachable (ConnectError)")
+
+    sink = DownSink()
+    holder: list[SinkWorker] = []
+
+    async def inline(rel: Release) -> None:
+        await holder[0].attempt(rel.id)  # what the server's background task does
+
+    svc = env.build(
+        triplestore_enabled=True,
+        triplestore_url="http://ts/data",
+        public_url="http://x",
+        on_released=inline,
+    )
+    holder.append(
+        SinkWorker(env.settings, env.releases, env.reader, env.models, sink, [])  # type: ignore[arg-type]
+    )
+    assert svc is env.svc
+    res = await env.release()
+    assert res.triplestore == "queued" and res.release.status == "done"
+    assert env.remote_tags() == ["shop/v1.0.0"]  # the Git release stands
+    assert sink.calls == 1
+    stored = await env.releases.get(res.release.id)
+    assert stored is not None and stored.status == "done"
+    assert stored.sink_status == "pending" and stored.sink_attempts == 1
+    assert stored.sink_last_error == "triple store unreachable (ConnectError)"
+    assert stored.sink_next_attempt_at is not None
+
+
+async def test_result_reports_the_row_state_of_the_sink(env: Env) -> None:
+    env.build(triplestore_enabled=True, triplestore_url="http://ts/data")
+    plan = await env.svc.plan(human(), "shop", version=None, bump=None)
+    args: dict[str, Any] = {"version": None, "bump": None, "confirm_token": plan.confirm_token}
+    first = await env.svc.create(human(), "shop", **args)
+    assert first.triplestore == "queued"
+    row = first.release.model_copy(update={"sink_status": "done"})
+    await env.releases.update(row)
+    again = await env.svc.create(human(), "shop", **args)  # the idempotent retry
+    assert again.already_done and again.triplestore == "done"
+    await env.releases.update(row.model_copy(update={"sink_status": "failed"}))
+    assert (await env.svc.create(human(), "shop", **args)).triplestore == "failed"

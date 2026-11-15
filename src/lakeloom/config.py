@@ -1,11 +1,11 @@
 """Runtime configuration (REQUIREMENTS.md §10, NFR-DEP-03, NFR-SEC-11).
 
 All settings come from ``LAKELOOM_*`` environment variables; no ``.env`` file is read.
-Secrets (``om_bot_token``, ``git_token``, ``confirm_secret``) and ``db_url`` (which may
-embed a password) may instead be supplied as ``LAKELOOM_<NAME>_FILE`` pointing at a file
-(Docker/Kubernetes secrets). Trailing whitespace is stripped from the file content, and
-setting both forms is an error. Secrets are ``SecretStr`` so they never appear in ``repr``
-or ``model_dump``;
+Secrets (``om_bot_token``, ``git_token``, ``triplestore_password``, ``confirm_secret``) and
+``db_url`` (which may embed a password) may instead be supplied as ``LAKELOOM_<NAME>_FILE``
+pointing at a file (Docker/Kubernetes secrets). Trailing whitespace is stripped from the file
+content, and setting both forms is an error. Secrets are ``SecretStr`` so they never appear in
+``repr`` or ``model_dump``;
 ``db_url`` and ``git_remote`` stay plain ``str`` (callers use them as URLs) but are
 excluded from ``repr``.
 """
@@ -29,6 +29,7 @@ SECRET_FILE_FIELDS = (
     "db_url",
     "confirm_secret",
     "oidc_client_secret",
+    "triplestore_password",
 )
 
 
@@ -124,7 +125,13 @@ class Settings(BaseSettings):
     profile_low_cardinality: int = Field(default=50, ge=1, le=100_000)
     profile_value_max_length: int = Field(default=64, ge=1, le=10_000)
     scan_concurrency: int = Field(default=8, ge=1, le=256)
+    # M3b optional triple-store sink (FR-TS): the Graph Store endpoint, e.g.
+    # http://fuseki:3030/lakeloom/data. Operator-only (NFR-SEC-13); out of repr.
     triplestore_enabled: bool = False
+    triplestore_url: str | None = Field(default=None, repr=False)
+    triplestore_username: str | None = None
+    triplestore_password: SecretStr | None = None
+    triplestore_shapes: bool = True
     model_cache_ttl_seconds: int = Field(60, ge=0, le=3600)
     # None means "auto": False in production, True in development (resolved after validation).
     stdio_enabled: bool | None = None
@@ -156,6 +163,9 @@ class Settings(BaseSettings):
         "git_token",
         "forge_api_url",
         "git_web_url",
+        "triplestore_url",
+        "triplestore_username",
+        "triplestore_password",
         mode="before",
     )
     @classmethod
@@ -213,6 +223,15 @@ class Settings(BaseSettings):
                 f"LAKELOOM_STDIO_SCOPES names unknown scopes {unknown}; known: {list(SCOPES)}"
             )
         return value
+
+    @model_validator(mode="after")
+    def _triplestore_needs_url(self) -> Self:
+        if self.triplestore_enabled and not self.triplestore_url:
+            raise ConfigError(
+                "LAKELOOM_TRIPLESTORE_ENABLED is true but LAKELOOM_TRIPLESTORE_URL is not set "
+                "(the Graph Store endpoint, e.g. http://fuseki:3030/lakeloom/data)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _resolve_stdio(self) -> Self:
