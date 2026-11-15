@@ -729,3 +729,41 @@ async def test_git_disabled_and_unknown_model(env: Env) -> None:
     assert err.code == "not_found"
     err = await _code(env.svc.plan(human(), "../x", version=None, bump=None))
     assert err.code == "not_found"
+
+
+class _FlakyReleases(ReleaseRepository):
+    """A store whose first ``add`` fails (the push already landed)."""
+
+    adds = 0
+
+    async def add(self, rel: Release) -> Release:
+        self.adds += 1
+        if self.adds == 1:
+            raise RuntimeError("state store down")
+        return await super().add(rel)
+
+
+async def test_unrecorded_release_raises_and_retry_records(env: Env) -> None:
+    flaky = _FlakyReleases(env.engine)
+    env.releases = flaky
+    env.build()
+    plan = await env.svc.plan(human(), "shop", version=None, bump=None)
+    args: dict[str, Any] = {"version": None, "bump": None, "confirm_token": plan.confirm_token}
+    err = await _code(env.svc.create(human(), "shop", **args))
+    assert err.code == "upstream_unavailable"
+    assert err.message == "release shop/v1.0.0 was pushed but could not be recorded"
+    assert err.hint == "retry with the same confirm_token"
+    assert env.remote_tags() == ["shop/v1.0.0"]  # the pushed tag is kept
+    assert git("tag", "-l", cwd=env.wc.path).split() == ["shop/v1.0.0"]
+    assert env.released == []
+    audits = [r for r in (await env.audit.list(None, None, 10)).items]
+    assert [(r.result, r.error_code, r.change_set_id) for r in audits] == [
+        ("error", "upstream_unavailable", "shop/v1.0.0")
+    ]
+    res = await env.svc.create(human(), "shop", **args)
+    assert res.already_done and res.release.tag == "shop/v1.0.0"
+    assert flaky.adds == 2 and await env.releases.get(res.release.id) == res.release
+    assert env.released == [res.release]
+    again = await env.svc.create(human(), "shop", **args)
+    assert again.already_done and flaky.adds == 2 and env.released == [res.release]
+    assert env.remote_tags() == ["shop/v1.0.0"]

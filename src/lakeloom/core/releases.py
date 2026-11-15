@@ -279,7 +279,7 @@ class ReleaseService:
                 await self._ensure_branch(wc, branch)
                 await wc.checkout_tip(branch)
                 await wc.fetch_tags(f"{model}/v*")
-                done = await self._already_done(wc, model, branch, release_id, bump, token)
+                done = await self._already_done(trail, wc, model, branch, release_id, bump, token)
                 if done is not None:
                     return done
                 await self._require_published(model)
@@ -306,11 +306,11 @@ class ReleaseService:
             except GitError as exc:
                 raise _git_failure(exc) from None
             plan = self._plan_of(model, computed, state, bump, token, _token_expiry(token))
+            if self._reader is not None:
+                self._reader.invalidate(model)  # the tag is pushed, whatever happens next
             rel, stored = await self._record(
                 release_id, model, computed.version, tag, sha, self._released_by(principal)
             )
-            if self._reader is not None:
-                self._reader.invalidate(model)
         return self._result(rel, plan, already_done=False), stored
 
     async def _ensure_branch(self, wc: WorkingCopy, branch: str) -> None:
@@ -320,6 +320,7 @@ class ReleaseService:
 
     async def _already_done(
         self,
+        trail: AuditContext,
         wc: WorkingCopy,
         model: str,
         branch: str,
@@ -366,12 +367,13 @@ class ReleaseService:
             confirm_token=token,
             expires_at=_token_expiry(token),
         )
+        trail.change_set_id = tag
+        if self._reader is not None:
+            self._reader.invalidate(model)
         by = await wc.trailer_of(sha, "Released-By")
         rel, stored = await self._record(
             release_id, model, version, tag, sha, by[0] if by else "unknown"
         )
-        if self._reader is not None:
-            self._reader.invalidate(model)
         return self._result(rel, plan, already_done=True), stored
 
     async def _commit_tag_push(
@@ -470,9 +472,14 @@ class ReleaseService:
         try:
             return await self._releases.add(rel), True
         except Exception as exc:
-            # The tag is on the remote: the release is done. A retry stores the row.
+            # The tag is on the remote (kept): without the row there is no sink queue entry,
+            # no hook and no audit of success, so fail; the retry's idempotent path stores it.
             _log.error("release %s: could not store its row (%s)", release_id, type(exc).__name__)
-            return rel, False
+            raise LakeloomError(
+                "upstream_unavailable",
+                f"release {tag} was pushed but could not be recorded",
+                "retry with the same confirm_token",
+            ) from None
 
     def _result(self, rel: Release, plan: ReleasePlan, *, already_done: bool) -> ReleaseResult:
         return ReleaseResult(
