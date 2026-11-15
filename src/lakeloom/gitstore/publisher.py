@@ -62,9 +62,13 @@ def backoff_seconds(attempts: int) -> int:
     return min(BACKOFF_BASE * 2 ** max(attempts - 1, 0), BACKOFF_MAX)
 
 
-def _lock(repo_key: str) -> asyncio.Lock:
+def repo_lock(repo_key: str) -> asyncio.Lock:
+    """The lock that serialises every use of one repository's working copy."""
     per_loop = _LOCKS.setdefault(asyncio.get_running_loop(), {})
     return per_loop.setdefault(repo_key, asyncio.Lock())
+
+
+_lock = repo_lock
 
 
 class _Transient(Exception):

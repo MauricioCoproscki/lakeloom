@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     git_publish_timeout_seconds: float = Field(20, ge=0, le=300)
     git_retry_interval_seconds: int = Field(60, ge=5, le=3600)
     forge_api_url: AnyHttpUrl | None = None
+    # Web base of the repository for release links; derived from git_remote when unset.
+    git_web_url: AnyHttpUrl | None = None
     forge: Literal["github", "gitlab", "gitea", "none"] = "github"
     profile_samples: bool = False
     # JSON list or comma-separated string.
@@ -153,6 +155,7 @@ class Settings(BaseSettings):
         "git_remote",
         "git_token",
         "forge_api_url",
+        "git_web_url",
         mode="before",
     )
     @classmethod

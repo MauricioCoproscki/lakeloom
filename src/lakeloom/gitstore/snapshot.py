@@ -29,16 +29,20 @@ _log = logging.getLogger(__name__)
 async def fill_exports(models: ModelService, om: OMClient, snapshot: Snapshot) -> Snapshot:
     """``snapshot`` with the model's current exports, model version and OM version.
 
-    Raises whatever the export raises (the publisher treats it as transient).
+    Raises whatever the export raises (the publisher treats it as transient). The five
+    exports must come from one graph state: the version is read first and again after the
+    exports, and a change in between raises a plain (transient) error.
     """
     slug = snapshot.model
     info = await models.get_model(slug)
+    version = await models.version(slug)
     ttl = await models.export(slug, "turtle")
     jsonld = await models.export(slug, "jsonld")
     owl = await models.export(slug, "rdfxml")
     shapes = await models.shapes_bytes(slug, "text/turtle")  # cached: same bytes as HTTP
     context = await models.jsonld_context_bytes(slug)
-    version = await models.version(slug)
+    if await models.version(slug) != version:
+        raise RuntimeError(f"model {slug} changed while it was being exported")
     caps = await om.get_capabilities()
     return snapshot.model_copy(
         update={

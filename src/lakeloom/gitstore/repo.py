@@ -2,13 +2,57 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+from pydantic import BaseModel
+
+from lakeloom.core.model_create import SLUG_PATTERN
+from lakeloom.core.release_diff import parse_version
+from lakeloom.errors import LakeloomError
 from lakeloom.gitstore.git import GitError, GitRunner
 
-__all__ = ["WorkingCopy"]
+__all__ = ["LogEntry", "TagInfo", "WorkingCopy"]
+
+_SLUG = re.compile(SLUG_PATTERN)
+_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_TRAILER_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
+
+
+class TagInfo(BaseModel):
+    name: str
+    object_sha: str
+    commit_sha: str
+    tagged_at: datetime
+    subject: str
+
+
+class LogEntry(BaseModel):
+    sha: str
+    subject: str
+    trailers: dict[str, list[str]]
+
+
+def _check_ref(ref: str) -> str:
+    """A branch, tag or object name that is safe as a git argument (never an option)."""
+    if not _REF.fullmatch(ref) or ".." in ref or "//" in ref or ref.endswith((".", "/", ".lock")):
+        raise ValueError(f"unsafe git ref: {ref!r}")
+    return ref
+
+
+def _check_tag(name: str) -> str:
+    """``<slug>/v<MAJOR.MINOR.PATCH>`` with a slug Lakeloom accepts."""
+    slug, sep, version = name.partition("/v")
+    if not sep or not _SLUG.fullmatch(slug):
+        raise ValueError(f"unsafe tag name: {name!r}")
+    try:
+        parse_version(version)
+    except LakeloomError:
+        raise ValueError(f"unsafe tag name: {name!r}") from None
+    return name
 
 
 def _safe_rel(rel: str) -> PurePosixPath:
@@ -158,3 +202,124 @@ class WorkingCopy:
             if any(line.strip() == value for line in values.splitlines()):
                 return sha.strip()
         return None
+
+    # --- tags and history (M3b releases) -------------------------------------------------
+
+    async def fetch_tags(self, pattern: str) -> None:
+        """Fetch the remote tags matching ``<slug>/v*`` (forced: a moved tag is overwritten)."""
+        slug, sep, rest = pattern.partition("/")
+        if not _SLUG.fullmatch(slug) or not sep or rest != "v*":
+            raise ValueError(f"unsafe tag pattern: {pattern!r}")
+        await self._git("fetch", "origin", "--force", f"+refs/tags/{pattern}:refs/tags/{pattern}")
+
+    async def tags(self, prefix: str) -> list[TagInfo]:
+        """Local tags under ``prefix`` (for example ``retail/``), unsorted."""
+        if not prefix.endswith("/") or not _SLUG.fullmatch(prefix[:-1]):
+            raise ValueError(f"unsafe tag prefix: {prefix!r}")
+        fmt = (
+            "%01%(refname)%00%(objectname)%00%(*objectname)%00"
+            "%(creatordate:iso-strict)%00%(contents:subject)"
+        )
+        out = await self._git("for-each-ref", f"--format={fmt}", f"refs/tags/{prefix}")
+        found: list[TagInfo] = []
+        for record in out.split("\x01"):
+            if not record.strip():
+                continue
+            ref, obj, peeled, when, subject = record.rstrip("\n").split("\x00", 4)
+            found.append(
+                TagInfo(
+                    name=ref.removeprefix("refs/tags/"),
+                    object_sha=obj,
+                    commit_sha=peeled or obj,
+                    tagged_at=datetime.fromisoformat(when),
+                    subject=subject,
+                )
+            )
+        return found
+
+    async def remote_tag(self, name: str) -> str | None:
+        """The commit a remote tag points at (peeled), or ``None`` when it does not exist."""
+        _check_tag(name)
+        ref = f"refs/tags/{name}"
+        out = await self._git("ls-remote", "--tags", "origin", ref, f"{ref}^{{}}")
+        plain: str | None = None
+        for line in out.splitlines():
+            sha, _, found = line.partition("\t")
+            if found.strip() == f"{ref}^{{}}":
+                return sha
+            if found.strip() == ref:
+                plain = sha
+        return plain
+
+    async def show(self, ref: str, path: str) -> bytes | None:
+        """The bytes of ``path`` at ``ref`` (a commit or tag), ``None`` when it is absent."""
+        _check_ref(ref)
+        rel = _safe_rel(path).as_posix()
+        try:
+            out = await self._git("show", f"{ref}:{rel}")
+        except GitError as exc:
+            if exc.kind == "not_found":
+                return None
+            raise
+        return out.encode("utf-8")
+
+    async def tag_annotated(self, name: str, message: str) -> str:
+        """Tag ``HEAD`` with an annotated tag; the message is kept verbatim. Returns its sha."""
+        _check_tag(name)
+        await self._git(
+            "tag", "-a", "--cleanup=verbatim", "-F", "-", name, input=message.encode("utf-8")
+        )
+        return (await self._git("rev-parse", f"refs/tags/{name}")).strip()
+
+    async def delete_tag(self, name: str) -> None:
+        _check_tag(name)
+        await self._git("tag", "-d", name)
+
+    async def push_atomic(self, branch: str, tag: str) -> None:
+        """Push ``branch`` and ``tag`` together: both land or neither does."""
+        _check_ref(branch)
+        _check_tag(tag)
+        await self._git(
+            "push",
+            "--atomic",
+            "origin",
+            f"refs/heads/{branch}:refs/heads/{branch}",
+            f"refs/tags/{tag}:refs/tags/{tag}",
+        )
+
+    async def log_since(self, since: str | None, path: str, key: str) -> list[LogEntry]:
+        """Commits touching ``path`` after ``since`` (all when ``None``), oldest first.
+
+        ``trailers`` holds the values of the ``key`` trailer of each commit only.
+        """
+        if _TRAILER_KEY.fullmatch(key) is None:
+            raise ValueError(f"unsafe trailer key: {key!r}")
+        rel = _safe_rel(path).as_posix()
+        rng = f"{_check_ref(since)}..HEAD" if since is not None else "HEAD"
+        out = await self._git(
+            "log",
+            "--reverse",
+            rng,
+            f"--format=%x01%H%x00%s%x00%(trailers:key={key},valueonly,unfold)",
+            "--",
+            rel,
+        )
+        entries: list[LogEntry] = []
+        for record in out.split("\x01"):
+            if not record.strip():
+                continue
+            sha, subject, values = record.split("\x00", 2)
+            lines = [v.strip() for v in values.splitlines() if v.strip()]
+            entries.append(
+                LogEntry(sha=sha.strip(), subject=subject, trailers={key: lines} if lines else {})
+            )
+        return entries
+
+    async def trailer_of(self, ref: str, key: str) -> list[str]:
+        """The values of the ``key`` trailer of commit ``ref`` (empty when none)."""
+        if _TRAILER_KEY.fullmatch(key) is None:
+            raise ValueError(f"unsafe trailer key: {key!r}")
+        out = await self._git(
+            "log", "-1", _check_ref(ref), f"--format=%(trailers:key={key},valueonly,unfold)", "--"
+        )
+        return [v.strip() for v in out.splitlines() if v.strip()]

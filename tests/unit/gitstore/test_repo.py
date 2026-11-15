@@ -170,3 +170,102 @@ async def test_symlinks_cannot_escape_the_repo(
     with pytest.raises(ValueError, match="unsafe"):
         wc.read("evil")
     assert "evil" not in wc.list_files("")
+
+
+async def test_tag_push_atomic_and_remote_tag(wc: WorkingCopy) -> None:
+    await wc.ensure()
+    sha = await wc.init_branch("main", {"ontologies/retail/ontology.ttl": b"x\n"}, "seed")
+    await wc.push("main", "main")
+    assert await wc.remote_tag("retail/v1.0.0") is None
+    obj = await wc.tag_annotated("retail/v1.0.0", "retail v1.0.0\n\nbody\n")
+    assert obj != sha
+    await wc.push_atomic("main", "retail/v1.0.0")
+    assert await wc.remote_tag("retail/v1.0.0") == sha
+    (info,) = await wc.tags("retail/")
+    assert (info.name, info.object_sha, info.commit_sha) == ("retail/v1.0.0", obj, sha)
+    assert info.subject == "retail v1.0.0"
+    await wc.delete_tag("retail/v1.0.0")
+    assert await wc.tags("retail/") == []
+
+
+async def test_tag_message_round_trips_verbatim(
+    wc: WorkingCopy, git_cmd: Callable[..., str]
+) -> None:
+    await wc.ensure()
+    await wc.init_branch("main", {"a": b"1"}, "seed")
+    message = "retail v1.0.0\n\n## [1.0.0] - 2026-11-15\n\n# heading\n- added `A`\n"
+    await wc.tag_annotated("retail/v1.0.0", message)
+    body = git_cmd("for-each-ref", "--format=%(contents)", "refs/tags/retail/v1.0.0", cwd=wc.path)
+    assert body == message + "\n"  # for-each-ref ends each record with a newline
+
+
+async def test_push_atomic_rejected_leaves_remote_unchanged(
+    wc: WorkingCopy, push_foreign: PushForeign
+) -> None:
+    push_foreign("seed", {"a.txt": "1\n"})
+    await wc.ensure()
+    await wc.checkout_tip("main")
+    push_foreign("moved", {"b.txt": "2\n"})
+    moved = await wc.remote_head("main")
+    wc.write({"c.txt": b"3\n"})
+    await wc.commit("mine")
+    await wc.tag_annotated("retail/v1.0.0", "m\n")
+    with pytest.raises(GitError) as exc:
+        await wc.push_atomic("main", "retail/v1.0.0")
+    assert exc.value.kind == "rejected"
+    assert await wc.remote_head("main") == moved
+    assert await wc.remote_tag("retail/v1.0.0") is None
+
+
+async def test_show_reads_tagged_file(wc: WorkingCopy) -> None:
+    await wc.ensure()
+    await wc.init_branch("main", {"ontologies/a/ontology.ttl": "v1 é\n".encode()}, "one")
+    await wc.tag_annotated("a/v1.0.0", "m\n")
+    wc.write({"ontologies/a/ontology.ttl": b"v2\n"})
+    await wc.commit("two")
+    assert await wc.show("a/v1.0.0", "ontologies/a/ontology.ttl") == "v1 é\n".encode()
+    assert await wc.show("HEAD", "ontologies/a/ontology.ttl") == b"v2\n"
+    assert await wc.show("a/v1.0.0", "ontologies/a/missing.ttl") is None
+
+
+async def test_log_since_lists_publication_commits_with_trailers(wc: WorkingCopy) -> None:
+    await wc.ensure()
+    await wc.init_branch("main", {"ontologies/a/x": b"1"}, "one\n\nLakeloom-Proposal: p1\n")
+    await wc.tag_annotated("a/v1.0.0", "m\n")
+    wc.write({"ontologies/a/x": b"2", "ontologies/b/x": b"2"})
+    await wc.commit("two\n\nLakeloom-Proposal: p2\n")
+    wc.write({"ontologies/b/x": b"3"})
+    await wc.commit("other model\n\nLakeloom-Proposal: p3\n")
+    wc.write({"ontologies/a/x": b"4"})
+    await wc.commit("three\n\nLakeloom-Proposal: p4\nLakeloom-Proposal: p5\n")
+    allc = await wc.log_since(None, "ontologies/a", "Lakeloom-Proposal")
+    assert [e.subject for e in allc] == ["one", "two", "three"]
+    since = await wc.log_since("a/v1.0.0", "ontologies/a", "Lakeloom-Proposal")
+    assert [e.subject for e in since] == ["two", "three"]
+    assert since[1].trailers == {"Lakeloom-Proposal": ["p4", "p5"]}
+    assert await wc.trailer_of(since[0].sha, "Lakeloom-Proposal") == ["p2"]
+    assert await wc.trailer_of("HEAD", "Nope") == []
+
+
+async def test_git_args_reject_dash_and_bad_tags(wc: WorkingCopy) -> None:
+    await wc.ensure()
+    await wc.init_branch("main", {"a": b"1"}, "seed")
+    for bad in ("-x/v1.0.0", "a/v1.0", "a/v01.0.0", "a/v1.0.0-rc1", "A/v1.0.0", "a/v1.0.0 x"):
+        with pytest.raises(ValueError, match="unsafe"):
+            await wc.tag_annotated(bad, "m")
+        with pytest.raises(ValueError, match="unsafe"):
+            await wc.delete_tag(bad)
+        with pytest.raises(ValueError, match="unsafe"):
+            await wc.remote_tag(bad)
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.show("--output=x", "a")
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.show("HEAD", "../x")
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.log_since("-n", "a", "K")
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.push_atomic("-f", "a/v1.0.0")
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.fetch_tags("--all")
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.tags("-x/")
