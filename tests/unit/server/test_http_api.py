@@ -477,7 +477,7 @@ def test_unknown_version_404_with_hint(
         assert r.status_code == 404, (path, r.text)
         err = r.json()["error"]
         assert err["code"] == "not_found" and err["message"].startswith("no release")
-        assert err["hint"] == "GET /v1/models/{slug}/versions"
+        assert err["hint"] == "GET /v1/models/retail/versions"
         assert len(err["message"]) < 120
 
 

@@ -26,6 +26,7 @@ from lakeloom.publish.artifacts import (
     require_latest,
     resolve_version,
     shapes_artifact,
+    versions_artifact,
 )
 from lakeloom.publish.negotiation import FORMAT_BY_MEDIA
 
@@ -435,6 +436,25 @@ async def test_links_never_carry_userinfo(settings: dict[str, Any]) -> None:
     text = "".join(rel.links + latest.links)
     assert "s3cret" not in text and "user" not in text and "git@" not in text
     assert all(link.startswith("<https://") for link in rel.links)
+
+
+async def test_versions_falls_back_to_latest_when_tags_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DownReader(FakeReader):
+        async def list(self, slug: str) -> list[ReleaseInfo]:
+            raise LakeloomError("upstream_unavailable", "release tags unavailable", "retry")
+
+    models, _ = make()
+    with caplog.at_level("WARNING"):
+        art = await versions_artifact(
+            models,
+            "retail",
+            ["text/turtle"],
+            releases=DownReader(),  # type: ignore[arg-type]
+        )
+    assert [e["version"] for e in json.loads(art.body)] == ["latest"]
+    assert "release tags of retail unavailable" in caplog.text
 
 
 async def test_resolve_version() -> None:

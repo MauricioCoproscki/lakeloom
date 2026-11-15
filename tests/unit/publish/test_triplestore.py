@@ -195,7 +195,16 @@ async def test_worker_puts_release_latest_and_shapes(kit: Kit) -> None:
 async def test_latest_only_for_highest_release(kit: Kit) -> None:
     await kit.repo.add(release("1.0.0"))
     await kit.worker(versions=["1.1.0", "1.0.0"]).process(NOW)
-    assert kit.rec.graphs == [f"{BASE}release/1.0.0", f"{BASE}shapes"]
+    assert kit.rec.graphs == [f"{BASE}release/1.0.0"]
+
+
+async def test_retry_of_older_release_never_overwrites_shapes(kit: Kit) -> None:
+    """``<base>shapes`` follows ``<base>latest``: an older release's retry leaves it alone."""
+    await kit.repo.add(release("1.0.0"))
+    await kit.repo.add(release("1.1.0"))
+    await kit.worker(versions=["1.1.0", "1.0.0"]).process(NOW)
+    shapes = [r.content for r in kit.rec.requests if r.url.params["graph"] == f"{BASE}shapes"]
+    assert shapes == [b"shapes.ttl@1.1.0"]
 
 
 async def test_shapes_off_by_policy(kit: Kit) -> None:
@@ -318,6 +327,45 @@ async def test_sink_error_redacts_password(kit: Kit, caplog: pytest.LogCaptureFi
         assert PASSWORD not in repr(out) and PASSWORD not in caplog.text
         status = await kit.worker().status()
         assert PASSWORD not in str(status)
+
+
+async def test_sink_error_redacts_basic_header_and_encoded_password() -> None:
+    special = "p@ss:w/rd"
+    token = base64.b64encode(f"admin:{special}".encode()).decode()
+
+    def echo(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            text=f"Authorization: {request.headers['authorization']} "
+            f"url http://admin:p%40ss%3Aw%2Frd@fuseki/",
+        )
+
+    with pytest.raises(SinkError) as exc:
+        await sink_for(echo, password=special).replace_graph("g", b"x")
+    assert token not in exc.value.message
+    assert special not in exc.value.message and "p%40ss%3Aw%2Frd" not in exc.value.message
+    assert "HTTP 401" in exc.value.message
+
+
+async def test_stale_due_list_does_not_burn_an_attempt(kit: Kit, engine: AsyncEngine) -> None:
+    """A row the inline attempt has just rescheduled is skipped by ``process``."""
+    later = NOW + timedelta(minutes=5)
+    await kit.repo.add(release(sink_attempts=1, sink_next_attempt_at=later))
+    stale = release()  # as read before the inline attempt rescheduled it
+
+    class Stale(ReleaseRepository):
+        async def sink_due(self, repo: str, now: datetime) -> list[Release]:
+            return [stale]
+
+    worker = kit.worker()
+    worker._releases = Stale(engine)
+    assert await worker.process(NOW) == []
+    assert kit.rec.requests == []
+    stored = await kit.repo.get("rel_1.0.0")
+    assert stored is not None and stored.sink_attempts == 1
+    assert stored.sink_next_attempt_at == later
+    # due at ``later``: attempted then
+    assert [r.sink_status for r in await worker.process(later)] == ["done"]
 
 
 async def test_policy_disabled_row_is_dropped_from_the_queue(kit: Kit) -> None:

@@ -308,12 +308,20 @@ async def versions_artifact(
     Each entry is ``{version, tag, commit, released_at, media_types, links}``; ``links`` are
     ``{href, rel}`` objects (the same URLs as the artefact's ``Link`` header). The listing's
     validators: the latest artefact's links, and the later of its Last-Modified and the newest
-    tagger date.
+    tagger date. When the release tags are unavailable the listing holds ``latest`` only.
     """
     latest = await model_artifact(
         models, slug, "text/turtle", version=None, releases=releases, git=git
     )  # resolves the model (404) and supplies Last-Modified and Link
-    rels = [] if releases is None else await releases.list(slug)
+    rels: list[ReleaseInfo] = []
+    if releases is not None:
+        try:
+            rels = await releases.list(slug)
+        except LakeloomError as exc:
+            if exc.code != "upstream_unavailable":
+                raise
+            # The tags are unreadable right now: still list ``latest`` (FR-PUB-02).
+            _log.warning("release tags of %s unavailable; listing latest only", slug)
 
     def entry(version: str, rel: ReleaseInfo | None, links: list[str]) -> dict[str, Any]:
         return {

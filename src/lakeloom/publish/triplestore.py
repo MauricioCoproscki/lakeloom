@@ -5,20 +5,25 @@ A done release stored with ``sink_status = pending`` is pushed to the configured
 
 1. ``ontology.ttl`` to ``<{base}release/{version}>``;
 2. the same body to ``<{base}latest>``, only while this is the highest release of the model;
-3. ``shapes.ttl`` to ``<{base}shapes>``, when shapes are enabled and the release has the file.
+3. ``shapes.ttl`` to ``<{base}shapes>``, when shapes are enabled and the release has the file,
+   only while this is the highest release (like ``latest``: an older release's retry never
+   overwrites the newer shapes).
 
 The sink never blocks or undoes the Git release: failures are recorded on the release row and
 retried with backoff (60 s doubling, max 1 h) until :data:`MAX_SINK_ATTEMPTS`, then the row is
 ``failed`` until ``lakeloom release sink-retry``. Every PUT replaces a graph, so a retry after a
-partial run is safe. The password is stripped from every message (NFR-SEC-11).
+partial run is safe. The password (plain, URL-encoded, and as the HTTP basic token) is
+stripped from every message (NFR-SEC-11).
 """
 
 import asyncio
+import base64
 import hashlib
 import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 from pydantic import SecretStr
@@ -67,7 +72,7 @@ class GraphStoreSink:
         self._http = http
         self._url = url
         self._auth = httpx.BasicAuth(username, _secret(password)) if username else None
-        self._secrets = [s for s in (_secret(password),) if s]
+        self._secrets = _secret_forms(username, _secret(password))
 
     def _clean(self, text: str) -> str:
         return redact(text, self._secrets)[:ERROR_MAX]
@@ -97,6 +102,17 @@ class GraphStoreSink:
 
 def _secret(value: SecretStr | None) -> str:
     return value.get_secret_value() if value is not None else ""
+
+
+def _secret_forms(username: str | None, password: str) -> list[str]:
+    """Every form in which the password may be echoed back: plain, URL-encoded and inside
+    the ``Authorization: Basic`` token."""
+    if not password:
+        return []
+    forms = [password, quote(password, safe=""), quote(password)]
+    if username:
+        forms.append(base64.b64encode(f"{username}:{password}".encode()).decode("ascii"))
+    return sorted({f for f in forms if f}, key=len, reverse=True)
 
 
 def _join(base: str, tail: str) -> str:
@@ -136,7 +152,7 @@ class SinkWorker:
             if not self._settings.triplestore_enabled:
                 return out
             for rel in await self._releases.sink_due(self.repo_key, at):
-                done = await self._attempt_locked(rel.id, at)
+                done = await self._attempt_locked(rel.id, at, due_only=True)
                 if done is not None:
                     out.append(done)
         except Exception as exc:  # recorded per row; a store failure is retried next call
@@ -151,10 +167,17 @@ class SinkWorker:
             _log.warning("triple store attempt failed (%s)", type(exc).__name__)
             return None
 
-    async def _attempt_locked(self, release_id: str, now: datetime) -> Release | None:
+    async def _attempt_locked(
+        self, release_id: str, now: datetime, *, due_only: bool = False
+    ) -> Release | None:
+        """Attempt ``release_id`` as re-read under the lock; ``due_only`` (the loop) skips a
+        row the inline attempt has just rescheduled, so a stale due list burns no attempt."""
         async with self._lock:
             rel = await self._releases.get(release_id)
             if rel is None or rel.sink_status != "pending":
+                return None
+            due = rel.sink_next_attempt_at
+            if due_only and due is not None and due > now:
                 return None
             return await self._attempt(rel, now)
 
@@ -211,11 +234,13 @@ class SinkWorker:
             raise SinkError(False, f"model {rel.model!r} has no base IRI")
         base = model.base_iri
         # The reader may fetch from the remote under the repository lock: no lock held here.
-        highest = (await self._reader.list(rel.model))[:1]
+        listed = (await self._reader.list(rel.model))[:1]
+        highest = bool(listed) and listed[0].version == rel.version
         ontology = await self._reader.file(rel.model, rel.version, "ontology.ttl")
         await self._sink.replace_graph(_join(base, f"release/{rel.version}"), ontology)
-        if highest and highest[0].version == rel.version:
-            await self._sink.replace_graph(_join(base, "latest"), ontology)
+        if not highest:
+            return  # <base>latest and <base>shapes belong to the highest release
+        await self._sink.replace_graph(_join(base, "latest"), ontology)
         shapes_on = triplestore_for(self._policies, rel.model).shapes
         if shapes_on is None:
             shapes_on = self._settings.triplestore_shapes

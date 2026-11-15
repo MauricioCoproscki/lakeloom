@@ -248,6 +248,6 @@ async def test_resource_version_pinning(
     assert latest != ttl and "Order 1.0.0" not in latest
     missing_error: Any = missing.value.data
     assert missing_error["error"]["code"] == "not_found"
-    assert missing_error["error"]["hint"] == "GET /v1/models/{slug}/versions"
+    assert missing_error["error"]["hint"] == "GET /v1/models/retail/versions"
     asset_error: Any = asset.value.data
     assert asset_error["error"]["code"] == "not_found"  # asset context stays latest-only
