@@ -2,7 +2,7 @@
 
 - Status: accepted (M3b complete)
 - Date: 2026-11-15
-- Requirements: FR-GIT-02, FR-GIT-03, FR-GIT-06, FR-GIT-09, FR-PUB-01, FR-PUB-02, FR-PUB-07, FR-IO-01, FR-AGT-03, FR-TS-01, FR-TS-03, NFR-SEC-07, NFR-SEC-11
+- Requirements: FR-GIT-02, FR-GIT-03, FR-GIT-06, FR-GIT-09, FR-PUB-01, FR-PUB-02, FR-PUB-07, FR-IO-01, FR-AGT-03, FR-TS-01, FR-TS-02, FR-TS-03, NFR-SEC-07, NFR-SEC-11
 
 ## Context
 
@@ -76,7 +76,12 @@ releases to a triple store. The plan is `docs/superpowers/plans/` (M3b, releases
   `diff_releases`, `export_model(version=)`; CLI `lakeloom release create|list|sink-retry`.
 - **Triple-store sink (FR-TS, optional, off by default).** On a done release with the sink enabled
   for the model, the release row is queued and an inline attempt runs in the background, with
-  Graph Store HTTP PUTs of the release graph, `latest` (only for the highest release) and shapes.
+  Graph Store HTTP PUTs of the release graph, then `latest` and shapes (both only for the
+  highest release, so an older release's retry never overwrites them). The graph IRIs are
+  `<base>release/<version>`, `<base>latest` and `<base>shapes`; when the base IRI ends in
+  neither `/` nor `#`, a `/` is inserted before the suffix (a deliberate deviation from literal
+  concatenation, so `http://x/onto` gives `http://x/onto/latest`). The password is redacted in
+  its plain, URL-encoded and HTTP-basic-token forms.
   2xx succeeds; 408, 429, 5xx and transport errors retry with backoff; other 4xx and 10 attempts are
   `failed`. The sink never blocks or undoes the Git release (FR-TS-03) and its password never
   appears in logs or errors (NFR-SEC-11).
@@ -153,15 +158,23 @@ Known limits:
   first attempt. With a single replica the model cannot change in between, because approvals
   publish under the same lock. With several instances a release can tag a state that is
   slightly older than the tip (multi-instance only).
-- **Stale `latest` graph.** The sink writes `<base>latest` only for the highest release. If
-  that release's sink row ends `failed`, the `latest` graph keeps the previous release until
+- **Stale `latest` graph.** The sink writes `<base>latest` and `<base>shapes` only for the
+  highest release. If that release's sink row ends `failed`, both graphs keep the previous
+  release until
   `lakeloom release sink-retry` succeeds.
 - **Manifests gain `released_at: null`.** Every publication manifest now carries `release` and
   `released_at` (null until a release). The first publication after the upgrade therefore
   changes `manifest.yaml` of every model it touches.
-- **Vocabulary terms in the diff.** A term is any typed subject of the export, so the first
-  release's term list and later diffs include the SKOS and OpenMetadata vocabulary IRIs the
-  export declares (`skos:Concept`, `om:Glossary`...), not only the model's own terms.
+- **CLI working copy.** The repository lock is per process, so the CLI release commands use
+  their own clone (`<data_dir>/git/cli-repo`) instead of the server's `<data_dir>/git/repo`.
+  A CLI release next to a running server is serialised by the remote only: a rejected push is
+  re-rendered on the new tip (at most 3 times). The CLI `git` queue commands still open the
+  server's working copy.
+- **Reader refresh.** The tag list served is the one captured under the repository lock at
+  the last refresh (at most every 30 s, pruned against the remote), so a tag that exists only
+  locally is never listed. When the fetch fails, the local tags are served (throttled), and
+  other Git failures of the reader are `upstream_unavailable`; `/versions` then lists
+  `latest` only.
 - **A CHANGELOG left by deleted tags.** A first release reuses the `CHANGELOG.md` at the
   branch tip. If the model's earlier tags were deleted by hand, their sections stay below the
   new one.

@@ -521,7 +521,9 @@ Lakeloom never creates or seals OpenMetadata releases. Releases need Git publish
   minutes, bound to the caller, the arguments, the model state and the previous release).
   Call again with the token to release. The CLI is `lakeloom release create <model>
   [--version X.Y.Z | --bump major|minor|patch] [--yes]`: it prints the plan, and `--yes`
-  confirms it.
+  confirms it. The CLI keeps its own clone (`<LAKELOOM_DATA_DIR>/git/cli-repo`), separate from
+  the server's, because the repository lock only serialises one process; concurrent pushes
+  still serialise on the remote (a rejected push is re-rendered on the new tip).
 - **Version.** Strict `MAJOR.MINOR.PATCH` (no pre-release or build metadata), tag
   `<slug>/v<version>`. The first release is `1.0.0`. Later ones are computed from a semantic
   diff of the previous release's `ontology.ttl` against the current export:
@@ -546,20 +548,28 @@ Lakeloom never creates or seals OpenMetadata releases. Releases need Git publish
   `lakeloom git retry`), when the tag already exists, or when nothing changed.
 - **Read a release.** `list_releases(model)` and `lakeloom release list <model>` list the
   releases, highest first. `diff_releases(model, from_version, to_version="latest")` compares
-  two versions term by term. `export_model(model, format, version=)` exports one version.
+  two versions term by term (`from_version` must be a release, not `latest`). `export_model(model, format, version=)` exports one version.
   Over HTTP: `GET /v1/models/{slug}/versions` (JSON: `latest` first, then each release with
   tag, commit, date and links), `GET /v1/models/{slug}/versions/{version}`, and `?version=` on
   the model, `/shapes` and `/context.jsonld`. The MCP resources take `?version=` too. A
-  release is served from its tag, so tags made outside Lakeloom count as well. Release
+  release is served from its tag, so tags made outside Lakeloom count as well; the tags are
+  refreshed from the remote at most every 30 s (pruned: a tag deleted on the remote disappears),
+  and a tag that is only local is never listed. Vocabulary IRIs (SKOS, OWL, RDF(S), XSD, the
+  OpenMetadata ontology) are never counted as release terms. Release
   artefacts carry `Link`s to the tag and commit web pages. The web base is
-  `LAKELOOM_GIT_WEB_URL`, else derived from the remote; GitHub, GitLab and Gitea paths are
+  `LAKELOOM_GIT_WEB_URL` (user info, query and fragment dropped), else derived from the
+  remote; GitHub, GitLab and Gitea paths are
   supported, and there are no links with `LAKELOOM_FORGE=none`.
 - **Triple-store sink (optional, off by default).** With `LAKELOOM_TRIPLESTORE_ENABLED=true`
   and `LAKELOOM_TRIPLESTORE_URL` (a Graph Store endpoint such as
   `http://fuseki:3030/lakeloom/data`), each release is pushed with Graph Store HTTP `PUT`s:
   - the release to `<base-iri>release/<version>`;
   - the same to `<base-iri>latest`, for the highest release only;
-  - the shapes to `<base-iri>shapes` (`LAKELOOM_TRIPLESTORE_SHAPES`, default true).
+  - the shapes to `<base-iri>shapes` (`LAKELOOM_TRIPLESTORE_SHAPES`, default true), for the
+    highest release only.
+
+  A `/` is inserted between the base IRI and the suffix when the base IRI does not end in `/`
+  or `#`.
 
   Credentials are `LAKELOOM_TRIPLESTORE_USERNAME` and `LAKELOOM_TRIPLESTORE_PASSWORD` (or
   `_FILE`). A model opts out with `triplestore: {enabled: false}` in its `models:` entry.
@@ -609,7 +619,8 @@ percent-encoded. A version is `latest` or a release `MAJOR.MINOR.PATCH` (see Rel
 malformed one is `404`.
 
 Every `200` carries a strong `ETag` (`"sha256:<hex of the body>"`), `Last-Modified` (the
-OpenMetadata `updatedAt` of the glossary or table, never earlier than the model load), a `Link`
+OpenMetadata `updatedAt` of the glossary or table, never earlier than the model load; for a
+release, the tag date), a `Link`
 header pointing at the OpenMetadata entity (`rel="via"`; a release links its Git tag and commit instead, and
 `latest` adds the commit of the last Git publication as `rel="related"`),
 `Vary: Accept` and `Cache-Control: private, max-age=0, must-revalidate`. Send `If-None-Match` to get

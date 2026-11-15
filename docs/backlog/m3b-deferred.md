@@ -27,19 +27,15 @@ deliberately deferred. Triage when planning M3c. Decisions, live research and kn
 - Run the Graph Store sink against a real Fuseki (`rdf` compose profile). The live contract
   test `tests/contract/test_triplestore_fuseki.py` is skipped because the profile is not
   started in the dev stack, so PUTs against a real server are unverified.
-- Register `base64(user:password)` and the URL-encoded password for redaction as well, and
-  add a test for an `Authorization` header echoed back in an error body.
-- Re-check `sink_next_attempt_at` inside `_attempt_locked`: a stale due-list can use up an
-  attempt early.
 - The `latest` graph stays stale when the highest release's sink row ends `failed`. Push
   `latest` from the highest *successful* release, or say so in `get_server_info`.
 - `create_release` reports `triplestore: queued` even when the inline attempt already
   finished (`done` or `failed`).
+- The sink names the graphs from the model's *current* OpenMetadata base IRI, not the base
+  IRI recorded in the release's `manifest.yaml`. A base IRI changed after a release sends a
+  retry of that release to the new IRIs.
 
 ## Releases and CHANGELOG
-- Leave vocabulary terms (SKOS, OWL, the OpenMetadata ontology namespace) out of the
-  release diff. The first release's term list and later diffs now include `skos:Concept`,
-  `om:Glossary` and similar terms the export declares, which makes the CHANGELOG noisy.
 - A first release reuses the `CHANGELOG.md` at the branch tip. When a model's tags were
   deleted by hand (or a slug was deleted and re-created), the old sections stay below the
   new one. Decide whether a first release starts a fresh file.
@@ -61,12 +57,15 @@ deliberately deferred. Triage when planning M3c. Decisions, live research and kn
   - strengthen the determinism test.
 
 ## Reading releases and links
-- Strip the query string and fragment from `LAKELOOM_GIT_WEB_URL`: today they are kept in
-  `Link`, and a token put there by mistake would leak.
-- The reader's `not_found` echoes the untruncated slug, and its hint is a literal
-  `{slug}` placeholder.
-- `diff_releases` accepts `from_version=latest` (it compares latest with itself, or with a
-  later release). Reject it, or define it.
+- Release conversions drop the model's prefixes: `skos` and the converted shapes formats
+  (JSON-LD, N-Triples) are re-serialised from Turtle without the model's prefix map.
+- The reader's refresh waits on the repository lock, so a long publication or release stalls
+  version reads for that time. Try-lock and serve the last captured tag list instead.
+- `/versions` probes every tag with a `git show` of `ontology.ttl`; with more releases than
+  the LRU size (128) each listing re-reads them. Cache the probe by tag object sha
+  separately, or size the LRU to the tag count.
+- The CLI `git` queue commands (`lakeloom git ...`) still open the server's working copy
+  (`<data_dir>/git/repo`); give them the CLI clone too, or document it.
 - Quote the plan warnings in the dry-run Markdown.
 - Release artefacts are immutable: give them `Cache-Control: immutable` (and a long
   `max-age`).
