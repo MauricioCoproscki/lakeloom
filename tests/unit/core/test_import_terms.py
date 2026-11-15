@@ -8,6 +8,7 @@ import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import SKOS
 
+from lakeloom.core.import_diff import import_operations
 from lakeloom.core.import_terms import (
     AttributeTerm,
     AxiomTerm,
@@ -339,3 +340,60 @@ def test_attribute_details_and_missing_range() -> None:
     )
     assert terms.attributes[("A", "free")].datatype == "xsd:string"
     assert terms.warnings == ["A.free has no range; read as xsd:string"]
+
+
+LONG = "x" * 257
+
+
+@pytest.mark.parametrize(
+    ("body", "warning"),
+    [
+        ('ex:A a owl:Class ; skos:altLabel "" .', "1 triples not representable: skos:altLabel"),
+        (
+            f'ex:A a owl:Class ; skos:altLabel "{LONG}" .',
+            "1 triples not representable: skos:altLabel",
+        ),
+        ('ex:A a owl:Class ; skos:prefLabel "" .', "1 triples not representable: skos:prefLabel"),
+        (
+            f'ex:A a owl:Class ; skos:prefLabel "{LONG}" .',
+            "1 triples not representable: skos:prefLabel",
+        ),
+        (
+            "ex:A a owl:Class . ex:A.v a owl:DatatypeProperty ; rdfs:domain ex:A ; "
+            'rdfs:range xsd:string ; owl:oneOf ( "" ) .',
+            "1 triples not representable: owl:oneOf",
+        ),
+        (
+            f"ex:A a owl:Class . ex:A.v a owl:DatatypeProperty ; rdfs:domain ex:A ; "
+            f'rdfs:range xsd:string ; owl:oneOf ( "ok" "{LONG}" ) .',
+            "1 triples not representable: owl:oneOf",
+        ),
+        (
+            "ex:A a owl:Class . ex:A.v a owl:DatatypeProperty ; rdfs:domain ex:A ; "
+            'rdfs:range xsd:string ; qudt:unit "" .',
+            "1 triples not representable: qudt:unit",
+        ),
+        (
+            f"ex:A a owl:Class . ex:A.v a owl:DatatypeProperty ; rdfs:domain ex:A ; "
+            f'rdfs:range xsd:string ; qudt:unit "{"u" * 65}" .',
+            "1 triples not representable: qudt:unit",
+        ),
+        (
+            "ex:A a owl:Class . <http://example.org/v/A.has-b> a owl:ObjectProperty ; "
+            "rdfs:domain ex:A ; rdfs:range ex:A .",
+            "1 terms with invalid names are not imported: ex:A.has-b",
+        ),
+        (
+            "ex:A a owl:Class ; skos:exactMatch <http://> .",
+            "1 triples not representable: skos:exactMatch",
+        ),
+    ],
+)
+def test_values_the_operations_reject_are_counted_not_raised(body: str, warning: str) -> None:
+    incoming = extract_terms(ttl(body), EX)
+    assert warning in incoming.warnings
+    empty = extract_terms(Graph(), EX)
+    # building the operations must never fail on file text
+    import_operations(
+        empty, incoming, mode="merge", versions={}, axiom_names={}, rule_id="R-IMPORT"
+    )

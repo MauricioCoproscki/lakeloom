@@ -169,13 +169,18 @@ def _english(value: Node) -> bool:
     return lang in ("", "en") or lang.startswith("en-")
 
 
+def _fits(text: str, max_len: int | None) -> bool:
+    """Non-empty and within ``max_len``: what the operation models accept (``Short``...)."""
+    return len(text) >= 1 and (max_len is None or len(text) <= max_len)
+
+
 def _pick(values: list[Node], max_len: int | None = None) -> Literal | None:
-    """The lexicographically first literal without a language or in English."""
+    """The lexicographically first non-empty literal without a language or in English."""
     candidates = sorted(
         (v for v in values if isinstance(v, Literal) and _english(v)), key=lambda v: str(v)
     )
     for value in candidates:
-        if max_len is None or len(str(value)) <= max_len:
+        if _fits(str(value), max_len):
             return value
     return None
 
@@ -314,7 +319,7 @@ class _Reader:
             self.no_range.add(f"{concept}.{name}")
         unit: str | None = None
         for value in self.objects(s, QUDT_UNIT):
-            if len(str(value)) <= _MAX_UNIT:
+            if _fits(str(value), _MAX_UNIT):
                 unit = str(value)
                 self.use(s, QUDT_UNIT, value)
                 break
@@ -360,7 +365,7 @@ class _Reader:
             values.append(str(firsts[0]))
             triples |= {(node, RDF.first, firsts[0]), (node, RDF.rest, rests[0])}
             node = rests[0]
-        if len(values) > _MAX_LIST or any(len(v) > _MAX_SHORT for v in values):
+        if len(values) > _MAX_LIST or not all(_fits(v, _MAX_SHORT) for v in values):
             return None
         return tuple(values), triples
 
@@ -404,7 +409,7 @@ class _Reader:
         synonyms = sorted(
             {str(v) for v in self.objects(s, SKOS.altLabel) if isinstance(v, Literal)}
         )
-        kept = [v for v in synonyms if len(v) <= _MAX_SHORT][:_MAX_LIST]
+        kept = [v for v in synonyms if _fits(v, _MAX_SHORT)][:_MAX_LIST]
         for value in self.objects(s, SKOS.altLabel):
             if str(value) in kept and isinstance(value, Literal):
                 self.use(s, SKOS.altLabel, value)

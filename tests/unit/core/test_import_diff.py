@@ -386,3 +386,14 @@ def test_minted_back_graph_is_semantically_equal() -> None:
     assert isomorphic(semantic_view(minted, M3B), semantic_view(original, M3B))
     # and reading the minted graph back gives the same terms
     assert run(extract_terms(minted, M3B), fixture_terms(), mode="replace").operations == []
+
+
+def test_oversized_axiom_skipped_with_warning() -> None:
+    names = [f"a{i}" for i in range(300)]
+    big = AxiomTerm("Child", "ChildRestrictions", tuple((n, "MIN", 1) for n in sorted(names)))
+    incoming = terms([concept("Child")], [attribute("Child", n) for n in names], axioms=[big])
+    result = run(EMPTY, incoming)
+    assert not any(o.op == "add_axiom" for o in result.operations)
+    assert result.warnings == [
+        "1 axioms are too large to import (more than 16384 bytes of JSON): ChildRestrictions"
+    ]

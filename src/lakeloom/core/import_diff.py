@@ -7,6 +7,7 @@ description edits are reported instead of proposed (rc1 ignores them, R2), and d
 OpenMetadata keeps as tombstones are never created again (R4).
 """
 
+import json
 import re
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping
@@ -17,6 +18,7 @@ from pydantic import AnyUrl, BaseModel
 
 from lakeloom.core.import_terms import AttributeTerm, AxiomTerm, ConceptTerm, MappingTerm, TermSet
 from lakeloom.core.operations import (
+    MAX_AXIOM_BYTES,
     AddAttribute,
     AddAxiom,
     AddConcept,
@@ -105,6 +107,7 @@ class _Diff:
         self.dropped_attributes: set[tuple[str, str]] = set()
         self.description_edits = 0
         self.retargeted: set[str] = set()
+        self.oversized: set[str] = set()
 
     # helpers -------------------------------------------------------------------------------
 
@@ -302,11 +305,15 @@ class _Diff:
             if concept in self.dropped_concepts or properties & self.dropped_attributes:
                 self.dependents += 1
                 continue
+            body = _axiom_body(name, term)
+            if len(json.dumps(body, separators=(",", ":")).encode("utf-8")) > MAX_AXIOM_BYTES:
+                self.oversized.add(name)  # AddAxiom would refuse it
+                continue
             self.adds.append(
                 AddAxiom(
                     op="add_axiom",
                     concept=concept,
-                    axiom=_axiom_body(name, term),
+                    axiom=body,
                     **self.common(self.subject(concept)),
                 )
             )
@@ -387,6 +394,11 @@ class _Diff:
                 f"{len(self.retargeted)} relations change their target and are not imported "
                 f"({_OM} cannot retarget an object property): "
                 f"{', '.join(sorted(self.retargeted)[:10])}"
+            )
+        if self.oversized:
+            out.append(
+                f"{len(self.oversized)} axioms are too large to import (more than "
+                f"{MAX_AXIOM_BYTES} bytes of JSON): {', '.join(sorted(self.oversized)[:10])}"
             )
         if self.description_edits:
             out.append(
