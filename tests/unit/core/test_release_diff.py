@@ -172,3 +172,36 @@ def test_diff_markdown_quotes_labels() -> None:
     assert "a'b ## Injected" in md
     assert "`a'b ## Injected`" in md
     assert "### Added" in md
+
+
+OM_GLOSSARY = URIRef("https://open-metadata.org/ontology/Glossary")
+
+
+def with_vocabulary(g: Graph) -> Graph:
+    """The merged graph also declares vocabulary classes (skos:Concept, om:Glossary...)."""
+    g.add((SKOS.Concept, RDF.type, OWL.Class))
+    g.add((OM_GLOSSARY, RDF.type, OWL.Class))
+    g.add((SKOS.prefLabel, RDF.type, OWL.DatatypeProperty))
+    return g
+
+
+def test_first_release_excludes_vocabulary_terms() -> None:
+    r = diff_graphs(None, with_vocabulary(model()), from_version=None, to_version="1.0.0")
+    assert {t.iri for t in r.added} == {B + "Customer", B + "Order", B + "email"}
+
+
+def test_later_diff_never_lists_vocabulary_terms() -> None:
+    old = model()
+    old.add((SKOS.Concept, RDF.type, OWL.Class))
+    old.add((SKOS.Concept, RDFS.label, Literal("Concept")))
+    new = model()
+    new.add((OM_GLOSSARY, RDF.type, OWL.Class))
+    new.add((SKOS.prefLabel, RDF.type, OWL.DatatypeProperty))
+    r = d(old, new)
+    listed = {t.iri for t in r.added + r.changed + r.removed}
+    assert listed == set()
+    # and a vocabulary annotation change is not a "changed" term either
+    commented = with_vocabulary(model())
+    commented.add((SKOS.Concept, RDFS.comment, Literal("c")))
+    r = d(with_vocabulary(model()), commented)
+    assert r.changed == []

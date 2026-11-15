@@ -1,7 +1,7 @@
 """Semantic diff of two ontology graphs and the semver bump rules (FR-GIT-06).
 
 Pure functions: no I/O. A *term* is a URIRef subject typed ``owl:Class``, ``skos:Concept``,
-``owl:DatatypeProperty`` or ``owl:ObjectProperty``. Blank-node restrictions are compared up to
+``owl:DatatypeProperty`` or ``owl:ObjectProperty`` outside the vocabulary namespaces. Blank-node restrictions are compared up to
 isomorphism and attributed to the named term that owns them.
 """
 
@@ -15,6 +15,7 @@ from rdflib.namespace import DCTERMS, OWL, RDF, RDFS, SKOS
 from rdflib.term import Node
 
 from lakeloom.errors import LakeloomError
+from lakeloom.publish.shacl_gen import is_vocabulary
 from lakeloom.untrusted import code_span
 
 __all__ = [
@@ -107,7 +108,13 @@ def next_version(previous: Version | None, bump: Bump | None) -> Version:
 
 
 def _terms(g: Graph) -> set[URIRef]:
-    return {s for t in TERM_TYPES for s in g.subjects(RDF.type, t) if isinstance(s, URIRef)}
+    """Typed model terms; vocabulary IRIs (``skos:Concept``, ``om:Glossary``...) are not."""
+    return {
+        s
+        for t in TERM_TYPES
+        for s in g.subjects(RDF.type, t)
+        if isinstance(s, URIRef) and not is_vocabulary(s)
+    }
 
 
 def _local_name(iri: str) -> str:
@@ -169,7 +176,7 @@ def diff_graphs(
     for graph, full in ((in_old, old_full), (in_new, new_full)):
         for s, _p, _o in graph:
             owner = _owner(full, s)
-            if owner is not None:
+            if owner is not None and not is_vocabulary(owner):
                 touched.add(owner)
     changed = sorted(touched & old_terms & new_terms)
     structural_removed = any(p not in ANNOTATION_PREDICATES for _s, p, _o in in_old)
