@@ -43,9 +43,16 @@ yet (M2/M3).
   `<{om_url}/glossary>`. Userinfo in `om_url` is stripped. With no `om_url` configured the
   list is empty. M2/M3 replace or supplement these with commit/tag
   links.
+  *Superseded for Git in M3b (ADR 0015):* a release artefact links its tag and commit web
+  URLs (`rel="via"`), and a `latest` artefact keeps the OpenMetadata `via` link and adds
+  the commit of the model's last Git publication (`rel="related"`).
 - **Versions.** Releases arrive in M3. Every `version` parameter accepts only `latest` (or
   nothing); any other value is `not_found` with the hint "releases are published from M3; use
   version=latest".
+  *Superseded in M3b (ADR 0015):* `version` is `latest` or a release `MAJOR.MINOR.PATCH`
+  served from its Git tag (`/versions`, `/versions/{version}`, `?version=` on the model,
+  shapes and context and on their MCP resources). An unknown or malformed release is
+  `not_found`. The models list and asset context stay `latest` only.
 - **Model context.** `context.jsonld` proper (FR-PUB-05) is M3. M1c serves the minimal
   `@context` already used by the asset JSON-LD (`@vocab` = the model base IRI, the model
   prefixes, `dcterms`, `skos`), built by the single function `minimal_jsonld_context`.

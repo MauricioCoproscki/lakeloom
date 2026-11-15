@@ -146,6 +146,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     against a throwaway model's published shapes and reads a JSON record through its context.
   - Serialised shapes (per media type) and the context document are cached per model
     version; the Git files are the same cached bytes.
+- M3b releases, versioned reads and the triple-store sink (ADR 0015):
+  - MCP tool `create_release` (scope `lakeloom:publish`, `publish_groups` per model, two-step
+    confirm) and CLI `lakeloom release create`. A release is one commit directly on the
+    target branch with the five exports, `manifest.yaml` (`release`, `released_at`), the
+    model's `CHANGELOG.md` and the root `README.md`, plus the annotated tag
+    `<slug>/v<version>`, pushed atomically. The version is computed from a semantic diff with
+    the previous release: major, minor or patch, or an explicit `bump` / `version`. Retrying
+    the same confirmed call is idempotent (FR-GIT-02, FR-GIT-06, FR-GIT-09, FR-AGT-03).
+  - `list_releases`, `diff_releases`, `export_model(version=)` and `lakeloom release list`.
+    `GET /v1/models/{slug}/versions` and `/versions/{version}`, and `?version=` on the model,
+    shapes and context over HTTP and as MCP resources, serve a release from its Git tag
+    (FR-PUB-01, FR-PUB-02, FR-IO-01).
+  - Git `Link` headers: a release links its tag and commit web pages, and `latest` links the
+    last Git publication. `LAKELOOM_GIT_WEB_URL` sets the web base, otherwise it is derived
+    from the remote (FR-PUB-07).
+  - Optional Graph Store sink: each release is pushed to `<base-iri>release/<version>`,
+    `<base-iri>latest` and `<base-iri>shapes`, with retries and backoff, and never blocks the
+    release. Settings `LAKELOOM_TRIPLESTORE_*`, per-model `triplestore:` policy, CLI
+    `lakeloom release sink-retry`, and `get_server_info` `triplestore` (FR-TS-01, FR-TS-02,
+    FR-TS-03).
+  - State migration `0004_releases`. Publication manifests now carry `release` and
+    `released_at` (null until a release). A Git snapshot reads its exports and the model
+    version from one graph state.
+  - The M3b acceptance test releases a throwaway model twice against the dev stack's Gitea.
 
 ### Fixed
 

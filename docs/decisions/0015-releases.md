@@ -1,6 +1,6 @@
 # 0015. Releases, versioned reads and the triple-store sink
 
-- Status: proposed
+- Status: accepted (M3b complete)
 - Date: 2026-11-15
 - Requirements: FR-GIT-02, FR-GIT-03, FR-GIT-06, FR-GIT-09, FR-PUB-01, FR-PUB-02, FR-PUB-07, FR-IO-01, FR-AGT-03, FR-TS-01, FR-TS-03, NFR-SEC-07, NFR-SEC-11
 
@@ -82,7 +82,91 @@ releases to a triple store. The plan is `docs/superpowers/plans/` (M3b, releases
   appears in logs or errors (NFR-SEC-11).
 - **Locking.** Releases, tag fetches and the publisher share one per-repository lock (FR-GIT-09).
 
+## Research
+
+### Gitea 1.27.3 (live, dev stack)
+
+- **Tag API.** `GET` and `DELETE /api/v1/repos/{owner}/{repo}/tags/{tag}` accept a tag with a
+  `/` when it is percent-encoded as one segment (`retail_m3b%2Fv1.0.0`); `DELETE` answers 204.
+- **The single-tag endpoint can be stale.** After a tag was deleted and a tag of the same name
+  was pushed again, `GET .../tags/{tag}` kept showing the *old* commit for well over 30 s while
+  `git ls-remote` showed the new one. Git is the ground truth: Lakeloom reads tags with
+  `ls-remote` and `fetch` only, never through the forge API, and the acceptance test checks
+  the commit with `ls-remote` and uses the API only for existence and deletion.
+- **Releasing as an agent.** The dev client `lakeloom-agent` has `lakeloom:publish` as an
+  optional scope, so a client-credentials request with `scope=lakeloom:publish` gives a
+  release-capable agent token without changing the realm. `Released-By` is then the service
+  account's subject (a UUID): it has no username claim.
+- **Web links.** With `LAKELOOM_FORGE=gitea` and the remote `http://gitea:3000/...`, the derived
+  web base is the container's host name; the `Link` of `/versions/1.0.0` holds
+  `/src/tag/retail_m3b/v1.0.0` and `/commit/<sha>` as specified. A browser outside the compose
+  network needs `LAKELOOM_GIT_WEB_URL`.
+- **CLI, Git on.** `docker compose exec lakeloom lakeloom release list retail` prints
+  `No releases of retail.`; `lakeloom release create retail` (no `--yes`) prints the plan
+  (`retail/v1.0.0`, "Initial release (25 terms)", the term list) and
+  `Dry run: nothing was changed. Re-run with --yes to release.`, with no tag created.
+
+### Graph Store sink
+
+Not run live: the `rdf` compose profile (Fuseki) is not started in the dev stack, and building
+it is out of scope for M3b. `tests/contract/test_triplestore_fuseki.py` skips without it; the
+sink is covered by unit tests against a fake Graph Store (`tests/unit/publish/test_triplestore.py`).
+A PUT against a real Fuseki stays unverified (see `docs/backlog/m3b-deferred.md`).
+
 ## Consequences
 
-To be filled at acceptance. Known up front: open Lakeloom PRs of a model conflict on the manifest
-once a release is committed directly on the target branch.
+What shipped in M3b:
+
+- `create_release` (MCP), `lakeloom release create|list|sink-retry` (CLI), `list_releases`
+  and `diff_releases`. Verified live (`tests/contract/test_m3b_acceptance.py`): an agent with
+  `lakeloom:publish` releases a throwaway model as `1.0.0` (dry run with "Initial release",
+  then confirm); the annotated tag `retail_m3b/v1.0.0` points at a commit with the five
+  exports, `manifest.yaml` `release: "1.0.0"` and `CHANGELOG.md` `## [1.0.0]`; `/versions`
+  lists `latest` and `1.0.0`; `/versions/1.0.0`, `shapes?version=1.0.0` and
+  `lakeloom://models/retail_m3b/ontology.ttl?version=1.0.0` equal the tagged files, with Git
+  `Link`s. After alice approves an added attribute, the next release is computed as minor
+  (`1.1.0`), with the attribute under *Added* and the proposal under *Proposals*, and
+  `diff_releases(1.0.0, 1.1.0)` lists it.
+- A release refused while a publication is `pending` or `blocked` is covered by unit tests
+  only: the dev stack's queue cannot be held without breaking Gitea for other suites.
+- The triple-store sink is off by default; when on, a sink failure never fails or undoes a
+  release.
+
+Found by the live tests:
+
+- **Re-created tags returned a stale release row.** If a tag was deleted on the remote and its
+  version was released again, `ReleaseRepository.add` returned the old row for (`repo`,
+  `tag`). The tool then reported the old commit and id, and the sink hook did not run. A
+  row is now returned only when it is the same release (id, tag and commit). Any other row
+  with the same id or tag is stale and replaced (`fix(state)`, pinned by
+  `test_add_replaces_stale_row_of_a_recreated_tag` and
+  `test_release_again_after_tag_deleted_records_new_commit`).
+
+Known limits:
+
+- **Audit.** The audit row of `create_release` stores the tag in `change_set_id` (no
+  dedicated column).
+- **Pull-request mode.** Releases commit directly on the target branch even when the model
+  publishes through pull requests. Open Lakeloom PRs of the model then conflict on
+  `manifest.yaml` (and `README.md`, as in ADR 0013); merge or close them before releasing.
+- **Re-render after a rejected push.** The re-render reuses the snapshot exported before the
+  first attempt. With a single replica the model cannot change in between, because approvals
+  publish under the same lock. With several instances a release can tag a state that is
+  slightly older than the tip (multi-instance only).
+- **Stale `latest` graph.** The sink writes `<base>latest` only for the highest release. If
+  that release's sink row ends `failed`, the `latest` graph keeps the previous release until
+  `lakeloom release sink-retry` succeeds.
+- **Manifests gain `released_at: null`.** Every publication manifest now carries `release` and
+  `released_at` (null until a release). The first publication after the upgrade therefore
+  changes `manifest.yaml` of every model it touches.
+- **Vocabulary terms in the diff.** A term is any typed subject of the export, so the first
+  release's term list and later diffs include the SKOS and OpenMetadata vocabulary IRIs the
+  export declares (`skos:Concept`, `om:Glossary`...), not only the model's own terms.
+- **A CHANGELOG left by deleted tags.** A first release reuses the `CHANGELOG.md` at the
+  branch tip. If the model's earlier tags were deleted by hand, their sections stay below the
+  new one.
+- **Single replica.** The repository lock and the sink worker are in-process, as in M2c.
+- **Graph Store against a real Fuseki** is not live-tested (see Research).
+- Pre-release versions, signed tags, releases through pull requests, asset context and
+  `lakeloom://models` pinned to a release, and multi-replica leases are deferred:
+  `docs/backlog/m3b-deferred.md`.

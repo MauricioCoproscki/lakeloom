@@ -99,4 +99,5 @@ M3a publishes `shapes.ttl`, `context.jsonld` and a `validate_model` report per m
   nodes as isolated, and its messages carry the untrusted label text in the structured output
   (the Markdown quotes it).
 - A Git snapshot reads its five exports and the model version in separate calls, so a model
-  change in between can mix states.
+  change in between can mix states. *Fixed in M3b:* the version is read before and after the exports, and a
+  change in between fails the snapshot transiently (retried).

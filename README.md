@@ -508,13 +508,77 @@ truth: Git is a published copy, and a Git problem never fails or undoes an appro
   direct commits of their throwaway models (`ontologies/retail_m2c/`, `ontologies/retail_m3a/`)
   stay in the dev repository's history.
 
+### Releases
+
+A release is an annotated Git tag over OpenMetadata's current state of a model (ADR 0015).
+Lakeloom never creates or seals OpenMetadata releases. Releases need Git publishing
+(`LAKELOOM_GIT_REMOTE`).
+
+- **Create.** `create_release(model, version?, bump?, confirm_token?)` needs the scope
+  `lakeloom:publish` and, when the model's `access.publish_groups` is set, one of those groups.
+  Agents may release; only review is human-only. Without `confirm_token` it is a dry run:
+  the version, the bump and its reason, warnings, the CHANGELOG section and a token (valid 10
+  minutes, bound to the caller, the arguments, the model state and the previous release).
+  Call again with the token to release. The CLI is `lakeloom release create <model>
+  [--version X.Y.Z | --bump major|minor|patch] [--yes]`: it prints the plan, and `--yes`
+  confirms it.
+- **Version.** Strict `MAJOR.MINOR.PATCH` (no pre-release or build metadata), tag
+  `<slug>/v<version>`. The first release is `1.0.0`. Later ones are computed from a semantic
+  diff of the previous release's `ontology.ttl` against the current export:
+  - a removed term or a removed structural triple (a range, a `broader`, a restriction) is
+    **major**;
+  - an added term or triple is **minor**;
+  - only labels, definitions and notes changed is **patch**;
+  - no change at all is a `validation_error`.
+
+  `bump` or `version` overrides the computed version, never both, and the result must be
+  higher than every existing release.
+- **What is committed.** One commit directly on `LAKELOOM_GIT_BRANCH`, in both Git modes. It
+  holds the five exports, `manifest.yaml` with `release` and `released_at`, the regenerated
+  `README.md`, and `ontologies/<slug>/CHANGELOG.md` with the new section first. The section
+  has Added, Changed and Removed terms and the approved proposals since the previous tag.
+  The subject is `release(<slug>): v<version>`, with the trailers `Lakeloom-Release`,
+  `Released-By`, `Lakeloom-Model-Version` and `Lakeloom-Release-Id`. Branch and tag are pushed
+  together (`git push --atomic`). A rejected push is re-rendered on the new tip, at most 3
+  times; other Git failures are returned to the caller. Retrying the same confirmed call is
+  idempotent.
+- **Refused** while the model has a `pending` or `blocked` publication (wait, or
+  `lakeloom git retry`), when the tag already exists, or when nothing changed.
+- **Read a release.** `list_releases(model)` and `lakeloom release list <model>` list the
+  releases, highest first. `diff_releases(model, from_version, to_version="latest")` compares
+  two versions term by term. `export_model(model, format, version=)` exports one version.
+  Over HTTP: `GET /v1/models/{slug}/versions` (JSON: `latest` first, then each release with
+  tag, commit, date and links), `GET /v1/models/{slug}/versions/{version}`, and `?version=` on
+  the model, `/shapes` and `/context.jsonld`. The MCP resources take `?version=` too. A
+  release is served from its tag, so tags made outside Lakeloom count as well. Release
+  artefacts carry `Link`s to the tag and commit web pages. The web base is
+  `LAKELOOM_GIT_WEB_URL`, else derived from the remote; GitHub, GitLab and Gitea paths are
+  supported, and there are no links with `LAKELOOM_FORGE=none`.
+- **Triple-store sink (optional, off by default).** With `LAKELOOM_TRIPLESTORE_ENABLED=true`
+  and `LAKELOOM_TRIPLESTORE_URL` (a Graph Store endpoint such as
+  `http://fuseki:3030/lakeloom/data`), each release is pushed with Graph Store HTTP `PUT`s:
+  - the release to `<base-iri>release/<version>`;
+  - the same to `<base-iri>latest`, for the highest release only;
+  - the shapes to `<base-iri>shapes` (`LAKELOOM_TRIPLESTORE_SHAPES`, default true).
+
+  Credentials are `LAKELOOM_TRIPLESTORE_USERNAME` and `LAKELOOM_TRIPLESTORE_PASSWORD` (or
+  `_FILE`). A model opts out with `triplestore: {enabled: false}` in its `models:` entry.
+  Failures are retried with backoff and never block or undo the Git release. After 10
+  attempts or a permanent error the push is `failed`; `lakeloom release sink-retry` requeues
+  it. `get_server_info` reports `features.releases` and `triplestore` (pending, failed, last
+  error).
+- **Dev stack.** The M3b contract test releases the throwaway model `retail_m3b`. It deletes
+  its tags through the Gitea API afterwards, but the release commits stay in the dev
+  repository's history.
+
 ### Surfaces overview
 
 | Capability | MCP tool | MCP resource | HTTP route |
 | --- | --- | --- | --- |
 | List models | `list_models` | `lakeloom://models` | `GET /v1/models` |
 | Model summary | `get_model` | | none (`GET /v1/models` lists summaries) |
-| Versions | | | `GET /v1/models/{slug}/versions`, `GET /v1/models/{slug}/versions/{version}` |
+| Versions | `list_releases`, `diff_releases`, `export_model(version=)` | `?version=` on ontology, shapes, context | `GET /v1/models/{slug}/versions`, `GET /v1/models/{slug}/versions/{version}`, `?version=` |
+| Release | `create_release` | | none (CLI `lakeloom release create`) |
 | Ontology export | `export_model` | `lakeloom://models/{slug}/ontology.{ttl,jsonld,owl,nt}` | `GET /v1/models/{slug}` (`Accept`) |
 | JSON-LD context | | `lakeloom://models/{slug}/context.jsonld` | `GET /v1/models/{slug}/context.jsonld` |
 | SHACL shapes | | `lakeloom://models/{slug}/shapes.ttl` | `GET /v1/models/{slug}/shapes` (`Accept`) |
@@ -541,11 +605,13 @@ regenerate with `uv run python scripts/gen_openapi.py`).
 
 Pick the representation with `Accept` (q-values are honoured; no `Accept` or `*/*` gives the
 default; an unsupported type gives `406` listing the supported ones). IRIs and FQNs in paths may be
-percent-encoded. Only `latest` exists until releases arrive in M3b (any other version is `404`).
+percent-encoded. A version is `latest` or a release `MAJOR.MINOR.PATCH` (see Releases); an unknown or
+malformed one is `404`.
 
 Every `200` carries a strong `ETag` (`"sha256:<hex of the body>"`), `Last-Modified` (the
 OpenMetadata `updatedAt` of the glossary or table, never earlier than the model load), a `Link`
-header pointing at the OpenMetadata entity (`rel="via"`; Git links arrive in M2),
+header pointing at the OpenMetadata entity (`rel="via"`; a release links its Git tag and commit instead, and
+`latest` adds the commit of the last Git publication as `rel="related"`),
 `Vary: Accept` and `Cache-Control: private, max-age=0, must-revalidate`. Send `If-None-Match` to get
 `304` with no body. Errors are JSON, `{"error": {"code", "message", "hint"}}`, with `404`
 `not_found`, `403` `forbidden`, `400` `validation_error`, `503` `upstream_unavailable`.
@@ -565,7 +631,7 @@ and readable with the `lakeloom:read` scope (`forbidden` without it):
 
 `resources/list` names `lakeloom://models` and, for up to 100 models, their ontology, shapes and
 context URIs; `resources/templates/list` gives the parameterised forms. Append `?version=latest`
-to pin (any other version is `not_found` until releases arrive in M3b). Errors are
+to pin, or `?version=1.0.0` to read a release (ontology, shapes and context only). Errors are
 MCP errors whose `data` is `{"error": {"code", "message", "hint"}}`: `not_found` and
 `validation_error` (for example an unknown `ext`, which lists `ttl, jsonld, owl, nt`) use the
 invalid-params code, the rest the internal-error code.
@@ -575,6 +641,9 @@ invalid-params code, the rest the internal-error code.
 ```bash
 RDF_ENABLED=true docker compose -f deploy/compose/docker-compose.yml --profile rdf up -d --wait
 ```
+
+Point the release sink at it with `LAKELOOM_TRIPLESTORE_ENABLED=true` and
+`LAKELOOM_TRIPLESTORE_URL` (see Releases). The sink is not live-tested yet.
 
 Stop the stack and delete its data with `docker compose -f deploy/compose/docker-compose.yml down -v`.
 

@@ -241,3 +241,9 @@ Known limits:
   repository's history (dev only).
 - Releases, tags, `CHANGELOG.md`, SHACL shapes, `context.jsonld`, import from Git, drift and
   Git `Link` headers remain M3/M4. The follow-ups are in `docs/backlog/m2c-deferred.md`.
+
+*M3b note (ADR 0015):* a release (`create_release`) is always committed **directly** on
+`LAKELOOM_GIT_BRANCH`, even for a model in `pull_request` mode. It is an explicit
+`lakeloom:publish` act, and its tag must point at a commit on the target branch. The release
+commit shares this queue's repository lock. Open Lakeloom pull requests of the model then
+conflict on `manifest.yaml` (and `README.md`); merge or close them before releasing.

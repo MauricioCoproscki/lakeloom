@@ -1,12 +1,13 @@
 # M3a deferred follow-ups
 
 Findings from the M3a work on SHACL shapes, the JSON-LD context and `validate_model`,
-deliberately deferred. Triage when planning M3b. Decisions and known limits:
+deliberately deferred. Triaged in M3b (items done there are struck through); the rest
+is still open. Decisions and known limits:
 [ADR 0014](../decisions/0014-shapes-context-validation.md).
 
 ## Out of scope for M3a
-- Releases, tags, the repository `CHANGELOG.md`, `?version=` beyond `latest`, Git `Link`
-  headers and the triple-store sink (M3b).
+- ~~Releases, tags, the repository `CHANGELOG.md`, `?version=` beyond `latest`, Git `Link`
+  headers and the triple-store sink (M3b).~~ Done in M3b (ADR 0015).
 - Import, `import_from_git`, drift detection and the SPARQL proxy (M3c).
 - Validating lake data from Lakeloom itself (a `validate_data` tool): shapes are published for
   consumers to run.
@@ -49,7 +50,9 @@ deliberately deferred. Triage when planning M3b. Decisions and known limits:
 ## Serving, caching and Git
 - Retrieve the exception of a shared build whose awaiters were all cancelled (no "Task exception
   was never retrieved" warning).
-- Read a Git snapshot's five exports and the model version from one graph state.
+- ~~Read a Git snapshot's five exports and the model version from one graph state.~~ Done in
+  M3b: `fill_exports` reads the version before and after the exports and fails transiently
+  if it moved.
 
 ## Tests
 - Cover: a failed build is not cached, a cancelled awaiter, the tool and CLI JSON-LD paths, a
