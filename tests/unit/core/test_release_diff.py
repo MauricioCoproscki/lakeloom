@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-
 import pytest
 from rdflib import BNode, Graph, Literal, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, SKOS, XSD
@@ -14,8 +11,7 @@ from lakeloom.core.release_diff import (
 )
 from lakeloom.errors import LakeloomError
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "publish"))
-from _graphs import B
+B = "https://example.org/m/"
 
 
 def u(name: str) -> URIRef:

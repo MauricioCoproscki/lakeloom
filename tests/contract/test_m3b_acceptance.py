@@ -212,7 +212,10 @@ def _remote_tags() -> dict[str, str]:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    refs = dict(reversed(line.split("\t", 1)) for line in proc.stdout.splitlines())
+    refs: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        sha, ref = line.split("\t", 1)
+        refs[ref] = sha
     return {
         ref.removeprefix("refs/tags/"): refs.get(f"{ref}^{{}}", sha)
         for ref, sha in refs.items()

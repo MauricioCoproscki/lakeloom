@@ -342,7 +342,7 @@ async def test_release_artifact_validators() -> None:
         "retail",
         "text/turtle",
         version="1.0.0",
-        releases=reader,
+        releases=reader,  # type: ignore[arg-type]
         git=links(),  # type: ignore[arg-type]
     )
 
@@ -358,14 +358,14 @@ async def test_release_artifact_validators() -> None:
         "retail",
         "application/n-triples",
         version="1.0.0",
-        releases=reader,
+        releases=reader,  # type: ignore[arg-type]
         git=links(),  # type: ignore[arg-type]
     )
     ctx = await model_context_artifact(
         models,
         "retail",
         version="1.0.0",
-        releases=reader,
+        releases=reader,  # type: ignore[arg-type]
         git=None,  # type: ignore[arg-type]
     )
     assert (shapes.media_type, shapes.links, shapes.last_modified) == (
@@ -427,7 +427,7 @@ async def test_links_never_carry_userinfo(settings: dict[str, Any]) -> None:
         "retail",
         "text/turtle",
         version="1.0.0",
-        releases=FakeReader(),
+        releases=FakeReader(),  # type: ignore[arg-type]
         git=links(base=base),  # type: ignore[arg-type]
     )
     latest = await model_artifact(
