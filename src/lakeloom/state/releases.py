@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel
-from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint, func, or_, select
+from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint, delete, func, or_, select
 from sqlalchemy import update as sql_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -111,8 +111,13 @@ class ReleaseRepository:
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def add(self, rel: Release) -> Release:
-        """Insert ``rel``; an existing row for the same id or (repo, tag) is returned instead."""
-        existing = await self.get(rel.id) or await self.for_tag(rel.repo, rel.tag)
+        """Insert ``rel``; the existing row of the same release is returned instead.
+
+        The same release is the same id, tag and commit. Any other row with this id or this
+        (repo, tag) is stale, because a caller adds only a tag it has just pushed or found on
+        the remote at ``rel.commit_sha``. That happens when a tag was deleted on the remote
+        and the version was released again. The stale row is replaced (FR-GIT-06)."""
+        existing = await self._same(rel)
         if existing is not None:
             return existing
         row = ReleaseRow(
@@ -126,15 +131,25 @@ class ReleaseRepository:
             created_at=_utc(rel.created_at),
         )
         _fill_sink(row, rel)
+        stale = or_(
+            ReleaseRow.id == rel.id, (ReleaseRow.repo == rel.repo) & (ReleaseRow.tag == row.tag)
+        )
         try:
             async with self._sessions() as session, session.begin():
+                await session.execute(delete(ReleaseRow).where(stale))
                 session.add(row)
         except IntegrityError:
-            existing = await self.get(rel.id) or await self.for_tag(rel.repo, rel.tag)
+            existing = await self._same(rel)
             if existing is None:
                 raise
             return existing
         return _from_row(row)
+
+    async def _same(self, rel: Release) -> Release | None:
+        found = await self.get(rel.id)
+        if found is not None and (found.tag, found.commit_sha) == (rel.tag, rel.commit_sha):
+            return found
+        return None
 
     async def get(self, release_id: str) -> Release | None:
         async with self._sessions() as session:

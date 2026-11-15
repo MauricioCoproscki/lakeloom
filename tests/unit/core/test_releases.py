@@ -323,6 +323,21 @@ async def test_second_release_bumps_minor_after_addition(env: Env) -> None:
     assert changelog.index("## [1.1.0]") < changelog.index("## [1.0.0]")
 
 
+async def test_release_again_after_tag_deleted_records_new_commit(env: Env) -> None:
+    """FR-GIT-06: a tag deleted on the remote, then the version released again: the result,
+    the row and the sink hook are the new release, not the stale row of the deleted tag."""
+    first = (await env.release()).release
+    git("tag", "-d", "shop/v1.0.0", cwd=env.bare)
+    env.om.change(V2_LABEL)
+    res = await env.release()
+    assert not res.already_done and res.release.tag == "shop/v1.0.0"
+    remote = git("rev-parse", "shop/v1.0.0^{}", cwd=env.bare).strip()
+    assert res.release.commit_sha == remote != first.commit_sha
+    assert res.release.id != first.id
+    assert await env.releases.for_tag(env.repo_key, "shop/v1.0.0") == res.release
+    assert env.released == [first, res.release]
+
+
 async def test_label_change_bumps_patch(env: Env) -> None:
     await env.release()
     env.om.change(V2_LABEL)

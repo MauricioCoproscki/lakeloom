@@ -61,10 +61,28 @@ async def test_add_get_and_for_tag(repo: ReleaseRepository) -> None:
     assert rel.status == "done" and rel.sink_attempts == 0
 
 
-async def test_add_same_tag_returns_existing(repo: ReleaseRepository) -> None:
+async def test_add_same_release_again_returns_existing(repo: ReleaseRepository) -> None:
     first = await repo.add(_rel())
-    again = await repo.add(_rel().model_copy(update={"id": "rel_other", "released_by": "bob"}))
+    again = await repo.add(_rel().model_copy(update={"released_by": "bob", "sink_status": "done"}))
     assert again == first
+
+
+async def test_add_replaces_stale_row_of_a_recreated_tag(repo: ReleaseRepository) -> None:
+    """FR-GIT-06: the tag was deleted on the remote and the version released again: the row
+    of the old tag (another id, another commit) is stale and replaced, never returned."""
+    first = await repo.add(_rel())
+    new = _rel().model_copy(update={"id": "rel_other", "commit_sha": "d" * 40})
+    assert await repo.add(new) == new
+    assert await repo.get(first.id) is None
+    assert await repo.for_tag(REPO, "shop/v1.0.0") == new
+
+
+async def test_add_replaces_row_of_same_id_on_another_commit(repo: ReleaseRepository) -> None:
+    """The same confirmed call retried after its tag was deleted pushes a new commit."""
+    await repo.add(_rel())
+    moved = _rel().model_copy(update={"commit_sha": "d" * 40})
+    assert await repo.add(moved) == moved
+    assert await repo.get(moved.id) == moved
 
 
 async def test_update_and_sink_queue(repo: ReleaseRepository) -> None:
