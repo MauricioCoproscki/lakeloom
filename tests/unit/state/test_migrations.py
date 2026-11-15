@@ -101,6 +101,7 @@ async def test_concurrent_upgrades_postgres() -> None:
             await conn.execute(text("DROP TABLE IF EXISTS proposals"))
             await conn.execute(text("DROP TABLE IF EXISTS audit_log"))
             await conn.execute(text("DROP TABLE IF EXISTS publications"))
+            await conn.execute(text("DROP TABLE IF EXISTS releases"))
             await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await asyncio.gather(*(upgrade(e) for e in engines))
         assert "scan_records" in await _tables(engines[0])
