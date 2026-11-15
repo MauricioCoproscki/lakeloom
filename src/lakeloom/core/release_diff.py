@@ -1,7 +1,8 @@
 """Semantic diff of two ontology graphs and the semver bump rules (FR-GIT-06).
 
 Pure functions: no I/O. A *term* is a URIRef subject typed ``owl:Class``, ``skos:Concept``,
-``owl:DatatypeProperty`` or ``owl:ObjectProperty`` outside the vocabulary namespaces. Blank-node restrictions are compared up to
+``owl:DatatypeProperty`` or ``owl:ObjectProperty`` outside the vocabulary namespaces
+(``publish.shacl_gen.VOCABULARY_NAMESPACES``). Blank-node restrictions are compared up to
 isomorphism and attributed to the named term that owns them.
 """
 
