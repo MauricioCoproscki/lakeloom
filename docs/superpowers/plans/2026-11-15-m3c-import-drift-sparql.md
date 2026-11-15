@@ -71,19 +71,19 @@ New ADR: `docs/decisions/0016-import-drift-sparql.md`.
   - **Attribute:** `ns:C.a`, typed `owl:DatatypeProperty`, with `rdfs:domain ns:C`.
     - `datatype`: `xsd:<local>` for an XSD range; `rdfs:Literal` → `xsd:anySimpleType` (not an OWL 2 datatype, so it is minted back as `rdfs:Literal`); no range → `xsd:string` with a warning.
     - `is_identifier`: typed `owl:FunctionalProperty`.
-    - `allowed_values`: the `owl:oneOf` list.
+    - `allowed_values`: the `owl:oneOf` list. *(Amended by Task 1, ADR 0016 R1b: today no export carries `owl:oneOf`. rc1 wants `enumValues` as `OntologyLiteral` objects `[{"value": v}]`; `to_om` sends strings (400 "Invalid request format") and `native_rdf` drops the objects OM returns. Both must be fixed for allowed values to round-trip.)*
     - `unit`: `qudt:unit`.
     - `description`: `rdfs:comment`.
     - An `rdfs:label` other than `a` gets the warning "label of <C.a> not imported" (attributes have no display name).
   - **Relation:** `ns:C.r`, typed `owl:ObjectProperty`, with `rdfs:domain ns:C` and `rdfs:range ns:T`. It becomes `(source C, relation_type r, target T)` with `rdfs:comment` as its description.
-  - **Glossary links** (`om:relatedTo`, `skos:related` and any `om:<type>` between two concepts): ignored when an object property already links the same pair in either direction (the glossary side is derived from it, and `om:relatedTo` is symmetric). Otherwise they get the warning "<n> glossary-only links are not imported".
+  - **Glossary links** (`om:relatedTo`, `skos:related` and any other predicate outside the RDF/RDFS/OWL/SKOS/`om:` vocabularies between two namespace concepts; *amended by Task 1, ADR 0016 R1: OM exports a custom relationship type under its `rdfPredicate`, e.g. `http://localhost:8000/ontology/retail/placedBy`, never `om:<type>`, and a link applied through a change set is always stored as `relatedTo`*): ignored when an object property already links the same pair in either direction (the glossary side is derived from it, and `om:relatedTo` is symmetric). Otherwise they get the warning "<n> glossary-only links are not imported".
   - **Mapping:** `skos:exactMatch|closeMatch|broadMatch|narrowMatch|relatedMatch` from a concept to any absolute IRI.
   - **Axiom (one per concept):** every `rdfs:subClassOf` blank node of a concept that is an `owl:Restriction` on an attribute `ns:C.a` of the same concept, with `owl:cardinality` / `owl:qualifiedCardinality` (EXACT), `owl:minCardinality` (MIN) or `owl:maxCardinality` (MAX), becomes one expression `{"kind":"RESTRICTION","restrictionKind":…,"propertyName":"a","cardinality":n}`.
     - Expressions are sorted by (property, kind).
     - The axiom is named `<Pascal(C)>PrimaryKey` when every expression is EXACT 1 on an identifier attribute, else `<Pascal(C)>Restrictions`. Names are not in the RDF; this rule reproduces the mapper's names.
     - A named `rdfs:subClassOf ns:P` equal to the concept's parent is covered by `parent`. Any other `subClassOf` shape gets the warning "<n> class axioms not representable".
   - **Ignored silently (OM bookkeeping):**
-    - `om:fullyQualifiedName`, `skos:inScheme`, `skos:topConceptOf`, `skos:hasTopConcept`;
+    - `om:fullyQualifiedName`, `skos:inScheme`, `skos:topConceptOf`, `skos:hasTopConcept`, `skos:narrower` (*amended by Task 1, ADR 0016 R1: OM writes it on the parent as the inverse of the child's `skos:broader`*);
     - `rdf:type` values `om:GlossaryTerm`, `skos:Concept`, `owl:Class` and `owl:FunctionalProperty` (all read above);
     - `rdfs:label` equal to the local name;
     - the `owl:Ontology` / `skos:ConceptScheme` node, and vocabulary declarations of non-namespace subjects.
@@ -96,9 +96,10 @@ New ADR: `docs/decisions/0016-import-drift-sparql.md`.
 - **Import diff (`import_operations`).** It compares the current `TermSet` (the model's graph, namespace = the model's base IRI) with the incoming one:
   - `mode="merge"` (default) adds and updates only. `mode="replace"` also removes terms that the model has and the file lacks.
   - **Concept:** missing → `AddConcept`. Present with a different display name, description, synonyms or parent → `UpdateConcept` with `base_version` from OM (`OMClient.get_term("<model>.<L>")`, fail closed when absent). Removed (replace) → `RemoveConcept`.
-  - **Attribute:** missing → `AddAttribute`. Changed (datatype, identifier, values, unit, description) → `AddAttribute` again, relying on `UPSERT_PROPERTY` replacing the property (verified in Task 1). Should Task 1 find it does not replace, a changed attribute is proposed as `RemoveAttribute` in part 1 and `AddAttribute` in a following part, and the ADR records it. Removed → `RemoveAttribute`.
+  - **Attribute** (*amended by Task 1, ADR 0016 R2/R4*): missing → `AddAttribute`. Changed datatype, identifier, values or unit → `AddAttribute` again, whose native `UPSERT_PROPERTY` must carry `targetId` and `baseVersion` of the existing property (from `list_native_members`, `OMContext.native_ids`/`native_versions` under `attr:<iri>`); rc1 then replaces the structural fields in full (omitted fields are cleared), while without them the change set ends `APPLY_FAILED` "Definition already exists". A changed **description** is not proposed: rc1 ignores description and displayName on an existing native definition, so it gets the warning "<n> attribute descriptions cannot be changed on OpenMetadata 2.1.0-rc1" (with other changes, the description stays as in OM). The remove-then-add fallback is **not possible**: a deleted definition is a tombstone whose name stays reserved. Removed → `RemoveAttribute`.
   - **Relation / mapping:** missing → add; removed (replace) → remove; there is no change case (they are keys).
-  - **Axiom:** compared by its expressions. Different or missing → `AddAxiom`. In replace mode, current axioms the file lacks → `RemoveAxiom`, by the OM native axiom names (`list_native_members`).
+  - **Axiom:** compared by its expressions. Missing → `AddAxiom`; different → `AddAxiom` whose `UPSERT_AXIOM` carries the existing axiom's `targetId`/`baseVersion` (*amended by Task 1, ADR 0016 R2: without them rc1 ends `APPLY_FAILED` "Definition already exists"; with them the expressions are replaced*). In replace mode, current axioms the file lacks → `RemoveAxiom`, by the OM native axiom names (`list_native_members`).
+  - **Re-adding a deleted definition** (*added by Task 1, ADR 0016 R4*): a concept, attribute or axiom whose native definition was deleted earlier (listed with `include=deleted`) cannot be created again through a change set on rc1; it is skipped with a warning naming it.
   - **Operation order:** concepts (parents first), attributes, relations, mappings, axioms; removals in reverse order (axioms, mappings, relations, attributes, then concepts, children first).
   - **Rule ids:** `R-IMPORT` (file) or `R-GIT-RESTORE` (Git). Each operation carries one `Evidence(kind="import", ref=<subject IRI as read>)`.
   - **Overlap with open proposals.** Operations whose `op_key` is already in an open proposal of the model (`ProposalRepository.pending_op_keys`) are dropped, with the warning "<n> operations already pending in <proposal ids>". The fuzzy `dedupe()` is *not* applied (an import is an exact statement of the terms).
@@ -145,7 +146,7 @@ New ADR: `docs/decisions/0016-import-drift-sparql.md`.
   - **Column diff per table:** added, removed, type changed (raw type string), comment changed. A **rename candidate** is a removed and an added column with the same raw type and the same ordinal position, matched 1:1. A **table rename candidate** is a removed and an added table with identical (name, type) column lists.
   - **Operations:**
     - **Added or type-changed column:** the mapper runs on the new scan of that table, and the `AddAttribute` whose evidence names the column is kept with `concept` rewritten to the bound concept. FK relations whose columns are new are kept the same way.
-    - **Comment change:** an `AddAttribute` with the new description (upsert).
+    - **Comment change:** *amended by Task 1 (ADR 0016 R2)*: not proposed, since rc1 ignores description changes on an existing native property; it is reported in the table's drift and as a warning. (A type change is an `AddAttribute` carrying the existing property's `targetId`/`baseVersion`, as for import.)
     - **Removed column:** `RemoveAttribute(concept, bound name)`, only when the model graph has that attribute.
     - **Added table:** the mapper's operations for it, through `dedupe()` like `propose_from_scan`.
     - **Removed table:** its relations, axioms and attributes are removed, then `RemoveConcept` (with `base_version` from OM), only for terms the graph has.
@@ -159,7 +160,7 @@ New ADR: `docs/decisions/0016-import-drift-sparql.md`.
 - **SPARQL proxy (FR-PUB-03).**
   - **Target.** Proxied to `POST /v1/glossaries/{id}/sparql` (`SparqlQuery{query, format, timeout}`) with the bot token. The model's glossary id comes from `ModelService.get_model`.
     - `POST /v1/ontologies/{id}/sparql` queries the *sealed active release* and is never used (Lakeloom never seals).
-    - Whether native attributes are visible is recorded in Task 1, and documented in the tool description and the ADR.
+    - Native attributes, object properties and axioms are **not** visible (Task 1, ADR 0016 R3): the dataset is the glossary alone. This is documented in the tool description and the ADR.
   - **Guard (`core/sparql.py`, before any OM call):**
     - at most `LAKELOOM_SPARQL_MAX_QUERY_CHARS` (default `20000`);
     - parsed with `rdflib.plugins.sparql.parser.parseQuery`. A parse failure is checked with `parseUpdate`: when that succeeds it is `forbidden` "SPARQL updates are not allowed", otherwise `validation_error` with rdflib's message (one line, 300 chars);
@@ -170,7 +171,7 @@ New ADR: `docs/decisions/0016-import-drift-sparql.md`.
     - **HTTP** negotiates with `Accept`: `application/sparql-results+json`, `application/sparql-results+xml`, `text/csv`, `text/tab-separated-values`, `text/turtle`, `application/ld+json`, `application/n-triples`, `application/rdf+xml`. Otherwise 406.
     - **HTTP body:** `application/sparql-query` (raw), `application/x-www-form-urlencoded` (`query=`) or JSON `{"query": …}`.
   - **Limits.**
-    - Timeout: `LAKELOOM_SPARQL_TIMEOUT_SECONDS` (default `30`, range 1–300), sent as OM's `timeout` and used as the httpx timeout.
+    - Timeout (*amended by Task 1, ADR 0016 R3*): `LAKELOOM_SPARQL_TIMEOUT_SECONDS` (default `30`, range 1–30), sent as OM's `timeout` **in milliseconds** (`seconds * 1000`; OM accepts 1–30000) and used, plus a small margin, as the httpx timeout. An expired OM query is a 500 `UNHANDLED_SERVER_EXCEPTION` (message `[null]`), so it is `upstream_unavailable`.
     - Response cap: `LAKELOOM_SPARQL_MAX_RESULT_BYTES` (default `5242880`), read in a stream; past the cap the call fails with `validation_error` "result larger than <n> bytes; add LIMIT".
     - OM 4xx → `validation_error` with OM's detail; 5xx and transport errors → `upstream_unavailable`.
   - **Tool output.** `sparql_query(model, query, format=None, max_tokens=None)` returns the body as quoted untrusted text (NFR-SEC-14). With `json`, `structuredContent` carries the parsed result, truncated to `max_tokens` with `truncated: true` (FR-CTX-06).
