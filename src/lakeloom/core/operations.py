@@ -101,7 +101,9 @@ class Evidence(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    kind: Literal["column", "table", "fk", "pk", "profile", "tag", "comment", "match", "agent"]
+    kind: Literal[
+        "column", "table", "fk", "pk", "profile", "tag", "comment", "match", "agent", "import"
+    ]
     ref: Annotated[str, Field(max_length=2000)]
     detail: Annotated[str | None, Field(max_length=2000)] = None
     truncated: bool = False

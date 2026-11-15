@@ -40,7 +40,7 @@ from lakeloom.sources.models import ColumnInfo, ColumnProfile, Constraint, Table
 from lakeloom.state.scans import ScannedTable, ScanRecord
 from lakeloom.untrusted import UntrustedText
 
-__all__ = ["MappingResult", "map_scan", "singularize"]
+__all__ = ["MappingResult", "map_scan", "pascal_name", "singularize"]
 
 _SPLIT = re.compile(r"[^A-Za-z0-9]+")
 _STRING_TYPES = {"string", "varchar", "char"}
@@ -90,6 +90,12 @@ def _valid_name(text: str, fallback: str) -> str:
 
 def _pascal(words: list[str]) -> str:
     return "".join(w[0].upper() + w[1:] for w in words)
+
+
+def pascal_name(text: str) -> str:
+    """``text`` in PascalCase (``order_line`` -> ``OrderLine``); empty without letters or
+    digits. The mapper's axiom names use it, so the import diff can reproduce them."""
+    return _pascal(_words(text))
 
 
 def _concept_name(table: str, policy: MappingPolicy) -> str:
@@ -455,7 +461,7 @@ def _pk_axiom(
         op="add_axiom",
         concept=concept,
         axiom={
-            "name": f"{_pascal(_words(concept)) or 'Concept'}PrimaryKey",
+            "name": f"{pascal_name(concept) or 'Concept'}PrimaryKey",
             "displayName": f"{concept} primary key",
             "description": f"Primary key of table {full}.",
             "axiomType": "SUBCLASS_OF",

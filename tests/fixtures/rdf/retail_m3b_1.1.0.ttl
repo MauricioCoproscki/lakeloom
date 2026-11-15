@@ -1,0 +1,240 @@
+@prefix om: <https://open-metadata.org/ontology/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix retail_m3b: <http://localhost:8000/ontology/retail_m3b/> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+retail_m3b:Customer.country a owl:DatatypeProperty ;
+    rdfs:label "country" ;
+    rdfs:comment "ISO country code of the customer" ;
+    rdfs:domain retail_m3b:Customer ;
+    rdfs:range xsd:string .
+
+retail_m3b:Customer.created_at a owl:DatatypeProperty ;
+    rdfs:label "created_at" ;
+    rdfs:comment "When the customer account was created" ;
+    rdfs:domain retail_m3b:Customer ;
+    rdfs:range xsd:dateTime .
+
+retail_m3b:Customer.email a owl:DatatypeProperty ;
+    rdfs:label "email" ;
+    rdfs:comment "Customer contact email address" ;
+    rdfs:domain retail_m3b:Customer ;
+    rdfs:range xsd:string .
+
+retail_m3b:Customer.full_name a owl:DatatypeProperty ;
+    rdfs:label "full_name" ;
+    rdfs:comment "Customer full legal name" ;
+    rdfs:domain retail_m3b:Customer ;
+    rdfs:range xsd:string .
+
+retail_m3b:Customer.loyalty_tier a owl:DatatypeProperty ;
+    rdfs:label "loyalty_tier" ;
+    rdfs:domain retail_m3b:Customer ;
+    rdfs:range xsd:string .
+
+retail_m3b:Invoice.amount a owl:DatatypeProperty ;
+    rdfs:label "amount" ;
+    rdfs:comment "Invoiced amount" ;
+    rdfs:domain retail_m3b:Invoice ;
+    rdfs:range xsd:decimal .
+
+retail_m3b:Invoice.currency a owl:DatatypeProperty ;
+    rdfs:label "currency" ;
+    rdfs:comment "ISO currency code of the invoice" ;
+    rdfs:domain retail_m3b:Invoice ;
+    rdfs:range xsd:string .
+
+retail_m3b:Invoice.hasOrder a owl:ObjectProperty ;
+    rdfs:label "hasOrder" ;
+    rdfs:domain retail_m3b:Invoice ;
+    rdfs:range retail_m3b:Order .
+
+retail_m3b:Invoice.issued_at a owl:DatatypeProperty ;
+    rdfs:label "issued_at" ;
+    rdfs:comment "When the invoice was issued" ;
+    rdfs:domain retail_m3b:Invoice ;
+    rdfs:range xsd:dateTime .
+
+retail_m3b:Invoice.order_id a owl:DatatypeProperty ;
+    rdfs:label "order_id" ;
+    rdfs:comment "Order this invoice bills" ;
+    rdfs:domain retail_m3b:Invoice ;
+    rdfs:range xsd:long .
+
+retail_m3b:Order.customer_id a owl:DatatypeProperty ;
+    rdfs:label "customer_id" ;
+    rdfs:comment "Customer who placed the order" ;
+    rdfs:domain retail_m3b:Order ;
+    rdfs:range xsd:long .
+
+retail_m3b:Order.hasCustomer a owl:ObjectProperty ;
+    rdfs:label "hasCustomer" ;
+    rdfs:domain retail_m3b:Order ;
+    rdfs:range retail_m3b:Customer .
+
+retail_m3b:Order.order_date a owl:DatatypeProperty ;
+    rdfs:label "order_date" ;
+    rdfs:comment "Calendar date the order was placed" ;
+    rdfs:domain retail_m3b:Order ;
+    rdfs:range rdfs:Literal .
+
+retail_m3b:Order.status a owl:DatatypeProperty ;
+    rdfs:label "status" ;
+    rdfs:comment "Fulfilment status of the order" ;
+    rdfs:domain retail_m3b:Order ;
+    rdfs:range xsd:string .
+
+retail_m3b:Order.total_amount a owl:DatatypeProperty ;
+    rdfs:label "total_amount" ;
+    rdfs:comment "Order total including tax" ;
+    rdfs:domain retail_m3b:Order ;
+    rdfs:range xsd:decimal .
+
+retail_m3b:Product.category a owl:DatatypeProperty ;
+    rdfs:label "category" ;
+    rdfs:comment "Merchandising category of the product" ;
+    rdfs:domain retail_m3b:Product ;
+    rdfs:range xsd:string .
+
+retail_m3b:Product.name a owl:DatatypeProperty ;
+    rdfs:label "name" ;
+    rdfs:comment "Product display name" ;
+    rdfs:domain retail_m3b:Product ;
+    rdfs:range xsd:string .
+
+retail_m3b:Product.sku a owl:DatatypeProperty ;
+    rdfs:label "sku" ;
+    rdfs:comment "Stock keeping unit code" ;
+    rdfs:domain retail_m3b:Product ;
+    rdfs:range xsd:string .
+
+retail_m3b:Product.unit_price a owl:DatatypeProperty ;
+    rdfs:label "unit_price" ;
+    rdfs:comment "List price per unit" ;
+    rdfs:domain retail_m3b:Product ;
+    rdfs:range xsd:decimal .
+
+skos:definition a owl:AnnotationProperty .
+
+skos:hasTopConcept a owl:ObjectProperty .
+
+skos:inScheme a owl:ObjectProperty .
+
+skos:prefLabel a owl:AnnotationProperty .
+
+skos:related a owl:ObjectProperty .
+
+skos:topConceptOf a owl:ObjectProperty .
+
+om:fullyQualifiedName a owl:DatatypeProperty .
+
+retail_m3b:Customer.customer_id a owl:DatatypeProperty,
+        owl:FunctionalProperty ;
+    rdfs:label "customer_id" ;
+    rdfs:comment "Unique customer identifier" ;
+    rdfs:domain retail_m3b:Customer ;
+    rdfs:range xsd:long .
+
+retail_m3b:Invoice.invoice_id a owl:DatatypeProperty,
+        owl:FunctionalProperty ;
+    rdfs:label "invoice_id" ;
+    rdfs:comment "Unique invoice identifier" ;
+    rdfs:domain retail_m3b:Invoice ;
+    rdfs:range xsd:long .
+
+retail_m3b:Order.order_id a owl:DatatypeProperty,
+        owl:FunctionalProperty ;
+    rdfs:label "order_id" ;
+    rdfs:comment "Unique order identifier" ;
+    rdfs:domain retail_m3b:Order ;
+    rdfs:range xsd:long .
+
+retail_m3b:Product.product_id a owl:DatatypeProperty,
+        owl:FunctionalProperty ;
+    rdfs:label "product_id" ;
+    rdfs:comment "Unique product identifier" ;
+    rdfs:domain retail_m3b:Product ;
+    rdfs:range xsd:long .
+
+skos:ConceptScheme a owl:Class .
+
+om:Glossary a owl:Class .
+
+om:relatedTo a owl:ObjectProperty,
+        owl:SymmetricProperty ;
+    rdfs:label "Related To" ;
+    rdfs:comment "General association between terms that are conceptually connected." ;
+    owl:inverseOf om:relatedTo .
+
+skos:Concept a owl:Class .
+
+om:GlossaryTerm a owl:Class .
+
+retail_m3b:Product a owl:Class,
+        skos:Concept,
+        om:GlossaryTerm ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:cardinality "1"^^xsd:nonNegativeInteger ;
+            owl:onProperty retail_m3b:Product.product_id ] ;
+    skos:definition "Catalogue of products sold" ;
+    skos:inScheme <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    skos:prefLabel "Product" ;
+    skos:topConceptOf <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    om:fullyQualifiedName "retail_m3b.Product" .
+
+<https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> a owl:Ontology,
+        skos:ConceptScheme,
+        om:Glossary ;
+    rdfs:label "retail_m3b" ;
+    skos:definition "M3b acceptance throwaway model" ;
+    skos:hasTopConcept retail_m3b:Customer,
+        retail_m3b:Invoice,
+        retail_m3b:Order,
+        retail_m3b:Product ;
+    om:fullyQualifiedName "retail_m3b" .
+
+retail_m3b:Invoice a owl:Class,
+        skos:Concept,
+        om:GlossaryTerm ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:cardinality "1"^^xsd:nonNegativeInteger ;
+            owl:onProperty retail_m3b:Invoice.invoice_id ] ;
+    skos:definition "Invoices issued for orders" ;
+    skos:inScheme <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    skos:prefLabel "Invoice" ;
+    skos:related retail_m3b:Order ;
+    skos:topConceptOf <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    om:fullyQualifiedName "retail_m3b.Invoice" ;
+    om:relatedTo retail_m3b:Order .
+
+retail_m3b:Customer a owl:Class,
+        skos:Concept,
+        om:GlossaryTerm ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:cardinality "1"^^xsd:nonNegativeInteger ;
+            owl:onProperty retail_m3b:Customer.customer_id ] ;
+    skos:definition "Registered customers of the retail business" ;
+    skos:inScheme <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    skos:prefLabel "Customer" ;
+    skos:related retail_m3b:Order ;
+    skos:topConceptOf <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    om:fullyQualifiedName "retail_m3b.Customer" ;
+    om:relatedTo retail_m3b:Order .
+
+retail_m3b:Order a owl:Class,
+        skos:Concept,
+        om:GlossaryTerm ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:cardinality "1"^^xsd:nonNegativeInteger ;
+            owl:onProperty retail_m3b:Order.order_id ] ;
+    skos:definition "Customer orders, one row per order" ;
+    skos:inScheme <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    skos:prefLabel "Order" ;
+    skos:related retail_m3b:Customer,
+        retail_m3b:Invoice ;
+    skos:topConceptOf <https://open-metadata.org/entity/glossary/dec54b32-88bc-4a2c-bb57-75e5d1ca6067> ;
+    om:fullyQualifiedName "retail_m3b.Order" ;
+    om:relatedTo retail_m3b:Customer,
+        retail_m3b:Invoice .
