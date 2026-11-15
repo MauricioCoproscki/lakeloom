@@ -154,7 +154,7 @@ def provenance_record(p: Proposal, approval: ReviewRecord, publication_id: str) 
 # --- manifest -------------------------------------------------------------------------------
 
 
-def _scalar(value: str | int | None) -> str:
+def yaml_scalar(value: str | int | None) -> str:
     if value is None:
         return "null"
     if isinstance(value, int):
@@ -175,7 +175,7 @@ def _merged_tables(
 
 
 def _manifest_tables(previous: bytes | None) -> list[dict[str, str | int | None]]:
-    loaded = _load(previous)
+    loaded = load_manifest(previous)
     out: list[dict[str, str | int | None]] = []
     for item in cast("list[Any]", loaded.get("source_tables") or []) if loaded else []:
         if not isinstance(item, dict):
@@ -196,7 +196,7 @@ def _manifest_tables(previous: bytes | None) -> list[dict[str, str | int | None]
     return out
 
 
-def _load(data: bytes | None) -> dict[str, Any] | None:
+def load_manifest(data: bytes | None) -> dict[str, Any] | None:
     if data is None:
         return None
     try:
@@ -206,32 +206,48 @@ def _load(data: bytes | None) -> dict[str, Any] | None:
     return cast("dict[str, Any]", loaded) if isinstance(loaded, dict) else None
 
 
-def _manifest(s: Snapshot, previous: bytes | None) -> bytes:
+def _carried(previous: bytes | None, key: str) -> str | None:
+    loaded = load_manifest(previous)
+    value = loaded.get(key) if loaded else None
+    return value if isinstance(value, str) else None
+
+
+def manifest_bytes(
+    s: Snapshot,
+    previous: bytes | None,
+    *,
+    release: str | None = None,
+    released_at: str | None = None,
+) -> bytes:
+    """The manifest; ``release`` and ``released_at`` default to the previous manifest's values."""
+    if release is None:
+        release, released_at = _carried(previous, "release"), _carried(previous, "released_at")
     out = [
-        f"model: {_scalar(s.model)}",
-        f"glossary_id: {_scalar(s.glossary_id)}",
-        f"glossary_fqn: {_scalar(s.glossary_fqn)}",
-        f"base_iri: {_scalar(s.base_iri)}",
+        f"model: {yaml_scalar(s.model)}",
+        f"glossary_id: {yaml_scalar(s.glossary_id)}",
+        f"glossary_fqn: {yaml_scalar(s.glossary_fqn)}",
+        f"base_iri: {yaml_scalar(s.base_iri)}",
     ]
     if s.prefixes:
         out.append("prefixes:")
-        out += [f"  {_scalar(k)}: {_scalar(v)}" for k, v in sorted(s.prefixes.items())]
+        out += [f"  {yaml_scalar(k)}: {yaml_scalar(v)}" for k, v in sorted(s.prefixes.items())]
     else:
         out.append("prefixes: {}")
     out += [
-        f"om_version: {_scalar(s.om_version)}",
-        f"model_version: {_scalar(s.model_version)}",
-        f"last_change_set: {_scalar(s.last_change_set)}",
-        f"last_proposal: {_scalar(s.proposal_id)}",
-        "release: null",
+        f"om_version: {yaml_scalar(s.om_version)}",
+        f"model_version: {yaml_scalar(s.model_version)}",
+        f"last_change_set: {yaml_scalar(s.last_change_set)}",
+        f"last_proposal: {yaml_scalar(s.proposal_id)}",
+        f"release: {yaml_scalar(release)}",
+        f"released_at: {yaml_scalar(released_at)}",
     ]
     rows = _merged_tables(previous, s.source_tables)
     if rows:
         out.append("source_tables:")
         for row in rows:
-            out.append(f"  - fqn: {_scalar(row['fqn'])}")
-            out.append(f"    om_fqn: {_scalar(row['om_fqn'])}")
-            out.append(f"    version: {_scalar(row['version'])}")
+            out.append(f"  - fqn: {yaml_scalar(row['fqn'])}")
+            out.append(f"    om_fqn: {yaml_scalar(row['om_fqn'])}")
+            out.append(f"    version: {yaml_scalar(row['version'])}")
     else:
         out.append("source_tables: []")
     return ("\n".join(out) + "\n").encode("utf-8")
@@ -258,7 +274,7 @@ def _cell(value: Any) -> str:
     return "" if value is None else _clean(str(value)).replace("|", "\\|")
 
 
-def _readme(rows: Mapping[str, bytes]) -> bytes:
+def readme_bytes(rows: Mapping[str, bytes]) -> bytes:
     lines = [
         "# Ontologies",
         "",
@@ -268,7 +284,7 @@ def _readme(rows: Mapping[str, bytes]) -> bytes:
         "| --- | --- | --- | --- |",
     ]
     for slug in sorted(rows):
-        m = _load(rows[slug])
+        m = load_manifest(rows[slug])
         if m is None:
             continue
         lines.append(
@@ -276,6 +292,23 @@ def _readme(rows: Mapping[str, bytes]) -> bytes:
             f"{_cell(m.get('last_change_set'))} | {_cell(m.get('release'))} |"
         )
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def export_files(snapshot: Snapshot) -> dict[str, bytes]:
+    """The exports of a snapshot by repository path; refuses an unsafe slug or missing exports."""
+    slug = snapshot.model
+    if not _SLUG.fullmatch(slug):
+        raise ValueError(f"model slug {slug!r} is not a safe path component")
+    if snapshot.exports is None:
+        raise ValueError("snapshot has no exports: the publisher must export before rendering")
+    missing = [name for name in REQUIRED_EXPORTS if name not in snapshot.exports]
+    if missing:
+        raise ValueError(f"snapshot exports lack {', '.join(missing)}")
+    return {
+        f"ontologies/{slug}/{name}": snapshot.exports[name].encode("utf-8")
+        for name in (*REQUIRED_EXPORTS, *OPTIONAL_EXPORTS)
+        if name in snapshot.exports
+    }
 
 
 def render(
@@ -288,22 +321,11 @@ def render(
 ) -> dict[str, bytes]:
     """The full file map of one commit. ``manifests`` holds the other models' manifests."""
     slug = snapshot.model
-    if not _SLUG.fullmatch(slug):
-        raise ValueError(f"model slug {slug!r} is not a safe path component")
-    if snapshot.exports is None:
-        raise ValueError("snapshot has no exports: the publisher must export before rendering")
-    missing = [name for name in REQUIRED_EXPORTS if name not in snapshot.exports]
-    if missing:
-        raise ValueError(f"snapshot exports lack {', '.join(missing)}")
-    manifest = _manifest(snapshot, previous_manifest)
-    files = {
-        f"ontologies/{slug}/{name}": snapshot.exports[name].encode("utf-8")
-        for name in (*REQUIRED_EXPORTS, *OPTIONAL_EXPORTS)
-        if name in snapshot.exports
-    }
+    manifest = manifest_bytes(snapshot, previous_manifest)
+    files = export_files(snapshot)
     files[f"ontologies/{slug}/manifest.yaml"] = manifest
     files[f"provenance/{slug}.jsonl"] = _provenance_log(
         previous_provenance, snapshot.provenance, publication_id
     )
-    files["README.md"] = _readme({**manifests, slug: manifest})
+    files["README.md"] = readme_bytes({**manifests, slug: manifest})
     return files

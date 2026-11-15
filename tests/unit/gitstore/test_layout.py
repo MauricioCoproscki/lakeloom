@@ -240,11 +240,13 @@ def test_manifest_fixed_key_order_and_valid_yaml() -> None:
         "last_change_set",
         "last_proposal",
         "release",
+        "released_at",
         "source_tables",
     ]
     loaded = yaml.safe_load(text)
     assert loaded["base_iri"] is None
     assert loaded["release"] is None
+    assert loaded["released_at"] is None
     assert loaded["source_tables"] == []
     assert list(loaded["prefixes"]) == ["a", "b"]
     assert set(files) == {
