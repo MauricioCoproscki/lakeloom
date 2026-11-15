@@ -101,19 +101,23 @@ class ReleaseReader:
         """Make the next read of ``slug`` fetch the remote tags again (after a release)."""
         self._fetched.pop(slug, None)
 
-    async def _refresh_tags(self, slug: str) -> None:
+    def _fresh(self, slug: str) -> bool:
         last = self._fetched.get(slug)
-        if last is not None and self._clock() - last < self._refresh:
+        return last is not None and self._clock() - last < self._refresh
+
+    async def _refresh_tags(self, slug: str) -> None:
+        if self._fresh(slug):
             return
         async with repo_lock(self._key):
+            if self._fresh(slug):  # a reader ahead of us in the queue just fetched
+                return
             try:
                 await self._wc.ensure()
                 await self._wc.fetch_tags(f"{slug}/v*")
             except GitError as exc:
-                # Serve what is already local; try again on the next read.
+                # Serve what is already local; a failure is throttled like a success.
                 _log.warning("release tag fetch for %s failed: %s", slug, exc.kind)
-                return
-        self._fetched[slug] = self._clock()
+            self._fetched[slug] = self._clock()
 
     def _remember(self, key: tuple[str, str], data: bytes) -> None:
         self._cache[key] = data

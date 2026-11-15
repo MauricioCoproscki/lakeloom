@@ -164,3 +164,49 @@ async def test_reader_rejects_unsafe_version(seed: Seeder, reader: ReleaseReader
         with pytest.raises(LakeloomError, match="no release"):
             await reader.file("retail", bad, "ontology.ttl")
     assert await reader.list("-bad") == []
+
+
+async def test_failed_fetch_is_throttled(
+    seed: Seeder, reader: ReleaseReader, wc: WorkingCopy, clock: Clock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # fmt: skip
+    from lakeloom.gitstore import GitError
+
+    seed.release("retail/v1.0.0", full("retail"))
+    await reader.list("retail")
+    reader.invalidate("retail")
+    calls = 0
+
+    async def boom(pattern: str) -> None:
+        nonlocal calls
+        calls += 1
+        raise GitError("network", "down")
+
+    monkeypatch.setattr(wc, "fetch_tags", boom)
+    assert [r.version for r in await reader.list("retail")] == ["1.0.0"]
+    assert [r.version for r in await reader.list("retail")] == ["1.0.0"]
+    assert calls == 1
+    clock.now += 31
+    await reader.list("retail")
+    assert calls == 2
+
+
+async def test_queued_readers_fetch_once(
+    seed: Seeder, reader: ReleaseReader, wc: WorkingCopy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    seed.release("retail/v1.0.0", full("retail"))
+    calls = 0
+    real = wc.fetch_tags
+
+    async def slow(pattern: str) -> None:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        await real(pattern)
+
+    monkeypatch.setattr(wc, "fetch_tags", slow)
+    results = await asyncio.gather(*(reader.list("retail") for _ in range(4)))
+    assert calls == 1
+    assert all([r.version for r in x] == ["1.0.0"] for x in results)
