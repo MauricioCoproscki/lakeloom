@@ -30,7 +30,10 @@ def _fuseki_up() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(not _fuseki_up(), reason="Fuseki (rdf profile) is not running")
+pytestmark = [
+    pytest.mark.contract,
+    pytest.mark.skipif(not _fuseki_up(), reason="Fuseki (rdf profile) is not running"),
+]
 
 
 @pytest.fixture
