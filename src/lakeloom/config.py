@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     triplestore_username: str | None = None
     triplestore_password: SecretStr | None = None
     triplestore_shapes: bool = True
+    # M3c import and SPARQL proxy limits (FR-IO-04, NFR-SEC-13). OM accepts at most 30 s (ADR 0016).
+    import_max_bytes: int = Field(20971520, ge=1)
+    import_timeout_seconds: float = Field(60, ge=1, le=600)
+    import_max_triples: int = Field(200000, ge=1)
+    sparql_timeout_seconds: float = Field(30, ge=1, le=30)
+    sparql_max_result_bytes: int = Field(5242880, ge=1024)
+    sparql_max_query_chars: int = Field(20000, ge=100)
     model_cache_ttl_seconds: int = Field(60, ge=0, le=3600)
     # None means "auto": False in production, True in development (resolved after validation).
     stdio_enabled: bool | None = None

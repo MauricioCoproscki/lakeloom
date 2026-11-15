@@ -357,3 +357,38 @@ def test_nfr_sec_11_user_name_alone_in_git_remote_is_allowed(
 ) -> None:
     monkeypatch.setenv("LAKELOOM_GIT_REMOTE", remote)
     assert Settings().git_remote == remote
+
+
+M3C_BOUNDS = [
+    ("LAKELOOM_IMPORT_MAX_BYTES", "import_max_bytes", 1, None),
+    ("LAKELOOM_IMPORT_TIMEOUT_SECONDS", "import_timeout_seconds", 1, 600),
+    ("LAKELOOM_IMPORT_MAX_TRIPLES", "import_max_triples", 1, None),
+    ("LAKELOOM_SPARQL_TIMEOUT_SECONDS", "sparql_timeout_seconds", 1, 30),
+    ("LAKELOOM_SPARQL_MAX_RESULT_BYTES", "sparql_max_result_bytes", 1024, None),
+    ("LAKELOOM_SPARQL_MAX_QUERY_CHARS", "sparql_max_query_chars", 100, None),
+]
+
+
+def test_fr_io_04_m3c_defaults() -> None:
+    s = Settings()
+    assert s.import_max_bytes == 20971520
+    assert s.import_timeout_seconds == 60
+    assert s.import_max_triples == 200000
+    assert s.sparql_timeout_seconds == 30
+    assert s.sparql_max_result_bytes == 5242880
+    assert s.sparql_max_query_chars == 20000
+
+
+@pytest.mark.parametrize(("env", "field", "low", "high"), M3C_BOUNDS)
+def test_fr_io_04_m3c_settings_are_bounded(
+    monkeypatch: pytest.MonkeyPatch, env: str, field: str, low: int, high: int | None
+) -> None:
+    for ok in (low, high):
+        if ok is not None:
+            monkeypatch.setenv(env, str(ok))
+            assert getattr(Settings(), field) == ok
+    for bad in (low - 1, None if high is None else high + 1):
+        if bad is not None:
+            monkeypatch.setenv(env, str(bad))
+            with pytest.raises(ValidationError):
+                Settings()
