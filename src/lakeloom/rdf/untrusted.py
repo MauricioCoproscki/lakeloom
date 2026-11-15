@@ -82,11 +82,18 @@ def parse_untrusted(data: bytes, fmt: InputFormat, *, max_bytes: int, max_triple
             f"import is {len(data)} bytes; the limit is {max_bytes} (LAKELOOM_IMPORT_MAX_BYTES)",
             "Split the file into smaller imports, or ask the operator to raise the limit.",
         )
-    if fmt == "jsonld":
-        _check_jsonld(data)
-    elif fmt == "rdfxml":
-        _check_rdfxml(data)
-    graph = parse_rdf(data, fmt)
+    try:
+        if fmt == "jsonld":
+            _check_jsonld(data)
+        elif fmt == "rdfxml":
+            _check_rdfxml(data)
+        graph = parse_rdf(data, fmt)
+    except RecursionError:
+        raise _refuse(
+            f"{'JSON-LD' if fmt == 'jsonld' else 'RDF'} nesting is too deep",
+            "Flatten the document (for JSON-LD, use @graph with @id references instead of "
+            "deeply nested objects or lists) and retry.",
+        ) from None
     if len(graph) > max_triples:
         raise _refuse(
             f"import has {len(graph)} triples; the limit is {max_triples} "

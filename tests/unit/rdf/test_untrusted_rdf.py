@@ -116,3 +116,20 @@ def test_no_network_during_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     for fmt, data in docs.items():
         parse_untrusted(data, fmt, max_bytes=BIG, max_triples=BIG)
+
+
+@pytest.mark.parametrize("wrap", [("[", "]"), ('{"a": ', "}")])
+def test_deeply_nested_jsonld_is_validation_error(wrap: tuple[str, str]) -> None:
+    """A pathologically nested document is a typed refusal, never a raw RecursionError."""
+    depth = 100_000
+    data = (wrap[0] * depth + "1" + wrap[1] * depth).encode()
+    err = _refused(data, "jsonld")
+    assert err.message == "JSON-LD nesting is too deep"
+
+
+def test_nesting_past_the_check_is_still_validation_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def deep(*a: Any, **k: Any) -> Graph:
+        raise RecursionError
+
+    monkeypatch.setattr(untrusted, "parse_rdf", deep)
+    assert _refused(b"{}", "jsonld").message == "JSON-LD nesting is too deep"
