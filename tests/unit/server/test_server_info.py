@@ -41,6 +41,7 @@ async def test_fr_om_06_server_info_reports_om_version_and_rdf(make_deps: DepsFa
         "stdio": True,
         "token_exchange": False,
         "releases": False,
+        "import": True,
     }
     assert info.sources == []
     assert info.models == []
@@ -122,6 +123,18 @@ async def test_server_info_reports_releases_feature(make_deps: DepsFactory) -> N
     assert off.features["releases"] is False
     assert on.features["releases"] is True
     assert "releases" in summarize(on) and "releases" not in summarize(off)
+
+
+async def test_server_info_import_feature(make_deps: DepsFactory) -> None:
+    off = await build_server_info(make_deps(), principal())
+    on = await build_server_info(
+        make_deps(git_remote="https://git.example.test/acme/onto.git", git_mode="direct"),
+        principal(),
+    )
+
+    # import_model needs nothing optional; import_from_git reports Git off by itself
+    assert off.features["import"] is True and on.features["import"] is True
+    assert "import" in summarize(off)
 
 
 async def test_server_info_triplestore_block(make_deps: DepsFactory) -> None:

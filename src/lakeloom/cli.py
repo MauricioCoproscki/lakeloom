@@ -13,10 +13,11 @@ lists the queued and blocked Git publications and ``lakeloom git retry`` requeue
 ones and publishes once (FR-GIT-09). ``lakeloom release create MODEL`` prints the release dry
 run and, with ``--yes``, releases (FR-GIT-06); ``lakeloom release list MODEL`` lists the
 released versions; ``lakeloom release sink-retry`` requeues failed triple-store pushes
-(FR-TS-03). There is no review command:
-approving and rejecting are for human reviewers through MCP (ADR 0012). They write their own
-audit rows. Typed
-errors (``not_found``, ``upstream_unavailable``, ...) exit with code 1.
+(FR-TS-03). ``lakeloom import MODEL FILE`` and ``lakeloom import-git MODEL`` print the import
+dry run and, with ``--yes``, create the draft proposal (FR-IO-02, FR-GIT-07).
+There is no review command: approving and rejecting are for human reviewers through MCP
+(ADR 0012). They write their own audit rows. Typed errors (``not_found``,
+``upstream_unavailable``, ...) exit with code 1.
 """
 
 import asyncio
@@ -38,6 +39,7 @@ from lakeloom.logging import configure_logging
 from lakeloom.untrusted import single_line
 
 if TYPE_CHECKING:
+    from lakeloom.core.imports import ImportService
     from lakeloom.core.models import ModelService
     from lakeloom.core.proposals import Actor, ProposalService
     from lakeloom.core.releases import ReleaseService
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
     from lakeloom.gitstore.release_reader import ReleaseReader
     from lakeloom.gitstore.repo import WorkingCopy
     from lakeloom.om.client import OMClient
+    from lakeloom.rdf.canonical import InputFormat
     from lakeloom.sources.base import LakeSource
     from lakeloom.state.publications import PublicationRepository
 
@@ -901,3 +904,198 @@ def release_sink_retry_cmd() -> None:
 
 if __name__ == "__main__":
     app()
+
+
+# --- imports (operator side, FR-IO-02, FR-GIT-07; the same operations as the MCP tools) ------
+
+_FORMATS: tuple["InputFormat", ...] = ("turtle", "rdfxml", "ntriples", "jsonld")
+_EXTENSIONS: dict[str, "InputFormat"] = {
+    ".ttl": "turtle",
+    ".owl": "rdfxml",
+    ".rdf": "rdfxml",
+    ".nt": "ntriples",
+    ".jsonld": "jsonld",
+}
+
+
+@asynccontextmanager
+async def _open_imports(settings: Settings) -> AsyncGenerator["ImportService"]:
+    """The import service (CLI mode: it and its proposal service write their own audit
+    rows); ``import-git`` uses the CLI's own clone, like ``release``."""
+    import hashlib
+    import secrets
+
+    from lakeloom.core.confirm import MIN_SECRET_BYTES, ConfirmTokens
+    from lakeloom.core.imports import ImportService
+    from lakeloom.core.proposals import ProposalService
+    from lakeloom.gitstore.release_reader import ReleaseReader
+    from lakeloom.server.http_app import load_config
+    from lakeloom.state.audit import AuditRepository
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.proposals import ProposalRepository
+    from lakeloom.state.scans import ScanRepository
+
+    # The dry run and the confirmation run in this one process: an ephemeral key will do.
+    secret = settings.confirm_secret
+    key = (
+        secret.get_secret_value().encode("utf-8")
+        if secret is not None
+        else secrets.token_bytes(MIN_SECRET_BYTES)
+    )
+    confirm = ConfirmTokens(key, settings.confirm_ttl_seconds)
+    config = load_config(settings)
+    engine = create_engine(settings.db_url)
+    remote = settings.git_remote or ""
+    wc = _cli_working_copy(settings) if remote else None
+    repo_key = hashlib.sha256(remote.encode()).hexdigest() if remote else None
+    try:
+        await upgrade(engine)
+        audit = AuditRepository(engine)
+        async with _open_semantic(settings) as (om, models, _s):
+            proposals = ProposalService(
+                om,
+                models,
+                ScanRepository(engine),
+                ProposalRepository(engine),
+                audit,
+                settings,
+                confirm=confirm,
+                policies=config.models,
+            )
+            yield ImportService(
+                settings,
+                models,
+                om,
+                proposals,
+                confirm,
+                audit,
+                config.models,
+                reader=ReleaseReader(wc, repo_key) if wc is not None and repo_key else None,
+                wc=wc,
+                repo_key=repo_key,
+            )
+    finally:
+        await engine.dispose()
+
+
+def _import_mode(mode: str) -> Literal["merge", "replace"]:
+    if mode not in ("merge", "replace"):
+        raise LakeloomError("validation_error", f"unknown mode {mode!r}", "pass merge or replace")
+    return "merge" if mode == "merge" else "replace"
+
+
+_SUBMIT = "`lakeloom submit <id>`"
+
+
+@app.command("import")
+def import_cmd(
+    model: Annotated[str, typer.Argument(help="Target model slug.")],
+    file: Annotated[Path, typer.Argument(help="RDF file to import.")],
+    fmt: Annotated[
+        str | None,
+        typer.Option(
+            "--format",
+            help="turtle|rdfxml|ntriples|jsonld (default: from the extension "
+            ".ttl, .owl/.rdf, .nt, .jsonld).",
+        ),
+    ] = None,
+    mode: Annotated[str, typer.Option("--mode", help="merge|replace.")] = "merge",
+    base_iri: Annotated[
+        str | None, typer.Option("--base-iri", help="Namespace the terms are read from.")
+    ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Create the draft proposal after the dry run.")
+    ] = False,
+) -> None:
+    """Print the import dry run; with --yes, create the draft proposal."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        from lakeloom.server.tools_import import imported_text, plan_text
+
+        chosen: InputFormat | None = (
+            next((f for f in _FORMATS if f == fmt), None)
+            if fmt
+            else _EXTENSIONS.get(file.suffix.lower())
+        )
+        if chosen is None:
+            raise LakeloomError(
+                "validation_error",
+                f"unknown format {single_line(fmt)!r}"
+                if fmt
+                else f"cannot tell the format of {single_line(file.name)!r}",
+                "pass --format turtle|rdfxml|ntriples|jsonld",
+            )
+        how = _import_mode(mode)
+        try:
+            data = file.read_bytes()
+        except OSError as exc:
+            raise LakeloomError(
+                "not_found", f"cannot read {single_line(str(file))!r}", type(exc).__name__
+            ) from None
+        actor = _actor()
+        async with _open_imports(settings) as service:
+            plan = await service.plan_file(actor, model, data, chosen, mode=how, base_iri=base_iri)
+            typer.echo(plan_text(plan), nl=False)
+            if not yes:
+                typer.echo("\nDry run: nothing was changed. Re-run with --yes to import.")
+                return
+            p = await service.confirm_file(
+                actor,
+                CLI_CLIENT,
+                model,
+                data,
+                chosen,
+                mode=how,
+                base_iri=base_iri,
+                confirm_token=plan.confirm_token,
+            )
+            typer.echo("")
+            typer.echo(imported_text(p, submit=_SUBMIT), nl=False)
+
+    _run(_go())
+
+
+@app.command("import-git")
+def import_git_cmd(
+    model: Annotated[str, typer.Argument(help="Target model slug.")],
+    version: Annotated[
+        str, typer.Option("--version", help="Release MAJOR.MINOR.PATCH, or latest.")
+    ] = "latest",
+    from_model: Annotated[
+        str | None, typer.Option("--from-model", help="Read this model's files instead.")
+    ] = None,
+    mode: Annotated[str, typer.Option("--mode", help="merge|replace.")] = "merge",
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Create the draft proposal after the dry run.")
+    ] = False,
+) -> None:
+    """Print the dry run of restoring a model from Git; with --yes, create the draft."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        from lakeloom.server.tools_import import imported_text, plan_text
+
+        how = _import_mode(mode)
+        actor = _actor()
+        async with _open_imports(settings) as service:
+            plan = await service.plan_git(
+                actor, model, version=version, from_model=from_model, mode=how
+            )
+            typer.echo(plan_text(plan), nl=False)
+            if not yes:
+                typer.echo("\nDry run: nothing was changed. Re-run with --yes to import.")
+                return
+            p = await service.confirm_git(
+                actor,
+                CLI_CLIENT,
+                model,
+                version=version,
+                from_model=from_model,
+                mode=how,
+                confirm_token=plan.confirm_token,
+            )
+            typer.echo("")
+            typer.echo(imported_text(p, submit=_SUBMIT), nl=False)
+
+    _run(_go())

@@ -664,3 +664,91 @@ def test_cli_releases_use_their_own_working_copy(tmp_path: Path) -> None:
     cli = _cli_working_copy(settings)
     assert cli.path == tmp_path / "git" / "cli-repo"
     assert cli.path != server.working_copy.path
+
+
+# --- imports (FR-IO-02, FR-GIT-07: the same operations as the MCP import tools) ---------------
+
+
+def test_cli_import_dry_run_then_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime
+
+    from lakeloom.core.imports import ImportPlan
+    from lakeloom.core.proposals import Proposal, Provenance, SourceDocument
+
+    now = datetime(2026, 11, 15, 10, 0, tzinfo=UTC)
+    doc = SourceDocument(format="turtle", sha256="ab" * 32, bytes=10)
+    plan = ImportPlan(
+        model="shop", origin="import", namespace="http://x/ontology/shop/", mode="merge",
+        counts={"add_concept": 1}, operations=[], total_operations=1, warnings=[],
+        summary="# Import into model `shop`\n", source_document=doc, confirm_token=TOK,
+        expires_at=1,
+    )  # fmt: skip
+    proposal = Proposal(
+        id="prop_cli", model="shop", status="draft",
+        provenance=Provenance(scan_id=None, principal_subject="op", principal_type="human",
+                              at=now, origin="import", source_document=doc),
+        created_at=now, updated_at=now,
+    )  # fmt: skip
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeImports:
+        async def plan_file(self, principal: Any, model: str, data: bytes, fmt: str, **kw: Any):
+            calls.append(("plan_file", {"model": model, "data": data, "fmt": fmt, **kw}))
+            return plan
+
+        async def confirm_file(self, principal: Any, client: Any, model: str, data: bytes,
+                               fmt: str, **kw: Any) -> Proposal:  # fmt: skip
+            calls.append(("confirm_file", {"client": client, "fmt": fmt, **kw}))
+            return proposal
+
+        async def plan_git(self, principal: Any, model: str, **kw: Any) -> ImportPlan:
+            calls.append(("plan_git", {"model": model, **kw}))
+            return plan
+
+        async def confirm_git(self, principal: Any, client: Any, model: str, **kw: Any):
+            calls.append(("confirm_git", {"client": client, **kw}))
+            return proposal
+
+    @asynccontextmanager
+    async def opened(_settings: Any) -> AsyncIterator[Any]:
+        yield FakeImports()
+
+    _sources_env(monkeypatch, tmp_path)
+    monkeypatch.setattr("lakeloom.cli._open_imports", opened)
+    owl = tmp_path / "shop.owl"
+    owl.write_bytes(b"<rdf:RDF/>")
+    odd = tmp_path / "shop.txt"
+    odd.write_bytes(b"x")
+    runner = CliRunner()
+
+    dry = runner.invoke(app, ["import", "shop", str(owl)])
+    yes = runner.invoke(app, ["import", "shop", str(owl), "--mode", "replace", "--yes"])
+    unknown = runner.invoke(app, ["import", "shop", str(odd)])
+    forced = runner.invoke(app, ["import", "shop", str(odd), "--format", "turtle"])
+    git_dry = runner.invoke(app, ["import-git", "shop", "--version", "1.0.0"])
+    git_yes = runner.invoke(app, ["import-git", "shop", "--from-model", "other", "--yes"])
+
+    assert dry.exit_code == 0, dry.output
+    assert "# Import into model `shop`" in dry.output
+    assert dry.output.rstrip().endswith("Re-run with --yes to import.")
+    assert yes.exit_code == 0, yes.output
+    assert "Draft `prop_cli`; submit it with `lakeloom submit <id>`." in yes.output
+    assert unknown.exit_code == 1 and "cannot tell the format" in unknown.output
+    assert forced.exit_code == 0, forced.output
+    assert git_dry.exit_code == 0 and "Re-run with --yes to import." in git_dry.output
+    assert git_yes.exit_code == 0 and "Draft `prop_cli`" in git_yes.output
+    assert [(name, kw.get("fmt"), kw.get("mode")) for name, kw in calls] == [
+        ("plan_file", "rdfxml", "merge"),
+        ("plan_file", "rdfxml", "replace"),
+        ("confirm_file", "rdfxml", "replace"),
+        ("plan_file", "turtle", "merge"),
+        ("plan_git", None, "merge"),
+        ("plan_git", None, "merge"),
+        ("confirm_git", None, "merge"),
+    ]
+    assert calls[0][1]["data"] == b"<rdf:RDF/>"
+    assert calls[2][1]["confirm_token"] == TOK and calls[2][1]["client"] == "lakeloom-cli"
+    assert calls[4][1]["version"] == "1.0.0"
+    assert calls[6][1]["from_model"] == "other" and calls[6][1]["confirm_token"] == TOK

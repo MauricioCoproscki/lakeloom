@@ -1946,6 +1946,10 @@ class ProposalService:
 
     # -- read --------------------------------------------------------------------------------
 
+    async def pending_op_keys(self, model: str) -> dict[str, str]:
+        """``op_key`` -> proposal id of every operation in an open proposal of ``model``."""
+        return await self._repo.pending_op_keys(model)
+
     async def get_proposal(self, proposal_id: str) -> Proposal:
         """The proposal with each change set's state refreshed from OM (``MISSING`` when OM
         no longer has it). A read: the refreshed state is returned, never stored (writes keep

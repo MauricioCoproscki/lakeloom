@@ -123,6 +123,13 @@ class WorkingCopy:
                 return sha
         return None
 
+    async def fetch_branch(self, branch: str) -> str:
+        """Fetch ``origin/<branch>`` (forced, no checkout) and return the commit it points at."""
+        _check_ref(branch)
+        ref = f"refs/remotes/origin/{branch}"
+        await self._git("fetch", "origin", f"+refs/heads/{branch}:{ref}")
+        return (await self._git("rev-parse", "--verify", f"{ref}^{{commit}}")).strip()
+
     async def checkout_tip(self, branch: str) -> None:
         await self._git("fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
         await self._git("checkout", "-f", "-B", branch, f"origin/{branch}")

@@ -35,6 +35,7 @@ from lakeloom.core.confirm import (
     confirm_tokens_from_settings,
     require_confirm_secret,
 )
+from lakeloom.core.imports import ImportService
 from lakeloom.core.model_policy import ModelPolicyEntry
 from lakeloom.core.models import ModelService
 from lakeloom.core.obo import OnBehalfOf
@@ -129,6 +130,8 @@ class AppDeps:
     reader: ReleaseReader | None = field(init=False, default=None)
     release_service: ReleaseService | None = field(init=False, default=None)
     git_links: GitLinks | None = field(init=False, default=None)
+    # Imports (FR-IO-02, FR-GIT-07): always on; import_from_git needs Git publishing.
+    import_service: ImportService = field(init=False)
     # Optional triple-store sink (FR-TS): only with Git releases and LAKELOOM_TRIPLESTORE_ENABLED.
     sink_http: httpx.AsyncClient | None = field(init=False, default=None)
     sink_worker: SinkWorker | None = field(init=False, default=None)
@@ -208,6 +211,19 @@ class AppDeps:
             base = web_base(self.settings)
             if base is not None:
                 self.git_links = GitLinks(base, self.settings.forge, self._last_commit)
+        # import_model / import_from_git are audited by guarded() (audit=None here).
+        self.import_service = ImportService(
+            self.settings,
+            self.models,
+            self.om,
+            self.proposals,
+            self.confirm,
+            None,
+            self.policies,
+            reader=self.reader,
+            wc=self.publisher.working_copy,
+            repo_key=self.publisher.repo_key if self.publisher.working_copy else None,
+        )
         # Same for reviews: review_proposal is audited by guarded() (audit=None here).
         self.review = ReviewService(
             self.proposals,
