@@ -247,6 +247,25 @@ async def test_log_since_lists_publication_commits_with_trailers(wc: WorkingCopy
     assert await wc.trailer_of("HEAD", "Nope") == []
 
 
+async def test_log_since_reads_several_trailer_keys(wc: WorkingCopy) -> None:
+    await wc.ensure()
+    await wc.init_branch("main", {"ontologies/a/x": b"1"}, "seed")
+    wc.write({"ontologies/a/x": b"2"})
+    await wc.commit("two\n\nLakeloom-Proposal: p2\nApproved-By: alice\n")
+    wc.write({"ontologies/a/x": b"3"})
+    await wc.commit("three\n\nApproved-By: bob\n")
+    got = await wc.log_since(None, "ontologies/a", ("Lakeloom-Proposal", "Approved-By"))
+    assert [(e.subject, e.trailers) for e in got] == [
+        ("seed", {}),
+        ("two", {"Lakeloom-Proposal": ["p2"], "Approved-By": ["alice"]}),
+        ("three", {"Approved-By": ["bob"]}),
+    ]
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.log_since(None, "a", ("Ok", "bad key"))
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.log_since(None, "a", ())
+
+
 async def test_git_args_reject_dash_and_bad_tags(wc: WorkingCopy) -> None:
     await wc.ensure()
     await wc.init_branch("main", {"a": b"1"}, "seed")

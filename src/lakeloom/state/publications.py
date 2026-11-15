@@ -261,6 +261,32 @@ class PublicationRepository:
             result = await session.execute(stmt)
         return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
+    async def open_for_model(self, repo: str, model: str) -> int:
+        """How many of ``model``'s publications in ``repo`` are not done (pending or blocked)."""
+        stmt = select(func.count()).where(
+            PublicationRow.repo == repo,
+            PublicationRow.model == model,
+            PublicationRow.status != "done",
+        )
+        async with self._sessions() as session:
+            return int((await session.execute(stmt)).scalar_one())
+
+    async def last_done(self, repo: str, model: str) -> Publication | None:
+        """``model``'s most recent done publication in ``repo`` (queue order), if any."""
+        stmt = (
+            select(PublicationRow)
+            .where(
+                PublicationRow.repo == repo,
+                PublicationRow.model == model,
+                PublicationRow.status == "done",
+            )
+            .order_by(PublicationRow.seq.desc())
+            .limit(1)
+        )
+        async with self._sessions() as session:
+            row = (await session.execute(stmt)).scalar_one_or_none()
+        return None if row is None else _from_row(row)
+
     async def counts(self, repo: str) -> dict[str, int]:
         stmt = (
             select(PublicationRow.status, func.count())

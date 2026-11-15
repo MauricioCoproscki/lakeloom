@@ -9,9 +9,11 @@ from lakeloom.core.callers import Actor
 from lakeloom.core.model_policy import (
     ModelAccess,
     ModelPolicyEntry,
+    TriplestorePolicy,
     access_for,
     may,
     require_group,
+    triplestore_for,
 )
 from lakeloom.errors import LakeloomError
 
@@ -72,3 +74,36 @@ def test_access_from_policy_entries() -> None:
         ModelPolicyEntry.model_validate({"name": "x", "access": {"approve_groups": ["a"]}})
     with pytest.raises(ValidationError):
         ModelAccess.model_validate({"propose_groups": [""]})
+
+
+def test_publish_groups_restrict_release() -> None:
+    access = ModelAccess(publish_groups=["publishers"])
+    member = _Principal("alice", type="agent", groups=frozenset({"publishers"}))
+    outsider = _Principal("bot", type="agent", groups=frozenset({"stewards"}))
+    require_group(member, access, "publish")
+    require_group(Actor(subject="operator"), access, "publish")
+    require_group(outsider, ModelAccess(), "publish")  # empty: no restriction
+    with pytest.raises(LakeloomError) as info:
+        require_group(outsider, access, "publish", model="shop")
+    assert info.value.code == "forbidden"
+    assert info.value.message == "model 'shop' restricts publish to groups publishers"
+    # publish groups do not leak into the other actions
+    assert may(outsider, access, "propose") and may(outsider, access, "review")
+    entry = ModelPolicyEntry.model_validate(
+        {"name": "shop", "access": {"publish_groups": ["publishers"]}}
+    )
+    assert access_for([entry], "shop").publish_groups == ["publishers"]
+
+
+def test_triplestore_policy_defaults_and_overrides() -> None:
+    entries = [
+        ModelPolicyEntry.model_validate(
+            {"name": "shop", "triplestore": {"enabled": False, "shapes": True}}
+        ),
+        ModelPolicyEntry.model_validate({"name": "retail"}),
+    ]
+    assert triplestore_for(entries, "shop") == TriplestorePolicy(enabled=False, shapes=True)
+    assert triplestore_for(entries, "retail") == TriplestorePolicy(enabled=True, shapes=None)
+    assert triplestore_for(entries, "unknown") == TriplestorePolicy()
+    with pytest.raises(ValidationError):
+        ModelPolicyEntry.model_validate({"name": "x", "triplestore": {"url": "http://x"}})

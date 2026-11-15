@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
@@ -287,32 +287,31 @@ class WorkingCopy:
             f"refs/tags/{tag}:refs/tags/{tag}",
         )
 
-    async def log_since(self, since: str | None, path: str, key: str) -> list[LogEntry]:
+    async def log_since(
+        self, since: str | None, path: str, key: str | Sequence[str]
+    ) -> list[LogEntry]:
         """Commits touching ``path`` after ``since`` (all when ``None``), oldest first.
 
-        ``trailers`` holds the values of the ``key`` trailer of each commit only.
+        ``trailers`` holds the values of the ``key`` trailer(s) of each commit only.
         """
-        if _TRAILER_KEY.fullmatch(key) is None:
+        keys = (key,) if isinstance(key, str) else tuple(key)
+        if not keys or any(_TRAILER_KEY.fullmatch(k) is None for k in keys):
             raise ValueError(f"unsafe trailer key: {key!r}")
         rel = _safe_rel(path).as_posix()
         rng = f"{_check_ref(since)}..HEAD" if since is not None else "HEAD"
-        out = await self._git(
-            "log",
-            "--reverse",
-            rng,
-            f"--format=%x01%H%x00%s%x00%(trailers:key={key},valueonly,unfold)",
-            "--",
-            rel,
-        )
+        fields = "".join(f"%x00%(trailers:key={k},valueonly,unfold)" for k in keys)
+        out = await self._git("log", "--reverse", rng, f"--format=%x01%H%x00%s{fields}", "--", rel)
         entries: list[LogEntry] = []
         for record in out.split("\x01"):
             if not record.strip():
                 continue
-            sha, subject, values = record.split("\x00", 2)
-            lines = [v.strip() for v in values.splitlines() if v.strip()]
-            entries.append(
-                LogEntry(sha=sha.strip(), subject=subject, trailers={key: lines} if lines else {})
-            )
+            sha, subject, *values = record.split("\x00", 1 + len(keys))
+            trailers: dict[str, list[str]] = {}
+            for k, text in zip(keys, values, strict=True):
+                lines = [v.strip() for v in text.splitlines() if v.strip()]
+                if lines:
+                    trailers[k] = lines
+            entries.append(LogEntry(sha=sha.strip(), subject=subject, trailers=trailers))
         return entries
 
     async def trailer_of(self, ref: str, key: str) -> list[str]:

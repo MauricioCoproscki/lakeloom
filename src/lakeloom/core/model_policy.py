@@ -15,9 +15,14 @@ Operators tune the mapping of a model through the ``models:`` section of the YAM
         access:
           propose_groups: [stewards]   # who may create or extend proposals (NFR-SEC-07)
           review_groups: [reviewers]   # who may review them
+          publish_groups: [publishers] # who may create releases
 
         git:
           mode: direct                 # or pull_request; default LAKELOOM_GIT_MODE (FR-GIT-05)
+
+        triplestore:
+          enabled: true                # push releases to the triple store (FR-TS)
+          shapes: null                 # null: LAKELOOM_TRIPLESTORE_SHAPES decides
 
 A model without an entry gets the defaults. Unknown keys are rejected. An empty (or absent)
 group list means no restriction; the CLI operator (:class:`~lakeloom.core.callers.Actor`) is
@@ -42,14 +47,16 @@ __all__ = [
     "MappingPolicy",
     "ModelAccess",
     "ModelPolicyEntry",
+    "TriplestorePolicy",
     "access_for",
     "git_mode_for",
     "may",
     "policy_for",
     "require_group",
+    "triplestore_for",
 ]
 
-AccessAction = Literal["propose", "review"]
+AccessAction = Literal["propose", "review", "publish"]
 GitMode = Literal["direct", "pull_request"]
 GroupName = Annotated[str, Field(min_length=1, max_length=255)]
 
@@ -123,6 +130,7 @@ class ModelAccess(_Strict):
 
     propose_groups: list[GroupName] = []
     review_groups: list[GroupName] = []
+    publish_groups: list[GroupName] = []
 
 
 class GitPolicy(_Strict):
@@ -131,13 +139,21 @@ class GitPolicy(_Strict):
     mode: GitMode
 
 
+class TriplestorePolicy(_Strict):
+    """Per-model triple-store sink (FR-TS); ``shapes=None`` defers to the global setting."""
+
+    enabled: bool = True
+    shapes: bool | None = None
+
+
 class ModelPolicyEntry(_Strict):
-    """One ``models:`` item: ``{name, mapping: {...}, access: {...}, git: {...}}``."""
+    """One ``models:`` item: ``{name, mapping, access, git, triplestore}``."""
 
     name: str = Field(min_length=1)
     mapping: _MappingSettings = _MappingSettings()
     access: ModelAccess = ModelAccess()
     git: GitPolicy | None = None
+    triplestore: TriplestorePolicy = TriplestorePolicy()
 
     def to_policy(self) -> MappingPolicy:
         settings = self.mapping.model_dump()
@@ -176,8 +192,20 @@ def git_mode_for(entries: Sequence[ModelPolicyEntry], model: str, default: GitMo
     return default
 
 
+def triplestore_for(entries: Sequence[ModelPolicyEntry], model: str) -> TriplestorePolicy:
+    """The triple-store policy of ``model``: its ``triplestore`` entry, else the defaults."""
+    for entry in entries:
+        if entry.name == model:
+            return entry.triplestore
+    return TriplestorePolicy()
+
+
 def _groups(access: ModelAccess, action: AccessAction) -> list[str]:
-    return access.propose_groups if action == "propose" else access.review_groups
+    if action == "propose":
+        return access.propose_groups
+    if action == "review":
+        return access.review_groups
+    return access.publish_groups
 
 
 def may(principal: Caller, access: ModelAccess, action: AccessAction) -> bool:
