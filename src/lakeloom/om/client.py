@@ -733,12 +733,16 @@ class OMClient:
         response = await self._request("get_ontology_state", path_args={"id": ontology_id})
         return OMOntologyState.model_validate(_json(response))
 
-    async def _members(self, name: str, ontology: str) -> list[dict[str, Any]]:
+    async def _members(
+        self, name: str, ontology: str, *, include_deleted: bool = False
+    ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         after: str | None = None
         seen: set[str] = set()
         for _ in range(_MAX_MEMBER_PAGES):
             params = {"ontology": ontology, "limit": str(_MEMBER_PAGE), "fields": "*"}
+            if include_deleted:
+                params["include"] = "deleted"
             if after:
                 params["after"] = after
             body = _json(await self._request(name, params=params))
@@ -764,15 +768,24 @@ class OMClient:
         raise OMError("OpenMetadata returned too many ontology member pages")
 
     async def list_native_members(
-        self, name: str
+        self, name: str, *, include_deleted: bool = False
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """The working concepts, properties and axioms of the native ontology ``name``
-        (raw OM JSON: ``id``, ``iri``, ``version``, ...)."""
+        (raw OM JSON: ``id``, ``iri``, ``version``, ...).
+
+        With ``include_deleted`` the listings pass ``include=deleted`` and only the
+        tombstones (``deleted: true``) are returned: rc1 keeps a deleted definition's name
+        reserved (ADR 0016 R4)."""
         concepts, properties, axioms = await asyncio.gather(
-            self._members("list_ontology_concepts", name),
-            self._members("list_ontology_properties", name),
-            self._members("list_ontology_axioms", name),
+            self._members("list_ontology_concepts", name, include_deleted=include_deleted),
+            self._members("list_ontology_properties", name, include_deleted=include_deleted),
+            self._members("list_ontology_axioms", name, include_deleted=include_deleted),
         )
+        if include_deleted:
+            concepts, properties, axioms = (
+                [m for m in members if m.get("deleted") is True]
+                for members in (concepts, properties, axioms)
+            )
         return concepts, properties, axioms
 
     async def list_relationship_types(self) -> dict[str, str]:

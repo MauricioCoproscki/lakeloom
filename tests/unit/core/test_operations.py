@@ -268,7 +268,7 @@ def test_add_attribute_maps_to_native_property() -> None:
     assert prop["domain"] == [BASE + "Order"]
     assert prop["range"] == ["http://www.w3.org/2001/XMLSchema#string"]
     assert prop["isIdentifier"] is False
-    assert prop["enumValues"] == ["open", "closed"]
+    assert prop["enumValues"] == [{"value": "open"}, {"value": "closed"}]
     assert prop["unit"] == "none"
     assert prop["description"] == "state"
     assert prop["ontology"] == {"id": "o-1", "type": "ontology"}
@@ -854,3 +854,127 @@ def test_parent_term_is_created_before_its_child() -> None:
     )
     out = to_om_all([child, parent], ctx)
     assert [o["term"]["name"] for o in out.glossary] == ["Status", "Shipped"]
+
+
+# --- ADR 0016 R1b/R2/R4: enum literals, targeted upserts, tombstones ------------------------
+
+
+def test_enum_values_sent_as_literal_objects() -> None:
+    op = AddAttribute(
+        op="add_attribute",
+        concept="Order",
+        name="size",
+        datatype="xsd:string",
+        allowed_values=["S", "M", "L"],
+    )
+    prop = to_om_all([op], CTX).native[0]["property"]
+    assert prop["enumValues"] == [{"value": "S"}, {"value": "M"}, {"value": "L"}]
+
+
+def test_existing_attribute_upsert_carries_target_and_base_version() -> None:
+    op = AddAttribute(
+        op="add_attribute",
+        concept="Order",
+        name="order_id",
+        datatype="xsd:long",
+        is_identifier=True,
+        allowed_values=["1", "2"],
+        unit="unit:NUM",
+    )
+    (native,) = to_om_all([op], CTX).native
+    assert native["operationType"] == "UPSERT_PROPERTY"
+    assert (native["targetId"], native["baseVersion"]) == ("np-1", 0.1)
+    prop = native["property"]
+    assert prop["id"] == "np-1"  # the existing id, not the uuid5 draft id
+    assert prop["name"] == "Order.order_id"
+    # OM clears what a targeted upsert omits (R2): every structural field is carried
+    assert prop["kind"] == "DATA"
+    assert prop["domain"] == [BASE + "Order"]
+    assert prop["range"] == ["http://www.w3.org/2001/XMLSchema#long"]
+    assert prop["isIdentifier"] is True
+    assert prop["enumValues"] == [{"value": "1"}, {"value": "2"}]
+    assert prop["unit"] == "unit:NUM"
+
+
+def test_new_attribute_upsert_has_no_target() -> None:
+    op = AddAttribute(op="add_attribute", concept="Order", name="fresh", datatype="xsd:string")
+    (native,) = to_om_all([op], CTX).native
+    assert "targetId" not in native and "baseVersion" not in native
+    assert native["property"]["id"] != "np-1"
+
+
+def test_existing_axiom_upsert_carries_target_and_base_version() -> None:
+    op = AddAxiom(
+        op="add_axiom",
+        concept="Order",
+        axiom={
+            "name": "card",
+            "axiomType": "SUBCLASS_OF",
+            "expressions": [{"kind": "RESTRICTION", "restrictionKind": "MIN", "cardinality": 1}],
+        },
+    )
+    (native,) = to_om_all([op], CTX).native
+    assert native["operationType"] == "UPSERT_AXIOM"
+    assert (native["targetId"], native["baseVersion"]) == ("na-1", 0.1)
+    assert native["axiom"]["id"] == "na-1"
+    new = AddAxiom(op="add_axiom", concept="Order", axiom={"name": "other", "axiomType": "X"})
+    (fresh,) = to_om_all([new], CTX).native
+    assert "targetId" not in fresh and "baseVersion" not in fresh
+
+
+def test_existing_axiom_key_percent_encodes_the_name() -> None:
+    key = "axiom:" + BASE + "Order.has%20one"
+    ctx = replace(
+        CTX,
+        native_ids={**CTX.native_ids, key: "na-2"},
+        native_versions={**CTX.native_versions, key: 0.3},
+    )
+    op = AddAxiom(op="add_axiom", concept="Order", axiom={"name": "has one", "axiomType": "X"})
+    (native,) = to_om_all([op], ctx).native
+    assert (native["targetId"], native["baseVersion"]) == ("na-2", 0.3)
+
+
+def test_deleted_definition_cannot_be_created_again() -> None:
+    concept_key = "concept:" + BASE + "Gone"
+    attr_key = "attr:" + BASE + "Order.gone"
+    axiom_key = "axiom:" + BASE + "Order.goneAxiom"
+    rel_key = "attr:" + BASE + "Order.goneTo"
+    ctx = replace(
+        CTX,
+        relationship_type_ids={"goneTo": "rt-g"},
+        native_deleted={concept_key, attr_key, axiom_key, rel_key},
+    )
+    cases: list[tuple[ProposalOperation, str]] = [
+        (AddConcept(op="add_concept", name="Gone"), "concept Gone"),
+        (
+            AddAttribute(op="add_attribute", concept="Order", name="gone", datatype="xsd:string"),
+            "attribute Order.gone",
+        ),
+        (
+            AddAxiom(
+                op="add_axiom", concept="Order", axiom={"name": "goneAxiom", "axiomType": "X"}
+            ),
+            "axiom goneAxiom",
+        ),
+        (
+            AddRelation(
+                op="add_relation", source="Order", relation_type="goneTo", target="Customer"
+            ),
+            "relation Order.goneTo",
+        ),
+    ]
+    for op, what in cases:
+        with pytest.raises(LakeloomError) as err:
+            to_om_all([op], ctx)
+        assert err.value.code == "validation_error"
+        assert err.value.message == (
+            f"{what} was deleted in OpenMetadata and cannot be created again"
+        )
+        assert err.value.hint
+
+
+def test_deleted_key_that_is_live_again_is_not_deleted() -> None:
+    key = "attr:" + BASE + "Order.order_id"  # in CTX.native_ids
+    ctx = replace(CTX, native_deleted={key})
+    op = AddAttribute(op="add_attribute", concept="Order", name="order_id", datatype="xsd:long")
+    assert to_om_all([op], ctx).native[0]["targetId"] == "np-1"

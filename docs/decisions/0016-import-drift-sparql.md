@@ -188,7 +188,16 @@ For local name `L` in namespace `ns`:
 Checked live against the compose dev stack (bot JWT `ingestion-bot`) on throwaway paired models
 `llm3c_probe_<hex>`, filled by change sets the bot applied (test setup only) and hard-deleted
 afterwards (404 with `include=all`). Nothing was sealed; `retail` was not modified. The contract
-test `tests/contract/test_om_import_sparql_probe.py` pins each fact.
+test `tests/contract/test_om_import_sparql_probe.py` pins the export vocabulary (R1), the
+`enumValues` literal objects and their round trip through `to_om` and `native_rdf` (R1b), the
+property and axiom upserts with and without a target, the cleared fields, the description-only
+no-op on a property and the one-change-per-definition draft refusal (R2), the SPARQL dataset,
+result formats, content types, OM's own 400s, the `timeout` bounds and the fast failure at
+`timeout=200` (R3), the property and concept tombstones (R4) and the preview shape (R5). Not
+pinned, observed once: the custom `rdfPredicate` export of `retail`'s typed relations (R1), the
+`UPSERT_CONCEPT` description no-op (R2), the ~5 s failure at `timeout=5000`, the uncapped 16 s
+query, the 56-triple count, `LOAD`, the lexical-error 400 and the 401 (R3), and the preview's
+axiom and SKOS cases (R5).
 
 The probe model: concepts `Party`, `Customer` (displayName `Client`, synonym `Buyer`, parent
 `Party`, `exactMatch https://schema.org/Person`) and `Order`; attributes `Customer.customerId`

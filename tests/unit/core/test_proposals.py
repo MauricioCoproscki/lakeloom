@@ -92,6 +92,8 @@ class FakeOM:
         self.created_count = 0
         # native members per ontology: (concepts, properties, axioms)
         self.native: dict[str, tuple[list[dict[str, Any]], ...]] = {}
+        # tombstones (include=deleted, deleted: true) per ontology, same shape
+        self.native_deleted: dict[str, tuple[list[dict[str, Any]], ...]] = {}
 
     @property
     def client(self) -> OMClient:
@@ -147,7 +149,10 @@ class FakeOM:
         self.calls.append(("list_relationship_types", None))
         return dict(self.relationship_types)
 
-    async def list_native_members(self, name: str):
+    async def list_native_members(self, name: str, *, include_deleted: bool = False):
+        if include_deleted:
+            self.calls.append(("list_native_tombstones", name))
+            return self.native_deleted.get(name, ([], [], []))
         self.calls.append(("list_native_members", name))
         return self.native.get(name, ([], [], []))
 
@@ -1466,3 +1471,69 @@ async def test_attribute_on_unknown_concept_fails_closed(make) -> None:
     with pytest.raises(LakeloomError) as info:
         await kit.service.propose_change(p.id, [attr], principal=AGENT, client=None)
     assert "Ghost" in info.value.message
+
+
+# --- ADR 0016 R2/R4: targeted upserts of existing native definitions, tombstones -----------
+
+
+async def test_context_loads_native_members_for_attribute_upserts(make) -> None:
+    """An attribute whose concept is a draft of this proposal (no existing term referenced)
+    still reads the native members: the property may exist in OM and must be targeted."""
+    kit = make()
+    p = await _shop_proposal(kit)
+    iri = "http://x/ontology/shop/Customer.legacy"
+    kit.om.native["shop"] = (
+        [],
+        [{"id": "prop-legacy", "iri": iri, "name": "Customer.legacy", "version": 2.0}],
+        [],
+    )
+    before = len(kit.om.calls)
+    attr = AddAttribute(
+        op="add_attribute", concept="Customer", name="legacy", datatype="xsd:string"
+    )
+    await kit.service.propose_change(p.id, [attr], principal=AGENT, client=None)
+    calls = [c[0] for c in kit.om.calls[before:]]
+    assert calls.count("list_native_members") == 1
+    assert calls.count("list_native_tombstones") == 1
+    native_cs = p.parts[0].change_set_ids["native"]
+    (ops,) = [
+        ops
+        for n, (cs, ops) in [(n, a) for n, a in kit.om.calls[before:] if n == "add_operations"]
+        if cs == native_cs
+    ]
+    (upsert,) = ops
+    assert (upsert["targetId"], upsert["baseVersion"]) == ("prop-legacy", 2.0)
+    assert upsert["property"]["id"] == "prop-legacy"
+
+
+async def test_context_refuses_tombstoned_definition(make) -> None:
+    kit = make()
+    p = await _shop_proposal(kit)
+    iri = "http://x/ontology/shop/Customer.gone"
+    kit.om.native_deleted["shop"] = (
+        [],
+        [{"id": "prop-gone", "iri": iri, "name": "Customer.gone", "version": 0.2, "deleted": True}],
+        [],
+    )
+    attr = AddAttribute(op="add_attribute", concept="Customer", name="gone", datatype="xsd:string")
+    with pytest.raises(LakeloomError) as info:
+        await kit.service.propose_change(p.id, [attr], principal=AGENT, client=None)
+    assert info.value.code == "validation_error"
+    assert info.value.message == (
+        "attribute Customer.gone was deleted in OpenMetadata and cannot be created again"
+    )
+
+
+async def test_scan_refuses_tombstoned_concept(make) -> None:
+    kit = make()
+    iri = "http://x/ontology/shop/Customer"
+    kit.om.native_deleted["shop"] = (
+        [{"id": "c-gone", "iri": iri, "name": "Customer", "version": 0.2, "deleted": True}],
+        [],
+        [],
+    )
+    with pytest.raises(LakeloomError) as info:
+        await _shop_proposal(kit)
+    assert info.value.message == (
+        "concept Customer was deleted in OpenMetadata and cannot be created again"
+    )

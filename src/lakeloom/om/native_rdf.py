@@ -5,8 +5,9 @@ sealing is a write. The working members (concepts, properties, axioms) are reada
 read path rebuilds the asserted triples from them, with the same shapes OM's release export
 uses: ``owl:Class``, ``owl:DatatypeProperty`` / ``owl:ObjectProperty`` /
 ``owl:AnnotationProperty`` with ``rdfs:domain`` and ``rdfs:range``, ``rdfs:label`` (the
-display name when set) and ``rdfs:comment``; enum values as ``owl:oneOf``, the unit as
-``qudt:unit``. Descriptions and names are untrusted text and only ever become literals.
+display name when set) and ``rdfs:comment``; enum values (strings or ``OntologyLiteral``
+objects) as ``owl:oneOf``, the unit as ``qudt:unit``. Descriptions and names are
+untrusted text and only ever become literals.
 
 A member that cannot be expressed (no absolute IRI, wrong shape) is skipped with a WARNING
 naming only its kind and OM id; the raw value is never logged.
@@ -58,6 +59,23 @@ def _iris(value: object) -> list[URIRef] | None:
         if iri is None:
             return None
         out.append(URIRef(iri))
+    return out
+
+
+def _enum_values(value: object) -> list[str] | None:
+    """Enum values in OM's order: plain strings or ``OntologyLiteral`` objects with a string
+    ``value`` (what rc1 stores, ADR 0016 R1b); ``None`` when the list holds anything else."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return None
+    out: list[str] = []
+    for item in cast("list[object]", value):
+        if isinstance(item, dict):
+            item = cast("dict[str, object]", item).get("value")
+        if not isinstance(item, str):
+            return None
+        out.append(item)
     return out
 
 
@@ -129,7 +147,8 @@ def build_graph(
         iri = _valid_iri(prop.get("iri"))
         domains = _iris(prop.get("domain"))
         ranges = _iris(prop.get("range"))
-        if iri is None or domains is None or ranges is None:
+        values = _enum_values(prop.get("enumValues"))
+        if iri is None or domains is None or ranges is None or values is None:
             _skip("property", prop)
             continue
         node = URIRef(iri)
@@ -139,10 +158,6 @@ def build_graph(
             g.add((node, RDFS.domain, domain))
         for range_ in ranges:
             g.add((node, RDFS.range, range_))
-        raw_values = prop.get("enumValues")
-        values: list[str] = []
-        if isinstance(raw_values, list):
-            values = [v for v in cast("list[object]", raw_values) if isinstance(v, str)]
         if values:
             head = BNode()
             Collection(g, head, [Literal(v) for v in values])

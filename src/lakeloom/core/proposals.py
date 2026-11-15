@@ -71,7 +71,6 @@ from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, 
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
-from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
@@ -106,6 +105,7 @@ from lakeloom.core.operations import (
     TermSnapshot,
     UpdateConcept,
     draft_term_id,
+    native_member_key,
     op_key,
     remove_concept_native,
     to_om,
@@ -1066,20 +1066,29 @@ class ProposalService:
             )
         native_ids: dict[str, str] = {}
         native_versions: dict[str, float] = {}
+        native_deleted: set[str] = set()
         native_classes: set[str] | None = None
-        removes = any(isinstance(op, RemoveConcept | RemoveAttribute | RemoveAxiom) for op in ops)
-        if target.ontology is not None and (removes or terms):
-            concepts, properties, axioms = await _om(
-                f"listing the native members of {slug!r}", om.list_native_members(slug)
+        # removals target native members; upserts of existing attributes/axioms/object
+        # properties must too, and tombstoned names cannot be created again (ADR 0016 R2/R4)
+        natives = any(isinstance(op, _NATIVE_MEMBER_OPS) for op in ops)
+        if target.ontology is not None and (natives or terms):
+            live, tombs = await _om(
+                f"listing the native members of {slug!r}",
+                asyncio.gather(
+                    om.list_native_members(slug), om.list_native_members(slug, include_deleted=True)
+                ),
             )
             # existing terms whose class the native ontology lacks get one (pair_existing)
-            native_classes = {str(iri) for m in concepts if (iri := m.get("iri")) is not None}
-            for prefix, members in (("concept", concepts), ("attr", properties)):
+            native_classes = {str(iri) for m in live[0] if (iri := m.get("iri")) is not None}
+            for prefix, members in _native_kinds(live):
                 for m in members:
-                    _native_entry(native_ids, native_versions, f"{prefix}:{m.get('iri')}", m)
-            for m in axioms:
-                iri = f"{m.get('subjectIri')}.{quote(str(m.get('name')), safe='')}"
-                _native_entry(native_ids, native_versions, f"axiom:{iri}", m)
+                    _native_entry(native_ids, native_versions, native_member_key(prefix, m), m)
+            native_deleted = {
+                key
+                for prefix, members in _native_kinds(tombs)
+                for m in members
+                if (key := native_member_key(prefix, m)) not in native_ids
+            }
         return OMContext(
             glossary_name=slug,
             glossary_id=target.info.glossary_id,
@@ -1092,6 +1101,7 @@ class ProposalService:
             relationship_type_ids=relationship_types,
             native_ids=native_ids,
             native_versions=native_versions,
+            native_deleted=native_deleted,
             native_classes=native_classes,
             paired=target.ontology is not None,
         )
@@ -2362,6 +2372,18 @@ def _refresh_warning(entity: str, before: str, after: str) -> str:
         f"base version of {code_span(entity)} refreshed from {before} to {after}; "
         "re-review the change"
     )
+
+
+# operations whose native definitions may already exist or be tombstoned (ADR 0016 R2/R4)
+_NATIVE_MEMBER_OPS = (*_NATIVE_OPS, AddRelation)
+
+
+def _native_kinds(
+    members: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]],
+) -> list[tuple[Literal["concept", "attr", "axiom"], list[dict[str, Any]]]]:
+    """``list_native_members`` output paired with each kind's ``native_ids`` key prefix."""
+    concepts, properties, axioms = members
+    return [("concept", concepts), ("attr", properties), ("axiom", axioms)]
 
 
 def _native_entry(

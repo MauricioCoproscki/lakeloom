@@ -380,3 +380,62 @@ async def test_delete_glossary_missing_is_om_error(client: OMClient) -> None:
     with pytest.raises(OMError) as info:
         await client.delete_glossary(GID)
     assert info.value.status == 404
+
+
+# --- ADR 0016 R1b/R4: enum value objects, tombstones -----------------------------------------
+
+
+def _one_of(g: Any, iri: str) -> list[str] | None:
+    heads = list(g.objects(URIRef(iri), OWL.oneOf))
+    return [str(v) for v in Collection(g, heads[0])] if heads else None
+
+
+def test_build_graph_reads_enum_value_objects() -> None:
+    objects = {**PROPERTY, "enumValues": [{"value": "2.0"}, {"value": "1.5"}]}
+    mixed = {
+        **PROPERTY,
+        "id": "p-mixed",
+        "iri": f"{IRI}Widget.size",
+        "enumValues": ["S", {"value": "M", "datatypeIri": f"{XSD}string"}],
+    }
+    g = build_graph([], [objects, mixed], [])
+    assert _one_of(g, f"{IRI}Widget.weight") == ["2.0", "1.5"]  # OM's order, not sorted
+    assert _one_of(g, f"{IRI}Widget.size") == ["S", "M"]
+
+
+def test_build_graph_skips_bad_enum_items(caplog: pytest.LogCaptureFixture) -> None:
+    bad = [
+        {**PROPERTY, "id": "bad-enum-1", "enumValues": [{"value": "1"}, 2]},
+        {**PROPERTY, "id": "bad-enum-2", "enumValues": [{"value": 3}]},
+        {**PROPERTY, "id": "bad-enum-3", "enumValues": [{"label": "x"}]},
+        {**PROPERTY, "id": "bad-enum-4", "enumValues": [None]},
+    ]
+    with caplog.at_level("WARNING"):
+        g = build_graph([], bad, [])
+    assert not list(g.subjects(RDF.type, OWL.DatatypeProperty))
+    assert len(g) == 0
+    for n in range(1, 5):
+        assert f"bad-enum-{n}" in caplog.text
+
+
+@respx.mock
+async def test_list_native_members_include_deleted(client: OMClient) -> None:
+    live = {**PROPERTY, "deleted": False}
+    tomb = {**PROPERTY, "id": "p-tomb", "deleted": True}
+    routes = mock_members(
+        [{**CONCEPT, "deleted": True}], [live, tomb, {**PROPERTY, "id": "p-none"}], [AXIOM]
+    )
+    concepts, properties, axioms = await client.list_native_members("pair", include_deleted=True)
+    assert [c["id"] for c in concepts] == [CONCEPT["id"]]
+    assert [p["id"] for p in properties] == ["p-tomb"]
+    assert axioms == []
+    for route in routes:
+        assert route.calls[0].request.url.params["include"] == "deleted"
+
+
+@respx.mock
+async def test_list_native_members_default_sends_no_include(client: OMClient) -> None:
+    routes = mock_members([CONCEPT], [PROPERTY], [AXIOM])
+    await client.list_native_members("pair")
+    for route in routes:
+        assert "include" not in route.calls[0].request.url.params

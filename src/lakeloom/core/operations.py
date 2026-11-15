@@ -49,6 +49,7 @@ __all__ = [
     "TermSnapshot",
     "UpdateConcept",
     "draft_term_id",
+    "native_member_key",
     "op_key",
     "remove_concept_native",
     "to_om",
@@ -309,8 +310,12 @@ class OMContext:
     Term tables are keyed by term FQN or bare name; terms created in the same proposal are
     registered by the caller with :func:`draft_term_id`. ``terms`` holds snapshots of
     existing terms (needed to update them). ``native_ids``/``native_versions`` hold the
-    existing native definitions, keyed ``concept:<iri>``, ``attr:<iri>`` or ``axiom:<iri>``
-    (needed only for removals). ``relationship_ids`` is keyed by the relation's op key.
+    existing native definitions, keyed ``concept:<iri>``, ``attr:<iri>`` or
+    ``axiom:<subjectIri>.<percent-encoded name>`` (:func:`native_member_key`): removals
+    target them, and an attribute or axiom upsert of an existing definition carries its
+    ``targetId``/``baseVersion`` (rc1 refuses to create it again, ADR 0016 R2).
+    ``native_deleted`` holds the keys of tombstoned native definitions, whose names rc1 keeps
+    reserved (ADR 0016 R4). ``relationship_ids`` is keyed by the relation's op key.
 
     ``native_classes`` holds the IRIs of the classes the paired native ontology declares;
     ``None`` means unknown (nothing is declared for existing concepts then). An existing
@@ -329,6 +334,7 @@ class OMContext:
     relationship_ids: Mapping[str, str] = field(default_factory=dict[str, str])
     native_ids: Mapping[str, str] = field(default_factory=dict[str, str])
     native_versions: Mapping[str, float] = field(default_factory=dict[str, float])
+    native_deleted: Collection[str] = ()
     native_classes: Collection[str] | None = None
     # Hybrid model: relations also become native object properties when the model is paired.
     paired: bool = True
@@ -383,6 +389,17 @@ def op_key(op: ProposalOperation) -> str:
 
 def _relation_key(source: str, relation_type: str, target: str) -> str:
     return f"rel:{_bare(source)}|{relation_type}|{_bare(target)}"
+
+
+def native_member_key(
+    prefix: Literal["concept", "attr", "axiom"], member: Mapping[str, Any]
+) -> str:
+    """The :class:`OMContext` ``native_ids`` key of a raw OM native member: ``concept:<iri>``,
+    ``attr:<iri>`` (data and object properties) or
+    ``axiom:<subjectIri>.<percent-encoded name>``."""
+    if prefix == "axiom":
+        return f"axiom:{member.get('subjectIri')}.{quote(str(member.get('name')), safe='')}"
+    return f"{prefix}:{member.get('iri')}"
 
 
 def _uid(kind: str, model: str, key: str) -> str:
@@ -647,6 +664,7 @@ def to_om(op: ProposalOperation, ctx: OMContext) -> OMOps:
 
     Prefer :func:`to_om_all` for a proposal: it merges the updates of one term.
     """
+    _refuse_tombstone(op, ctx)
     match op:
         case AddConcept():
             return _add_concept(op, ctx)
@@ -672,6 +690,48 @@ def to_om(op: ProposalOperation, ctx: OMContext) -> OMOps:
             return OMOps(native=[_native_delete("DELETE_AXIOM", "axiom", iri, ctx)])
         case AddRealization() | RemoveRealization():
             return OMOps()
+
+
+def _refuse_tombstone(op: ProposalOperation, ctx: OMContext) -> None:
+    """Fail closed on creating a native definition whose name a deleted one still holds: rc1
+    keeps it as a tombstone and the change set would end ``APPLY_FAILED`` (ADR 0016 R4)."""
+    if not ctx.native_deleted:
+        return
+    match op:
+        case AddConcept():
+            key, what = f"concept:{_concept_iri(ctx, op.name)}", f"concept {op.name}"
+        case AddAttribute():
+            key = f"attr:{_member_iri(ctx, op.concept, op.name)}"
+            what = f"attribute {_bare(op.concept)}.{op.name}"
+        case AddAxiom():
+            name = str(op.axiom["name"])
+            key, what = f"axiom:{_member_iri(ctx, op.concept, name)}", f"axiom {name}"
+        case AddRelation() if ctx.paired:
+            key = f"attr:{_member_iri(ctx, op.source, op.relation_type)}"
+            what = f"relation {_bare(op.source)}.{op.relation_type}"
+        case _:
+            return
+    if key in ctx.native_deleted and key not in ctx.native_ids:
+        raise _fail(
+            f"{what} was deleted in OpenMetadata and cannot be created again",
+            "OpenMetadata keeps a deleted native definition as a tombstone whose name stays "
+            "reserved; use a different name, or leave this operation out",
+        )
+
+
+def _native_target(key: str, ctx: OMContext) -> dict[str, Any]:
+    """``targetId``/``baseVersion`` of an existing native definition; ``{}`` for a new one.
+
+    rc1 applies an upsert of an existing definition only when it is addressed to it, and then
+    replaces its structural fields in full (ADR 0016 R2)."""
+    if key not in ctx.native_ids:
+        return {}
+    if key not in ctx.native_versions:
+        raise _fail(
+            f"native definition {key.split(':', 1)[1]} has no known version",
+            f"pass its version in OMContext.native_versions under {key!r}",
+        )
+    return {"targetId": ctx.native_ids[key], "baseVersion": ctx.native_versions[key]}
 
 
 def _add_concept(op: AddConcept, ctx: OMContext) -> OMOps:
@@ -798,12 +858,14 @@ def _native_range(datatype: str) -> str:
 def _add_attribute(op: AddAttribute, ctx: OMContext) -> OMOps:
     domain = _concept_iri(ctx, op.concept)
     name = f"{_bare(op.concept)}.{op.name}"
+    iri = _member_iri(ctx, op.concept, op.name)
+    target = _native_target(f"attr:{iri}", ctx)
     prop: dict[str, Any] = {
-        "id": _uid("property", ctx.glossary_name, op_key(op)),
+        "id": target.get("targetId") or _uid("property", ctx.glossary_name, op_key(op)),
         "name": name,
         "displayName": op.name,
         "fullyQualifiedName": f"{_ontology_name(ctx)}.{name}",
-        "iri": _member_iri(ctx, op.concept, op.name),
+        "iri": iri,
         "kind": "DATA",
         "domain": [domain],
         "range": [_native_range(op.datatype)],
@@ -813,10 +875,11 @@ def _add_attribute(op: AddAttribute, ctx: OMContext) -> OMOps:
     if op.description is not None:
         prop["description"] = op.description.text
     if op.allowed_values:
-        prop["enumValues"] = list(op.allowed_values)
+        # OntologyLiteral objects: rc1 refuses plain strings at draft creation (ADR 0016 R1b)
+        prop["enumValues"] = [{"value": v} for v in op.allowed_values]
     if op.unit is not None:
         prop["unit"] = op.unit
-    return OMOps(native=[{"operationType": "UPSERT_PROPERTY", "property": prop}])
+    return OMOps(native=[{"operationType": "UPSERT_PROPERTY", **target, "property": prop}])
 
 
 def _relationship_type(ctx: OMContext, name: str) -> dict[str, str]:
@@ -930,11 +993,12 @@ def _mapping(op: AddMapping | RemoveMapping, ctx: OMContext) -> OMOps:
 
 def _add_axiom(op: AddAxiom, ctx: OMContext) -> OMOps:
     name = str(op.axiom["name"])
+    target = _native_target(f"axiom:{_member_iri(ctx, op.concept, name)}", ctx)
     axiom: dict[str, Any] = {
         "provenance": "Manual",
         "fullyQualifiedName": f"{_ontology_name(ctx)}.{name}",
         **op.axiom,
-        "id": _uid("axiom", ctx.glossary_name, op_key(op)),
+        "id": target.get("targetId") or _uid("axiom", ctx.glossary_name, op_key(op)),
         "subjectIri": _concept_iri(ctx, op.concept),
         "ontology": _ontology_ref(ctx),
     }
@@ -946,7 +1010,7 @@ def _add_axiom(op: AddAxiom, ctx: OMContext) -> OMOps:
             else e
             for e in cast("list[Any]", expressions)
         ]
-    return OMOps(native=[{"operationType": "UPSERT_AXIOM", "axiom": axiom}])
+    return OMOps(native=[{"operationType": "UPSERT_AXIOM", **target, "axiom": axiom}])
 
 
 def _resolve_property(expr: dict[str, Any], concept: str, ctx: OMContext) -> dict[str, Any]:

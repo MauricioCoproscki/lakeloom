@@ -9,9 +9,10 @@ assertions are the facts observed live; an OM upgrade that changes them fails he
 
 import secrets
 import time
+import typing
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 from rdflib import RDF, RDFS, Graph, Literal, Namespace, URIRef
+from rdflib.collection import Collection
 from rdflib.namespace import OWL, SKOS
 
 from lakeloom.core.operations import (
@@ -29,8 +31,10 @@ from lakeloom.core.operations import (
     AddRelation,
     OMContext,
     draft_term_id,
+    native_member_key,
     to_om_all,
 )
+from lakeloom.errors import LakeloomError
 from lakeloom.om.client import OMClient
 from lakeloom.untrusted import UntrustedText
 
@@ -99,6 +103,50 @@ async def _members(probe: Probe, kind: str) -> dict[str, dict[str, Any]]:
     params = {"ontology": probe.slug, "fields": "*", "limit": "100"}
     body = (await probe.http.get(f"/api/v1/{kind}", params=params)).raise_for_status().json()
     return {str(m["name"]): m for m in body["data"]}
+
+
+async def _live_ctx(probe: Probe) -> OMContext:
+    """``probe.ctx`` plus the native ids, versions and tombstones OM has now, keyed as
+    ``ProposalService._context`` keys them."""
+    kinds: tuple[typing.Literal["concept", "attr", "axiom"], ...] = ("concept", "attr", "axiom")
+    live = await probe.client.list_native_members(probe.slug)
+    tombs = await probe.client.list_native_members(probe.slug, include_deleted=True)
+    ids: dict[str, str] = {}
+    versions: dict[str, float] = {}
+    for prefix, members in zip(kinds, live, strict=True):
+        for m in members:
+            key = native_member_key(prefix, m)
+            ids[key], versions[key] = str(m["id"]), float(m["version"])
+    deleted = {
+        native_member_key(prefix, m)
+        for prefix, members in zip(kinds, tombs, strict=True)
+        for m in members
+    } - ids.keys()
+    return replace(probe.ctx, native_ids=ids, native_versions=versions, native_deleted=deleted)
+
+
+def _untargeted(op: dict[str, Any], body: str) -> dict[str, Any]:
+    """Raw payload: ``op`` as a create (no ``targetId``/``baseVersion``, a fresh body id)."""
+    raw = {k: v for k, v in op.items() if k not in ("targetId", "baseVersion")}
+    raw[body] = {**op[body], "id": str(uuid.uuid4())}
+    return raw
+
+
+async def _draft_raw(probe: Probe, tag: str, operations: list[dict[str, Any]]) -> httpx.Response:
+    """POST a native draft as given (bypassing ``OMClient`` checks); records it for teardown."""
+    state = await probe.client.get_ontology_state(probe.ontology_id)
+    body = {
+        "name": f"{probe.slug}-{tag}",
+        "displayName": tag,
+        "description": "probe",
+        "ontology": probe.slug,
+        "baseWorkingRevision": state.working_revision,
+        "operations": [{**o, "id": str(uuid.uuid4()), "state": "ACTIVE"} for o in operations],
+    }
+    r = await probe.http.post("/api/v1/ontologyChangeSets", json=body)
+    if r.status_code < 300:
+        probe.change_sets.append(str(r.json()["id"]))
+    return r
 
 
 def _ops() -> list[Any]:
@@ -199,13 +247,7 @@ async def probe(om_url: str, om_bot_token: str) -> AsyncIterator[Probe]:
             )
             p = Probe(http, client, slug, base, glossary.id, onto.id, ctx, change_sets)
             out = to_om_all(ops, ctx)
-            native = [dict(o) for o in out.native]
-            for o in native:
-                prop = o.get("property")
-                if isinstance(prop, dict) and "enumValues" in prop:
-                    # rc1 wants OntologyLiteral objects; to_om sends strings (ADR 0016)
-                    values: list[str] = prop["enumValues"]  # pyright: ignore[reportUnknownVariableType]
-                    o["property"] = {**prop, "enumValues": [{"value": v} for v in values]}  # pyright: ignore[reportUnknownVariableType]
+            native = out.native
             terms = await client.create_change_set(
                 name=f"{slug}-g", glossary_id=glossary.id, description="p", operations=out.glossary
             )
@@ -284,7 +326,7 @@ async def test_glossary_export_vocabulary(probe: Probe) -> None:
 
 
 async def test_enum_values_must_be_ontology_literals(probe: Probe) -> None:
-    """``enumValues`` as plain strings (what ``to_om`` emits today) is refused at draft time."""
+    """``enumValues`` as plain strings is refused at draft time; ``to_om`` sends objects."""
     attr = AddAttribute(
         op="add_attribute",
         concept="Customer",
@@ -292,21 +334,52 @@ async def test_enum_values_must_be_ontology_literals(probe: Probe) -> None:
         datatype="xsd:string",
         allowed_values=["S", "M"],
     )
-    native = to_om_all([attr], probe.ctx).native
-    assert native[-1]["property"]["enumValues"] == ["S", "M"]
-    state = await probe.client.get_ontology_state(probe.ontology_id)
-    body = {
-        "name": f"{probe.slug}-strenum",
-        "displayName": "strenum",
-        "description": "probe",
-        "ontology": probe.slug,
-        "baseWorkingRevision": state.working_revision,
-        "operations": [{**o, "id": str(uuid.uuid4()), "state": "ACTIVE"} for o in native],
-    }
-    r = await probe.http.post("/api/v1/ontologyChangeSets", json=body)
-    if r.status_code < 300:
-        probe.change_sets.append(str(r.json()["id"]))
+    (op,) = to_om_all([attr], probe.ctx).native
+    assert op["property"]["enumValues"] == [{"value": "S"}, {"value": "M"}]
+    strings = {**op, "property": {**op["property"], "enumValues": ["S", "M"]}}
+    r = await _draft_raw(probe, "strenum", [strings])
     assert (r.status_code, r.json()["message"]) == (400, "Invalid request format")
+
+
+async def test_enum_values_round_trip_live(probe: Probe) -> None:
+    """A proposal-style ``AddAttribute`` with allowed values, built by ``to_om_all`` and
+    applied, reads back through ``native_rdf`` as an ``owl:oneOf`` list in OM's order."""
+    attr = AddAttribute(
+        op="add_attribute",
+        concept="Customer",
+        name="shoeSize",
+        datatype="xsd:decimal",
+        allowed_values=["41.5", "40"],
+    )
+    native = to_om_all([attr], await _live_ctx(probe)).native
+    assert (await _native(probe, "e1", native))["state"] == "APPLIED"
+    export = await probe.client.export_native_ontology(probe.slug)
+    assert export is not None and export.graph is not None
+    heads = list(export.graph.objects(URIRef(f"{probe.base}Customer.shoeSize"), OWL.oneOf))
+    assert len(heads) == 1
+    assert [str(v) for v in Collection(export.graph, heads[0])] == ["41.5", "40"]
+
+
+async def test_targeted_upsert_from_to_om_live(probe: Probe) -> None:
+    """``to_om_all`` of a changed ``AddAttribute`` on an existing property, with the native
+    ids read from OM, is a targeted upsert that applies and replaces the range."""
+    first = AddAttribute(
+        op="add_attribute",
+        concept="Customer",
+        name="weight",
+        datatype="xsd:decimal",
+        unit="unit:KiloGM",
+    )
+    assert (await _native(probe, "w1", to_om_all([first], probe.ctx).native))["state"] == "APPLIED"
+    before = (await _members(probe, "ontologyProperties"))["Customer.weight"]
+    changed = first.model_copy(update={"datatype": "xsd:integer"})
+    (op,) = to_om_all([changed], await _live_ctx(probe)).native
+    assert (op["targetId"], op["baseVersion"]) == (before["id"], before["version"])
+    assert (await _native(probe, "w2", [op]))["state"] == "APPLIED"
+    after = (await _members(probe, "ontologyProperties"))["Customer.weight"]
+    assert after["id"] == before["id"]
+    assert after["range"] == [f"{XSD}integer"]
+    assert after["unit"] == "unit:KiloGM"  # carried by the upsert, so not cleared
 
 
 async def test_upsert_property_replaces_existing(probe: Probe) -> None:
@@ -318,12 +391,15 @@ async def test_upsert_property_replaces_existing(probe: Probe) -> None:
         datatype="xsd:integer",
         description=_text("Height v2"),
     )
-    upsert = to_om_all([changed], probe.ctx).native
+    upsert = to_om_all([changed], await _live_ctx(probe)).native
     assert [o["operationType"] for o in upsert] == ["UPSERT_PROPERTY"]
-    assert "targetId" not in upsert[0]
+    # to_om addresses the existing definition (R2) ...
+    assert (upsert[0]["targetId"], upsert[0]["baseVersion"]) == (before["id"], before["version"])
+    assert upsert[0]["property"]["id"] == before["id"]
 
-    # as to_om emits it (no targetId/baseVersion): HTTP 200, but the set is APPLY_FAILED
-    failed = await _native(probe, "n2", upsert)
+    # ... because a create of an existing IRI (raw: no targetId/baseVersion, a fresh id) is
+    # HTTP 200 but the set ends APPLY_FAILED
+    failed = await _native(probe, "n2", [_untargeted(upsert[0], "property")])
     assert failed["state"] == "APPLY_FAILED"
     result = failed["applicationResult"]
     assert (result["operationsApplied"], result["operationsFailed"]) == (0, 1)
@@ -334,15 +410,7 @@ async def test_upsert_property_replaces_existing(probe: Probe) -> None:
     assert (same["range"], same["version"]) == (before["range"], before["version"])
 
     # with the existing property's id as targetId and its version as baseVersion: replaced
-    replace = [
-        {
-            **upsert[0],
-            "targetId": before["id"],
-            "baseVersion": before["version"],
-            "property": {**upsert[0]["property"], "id": before["id"]},
-        }
-    ]
-    assert (await _native(probe, "n3", replace))["state"] == "APPLIED"
+    assert (await _native(probe, "n3", upsert))["state"] == "APPLIED"
     after = (await _members(probe, "ontologyProperties"))["Customer.height"]
     assert after["id"] == before["id"]
     assert after["range"] == [f"{XSD}integer"]
@@ -361,15 +429,9 @@ async def test_upsert_property_replaces_existing(probe: Probe) -> None:
         datatype="xsd:integer",
         description=_text("Height v3"),
     )
-    op = to_om_all([relabel], probe.ctx).native[0]
-    only_text = [
-        {
-            **op,
-            "targetId": after["id"],
-            "baseVersion": after["version"],
-            "property": {**op["property"], "id": after["id"], "displayName": "Height"},
-        }
-    ]
+    op = to_om_all([relabel], await _live_ctx(probe)).native[0]
+    assert (op["targetId"], op["baseVersion"]) == (after["id"], after["version"])
+    only_text = [{**op, "property": {**op["property"], "displayName": "Height"}}]
     assert (await _native(probe, "n4", only_text))["state"] == "APPLIED"
     last = (await _members(probe, "ontologyProperties"))["Customer.height"]
     assert (last["description"], last["displayName"], last["version"]) == (
@@ -388,6 +450,13 @@ async def test_deleted_definition_name_stays_reserved(probe: Probe) -> None:
     delete = [
         {"operationType": "DELETE_PROPERTY", "targetId": prop["id"], "baseVersion": prop["version"]}
     ]
+    # one draft may not delete and upsert the same definition
+    (upsert,) = to_om_all([temp], await _live_ctx(probe)).native
+    r = await _draft_raw(probe, "t1b", [*delete, upsert])
+    assert (r.status_code, r.json()["message"]) == (
+        400,
+        "A native draft may change each definition only once",
+    )
     assert (await _native(probe, "t2", delete))["state"] == "APPLIED"
     assert "Customer.temp" not in await _members(probe, "ontologyProperties")
     params = {"ontology": probe.slug, "fields": "*", "include": "deleted"}
@@ -395,7 +464,15 @@ async def test_deleted_definition_name_stays_reserved(probe: Probe) -> None:
     tomb = next(t for t in tombs if t["name"] == "Customer.temp")
     assert (tomb["id"], tomb["deleted"]) == (prop["id"], True)
 
+    # to_om refuses to create it again once the tombstone is known (fail closed) ...
+    ctx = await _live_ctx(probe)
+    assert f"attr:{probe.base}Customer.temp" in ctx.native_deleted
+    with pytest.raises(LakeloomError) as err:
+        to_om_all([temp], ctx)
+    assert err.value.code == "validation_error"
+    # ... since OM ends a create of the reserved name (raw, as a new definition) APPLY_FAILED
     again = to_om_all([temp], probe.ctx).native
+    assert "targetId" not in again[0]
     failed = await _native(probe, "t3", again)
     assert failed["state"] == "APPLY_FAILED"
     assert failed["applicationResult"]["results"][0]["message"] == (
@@ -432,6 +509,29 @@ async def test_deleted_definition_name_stays_reserved(probe: Probe) -> None:
     )
 
 
+async def test_deleted_concept_name_stays_reserved(probe: Probe) -> None:
+    """DELETE_CONCEPT then UPSERT_CONCEPT of the same name: APPLY_FAILED (R4)."""
+    concept = {
+        "id": str(uuid.uuid4()),
+        "name": "V",
+        "fullyQualifiedName": f"{probe.slug}.V",
+        "iri": f"{probe.base}V",
+        "conceptType": "OWL_CLASS",
+        "ontology": {"id": probe.ontology_id, "type": "ontology"},
+    }
+    create = [{"operationType": "UPSERT_CONCEPT", "concept": concept}]
+    assert (await _native(probe, "v1", create))["state"] == "APPLIED"
+    v = (await _members(probe, "ontologyConcepts"))["V"]
+    delete = [{"operationType": "DELETE_CONCEPT", "targetId": v["id"], "baseVersion": v["version"]}]
+    assert (await _native(probe, "v2", delete))["state"] == "APPLIED"
+    again = [{"operationType": "UPSERT_CONCEPT", "concept": {**concept, "id": str(uuid.uuid4())}}]
+    failed = await _native(probe, "v3", again)
+    assert failed["state"] == "APPLY_FAILED"
+    assert failed["applicationResult"]["results"][0]["message"] == (
+        f"Definition already exists: {probe.slug}.V"
+    )
+
+
 async def test_upsert_axiom_replaces_existing_only_with_target(probe: Probe) -> None:
     before = (await _members(probe, "ontologyAxioms"))["CustomerPrimaryKey"]
     assert [e["restrictionKind"] for e in before["expressions"]] == ["EXACT"]
@@ -453,21 +553,17 @@ async def test_upsert_axiom_replaces_existing_only_with_target(probe: Probe) -> 
             ],
         },
     )
-    upsert = to_om_all([changed], probe.ctx).native
-    failed = await _native(probe, "a2", upsert)
+    upsert = to_om_all([changed], await _live_ctx(probe)).native
+    assert (upsert[0]["targetId"], upsert[0]["baseVersion"]) == (before["id"], before["version"])
+    assert upsert[0]["axiom"]["id"] == before["id"]
+    # raw create of the existing name (no target): APPLY_FAILED
+    failed = await _native(probe, "a2", [_untargeted(upsert[0], "axiom")])
     assert failed["state"] == "APPLY_FAILED"
     assert failed["applicationResult"]["results"][0]["message"] == (
         f"Definition already exists: {probe.slug}.CustomerPrimaryKey"
     )
-    replace = [
-        {
-            **upsert[0],
-            "targetId": before["id"],
-            "baseVersion": before["version"],
-            "axiom": {**upsert[0]["axiom"], "id": before["id"]},
-        }
-    ]
-    assert (await _native(probe, "a3", replace))["state"] == "APPLIED"
+    # to_om's targeted upsert: applied, expressions replaced
+    assert (await _native(probe, "a3", upsert))["state"] == "APPLIED"
     after = (await _members(probe, "ontologyAxioms"))["CustomerPrimaryKey"]
     assert [e["restrictionKind"] for e in after["expressions"]] == ["MIN"]
     assert after["version"] > before["version"]
