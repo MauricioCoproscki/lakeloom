@@ -12,8 +12,9 @@ def web_base(settings: Settings) -> str | None:
     """``LAKELOOM_GIT_WEB_URL``, else derived from the Git remote; ``None`` when unknown."""
     if settings.git_web_url is not None:
         parts = urlsplit(str(settings.git_web_url))
-        host = parts.netloc.rpartition("@")[2]  # web links never carry user info (NFR-SEC-11)
-        return urlunsplit(parts._replace(netloc=host)).rstrip("/")
+        # Web links never carry user info, a query or a fragment (NFR-SEC-11).
+        host = parts.netloc.rpartition("@")[2]
+        return urlunsplit(parts._replace(netloc=host, query="", fragment="")).rstrip("/")
     remote = (settings.git_remote or "").strip()
     if not remote or settings.forge == "none":
         return None

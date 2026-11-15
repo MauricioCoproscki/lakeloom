@@ -32,6 +32,10 @@ from lakeloom.gitstore.links import commit_url, tag_url, web_base
             },
             "https://w.example/r",
         ),
+        (
+            {"git_web_url": "https://u:s@h.example/o/r?access_token=x#f"},
+            "https://h.example/o/r",
+        ),
         ({"git_remote": "file:///tmp/remote.git"}, None),
         ({}, None),
         ({"git_web_url": "  "}, None),

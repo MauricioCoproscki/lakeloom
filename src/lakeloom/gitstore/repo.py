@@ -206,11 +206,14 @@ class WorkingCopy:
     # --- tags and history (M3b releases) -------------------------------------------------
 
     async def fetch_tags(self, pattern: str) -> None:
-        """Fetch the remote tags matching ``<slug>/v*`` (forced: a moved tag is overwritten)."""
+        """Fetch the remote tags matching ``<slug>/v*``: forced (a moved tag is overwritten)
+        and pruned (a local tag of the pattern that the remote lacks is deleted)."""
         slug, sep, rest = pattern.partition("/")
         if not _SLUG.fullmatch(slug) or not sep or rest != "v*":
             raise ValueError(f"unsafe tag pattern: {pattern!r}")
-        await self._git("fetch", "origin", "--force", f"+refs/tags/{pattern}:refs/tags/{pattern}")
+        await self._git(
+            "fetch", "origin", "--prune", "--force", f"+refs/tags/{pattern}:refs/tags/{pattern}"
+        )
 
     async def tags(self, prefix: str) -> list[TagInfo]:
         """Local tags under ``prefix`` (for example ``retail/``), unsorted."""

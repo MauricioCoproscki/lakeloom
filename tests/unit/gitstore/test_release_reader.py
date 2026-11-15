@@ -160,7 +160,7 @@ async def test_reader_rejects_unsafe_version(seed: Seeder, reader: ReleaseReader
         with pytest.raises(LakeloomError) as exc:
             await reader.get("retail", bad)
         assert exc.value.code == "not_found"
-        assert exc.value.hint == "GET /v1/models/{slug}/versions"
+        assert exc.value.hint == "GET /v1/models/retail/versions"
         with pytest.raises(LakeloomError, match="no release"):
             await reader.file("retail", bad, "ontology.ttl")
     assert await reader.list("-bad") == []
@@ -210,3 +210,62 @@ async def test_queued_readers_fetch_once(
     results = await asyncio.gather(*(reader.list("retail") for _ in range(4)))
     assert calls == 1
     assert all([r.version for r in x] == ["1.0.0"] for x in results)
+
+
+async def test_unknown_release_truncates_slug_and_hints_real_slug(reader: ReleaseReader) -> None:
+    with pytest.raises(LakeloomError) as exc:
+        await reader.get("x" * 300, "1.0.0")
+    assert "x" * 41 not in exc.value.message and "..." in exc.value.message
+    assert exc.value.hint == "GET /v1/models/{slug}/versions"  # not a slug: never echoed
+    with pytest.raises(LakeloomError) as exc:
+        await reader.file("retail", "1.0.0", "ontology.ttl")
+    assert exc.value.hint == "GET /v1/models/retail/versions"
+
+
+async def test_tag_deleted_on_remote_disappears(
+    seed: Seeder, reader: ReleaseReader, clock: Clock
+) -> None:
+    seed.release("retail/v1.0.0", full("retail"))
+    seed.release("retail/v1.1.0", full("retail", TTL + "# 1.1\n"))
+    assert [r.version for r in await reader.list("retail")] == ["1.1.0", "1.0.0"]
+    seed.git("push", "origin", ":refs/tags/retail/v1.1.0", cwd=seed.clone)
+    assert [r.version for r in await reader.list("retail")] == ["1.1.0", "1.0.0"]  # throttled
+    clock.now += 31
+    assert [r.version for r in await reader.list("retail")] == ["1.0.0"]
+    seed.git("push", "origin", ":refs/tags/retail/v1.0.0", cwd=seed.clone)
+    reader.invalidate("retail")
+    assert await reader.list("retail") == []
+
+
+async def test_local_only_tag_is_never_listed(
+    seed: Seeder, reader: ReleaseReader, wc: WorkingCopy, git_cmd: GitCmd, clock: Clock
+) -> None:
+    seed.release("retail/v1.0.0", full("retail"))
+    assert [r.version for r in await reader.list("retail")] == ["1.0.0"]
+    # The release service tagged locally and has not pushed yet (the push window).
+    git_cmd("tag", "-a", "-m", "local", "retail/v2.0.0", "retail/v1.0.0^{}", cwd=wc.path)
+    assert [r.version for r in await reader.list("retail")] == ["1.0.0"]
+    # A crash leftover: the next refresh prunes it.
+    clock.now += 31
+    assert [r.version for r in await reader.list("retail")] == ["1.0.0"]
+    assert "retail/v2.0.0" not in git_cmd("tag", "--list", cwd=wc.path)
+
+
+@pytest.mark.parametrize("method", ["ensure", "tags", "show"])
+async def test_git_failures_are_upstream_unavailable(
+    seed: Seeder, reader: ReleaseReader, wc: WorkingCopy,
+    monkeypatch: pytest.MonkeyPatch, method: str,
+) -> None:  # fmt: skip
+    from lakeloom.gitstore import GitError
+
+    seed.release("retail/v1.0.0", full("retail"))
+
+    async def boom(*args: object) -> None:
+        raise GitError("failed", "broken")
+
+    monkeypatch.setattr(wc, method, boom)
+    with pytest.raises(LakeloomError) as exc:
+        await reader.list("retail")
+    assert exc.value.code == "upstream_unavailable"
+    assert exc.value.message == "release tags unavailable"
+    assert exc.value.hint
