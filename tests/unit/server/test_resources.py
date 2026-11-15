@@ -1,5 +1,6 @@
 """MCP resources for models and asset context (FR-PUB-01), with a fake OM."""
 
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -8,6 +9,7 @@ from kit import AuthKit, DepsFactory, mcp_session
 from mcp.shared.exceptions import MCPError
 from mcp.types import TextResourceContents
 from rdflib import Graph
+from releases_kit import Remote, git_deps, seeded
 from starlette.testclient import TestClient
 from test_tools_semantic import COLUMNS, ORDERS, fake_deps
 
@@ -103,11 +105,14 @@ async def test_version_latest_accepted_other_not_found(
     assert Graph().parse(data=ok.text, format="turtle")
     err = await error_of(make_deps, kit, "lakeloom://models/retail/ontology.ttl?version=1.0.0")
     assert err["code"] == "not_found"
-    assert "version=latest" in err["hint"]
+    assert err["hint"] == "Git publishing is off"
     err = await error_of(make_deps, kit, "lakeloom://models/retail/context.jsonld?version=2")
     assert err["code"] == "not_found"
     err = await error_of(make_deps, kit, f"lakeloom://assets/{ORDERS}/context.md?version=2")
     assert err["code"] == "not_found"
+    assert "only served at version=latest" in err["hint"]
+    err = await error_of(make_deps, kit, "lakeloom://models?version=1.0.0")
+    assert err["code"] == "not_found" and "only served at version=latest" in err["hint"]
 
 
 async def test_unknown_ext_and_unknown_model(make_deps: DepsFactory, kit: AuthKit) -> None:
@@ -210,3 +215,39 @@ async def test_shapes_resource_bytes_equal_http(make_deps: DepsFactory, kit: Aut
     assert other["code"] == "not_found"
     ctx = await read(make_deps, kit, "lakeloom://models/retail/context.jsonld")
     assert "@vocab" in ctx.text and "Order" in ctx.text
+
+
+async def test_resource_version_pinning(
+    make_deps: DepsFactory, kit: AuthKit, tmp_path: Path
+) -> None:
+    remote: Remote = seeded(tmp_path)
+    app = create_server_app(git_deps(make_deps, remote))
+    async with mcp_session(app, kit.token()) as session:
+
+        async def text_of(uri: str) -> str:
+            content = (await session.read_resource(uri)).contents[0]
+            assert isinstance(content, TextResourceContents)
+            return content.text
+
+        ttl = await text_of("lakeloom://models/retail/ontology.ttl?version=1.0.0")
+        owl = await text_of("lakeloom://models/retail/ontology.owl?version=1.1.0")
+        nt = await text_of("lakeloom://models/retail/ontology.nt?version=1.1.0")
+        shapes = await text_of("lakeloom://models/retail/shapes.ttl?version=1.0.0")
+        ctx = await text_of("lakeloom://models/retail/context.jsonld?version=1.1.0")
+        latest = await text_of("lakeloom://models/retail/ontology.ttl")
+        with pytest.raises(MCPError) as missing:
+            await session.read_resource("lakeloom://models/retail/ontology.ttl?version=7.0.0")
+        with pytest.raises(MCPError) as asset:
+            await session.read_resource(f"lakeloom://assets/{ORDERS}/context.md?version=1.0.0")
+
+    assert ttl.encode() == remote.show("retail/v1.0.0", "ontology.ttl")
+    assert owl.encode() == remote.show("retail/v1.1.0", "ontology.owl")
+    assert len(Graph().parse(data=nt, format="nt")) == 4
+    assert shapes.encode() == remote.show("retail/v1.0.0", "shapes.ttl")
+    assert ctx.encode() == remote.show("retail/v1.1.0", "context.jsonld")
+    assert latest != ttl and "Order 1.0.0" not in latest
+    missing_error: Any = missing.value.data
+    assert missing_error["error"]["code"] == "not_found"
+    assert missing_error["error"]["hint"] == "GET /v1/models/{slug}/versions"
+    asset_error: Any = asset.value.data
+    assert asset_error["error"]["code"] == "not_found"  # asset context stays latest-only

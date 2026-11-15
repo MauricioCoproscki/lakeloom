@@ -10,9 +10,12 @@ import pytest
 from lakeloom.config import Settings
 from lakeloom.core.models import ModelService
 from lakeloom.errors import LakeloomError
+from lakeloom.gitstore.links import web_base
+from lakeloom.gitstore.release_reader import ReleaseInfo
 from lakeloom.om.client import OMUnavailable
 from lakeloom.om.models import OMEntityRef, OMGlossary, OMGlossaryTerm, OMLineage, OMPage, OMTable
 from lakeloom.publish.artifacts import (
+    GitLinks,
     asset_context_artifact,
     concept_artifact,
     etag_for,
@@ -20,6 +23,9 @@ from lakeloom.publish.artifacts import (
     model_artifact,
     model_context_artifact,
     models_list_artifact,
+    require_latest,
+    resolve_version,
+    shapes_artifact,
 )
 from lakeloom.publish.negotiation import FORMAT_BY_MEDIA
 
@@ -161,12 +167,12 @@ async def test_no_om_url_means_no_links() -> None:
 
 
 @pytest.mark.parametrize("version", ["1.0.0", "v2", ""])
-async def test_version_other_than_latest_not_found(version: str) -> None:
+async def test_version_other_than_latest_not_found_with_git_off(version: str) -> None:
     models, _ = make()
     with pytest.raises(LakeloomError) as e:
         await model_artifact(models, "retail", "text/turtle", version=version)
     assert e.value.code == "not_found"
-    assert "version=latest" in (e.value.hint or "")
+    assert e.value.hint == "Git publishing is off"
     with pytest.raises(LakeloomError):
         await model_context_artifact(models, "retail", version=version)
 
@@ -281,3 +287,166 @@ async def test_om_url_userinfo_is_stripped_from_links() -> None:
     art = await model_artifact(models, "retail", "text/turtle", version=None)
     assert art.links == ['<http://om:8585/base/glossary/retail>; rel="via"']
     assert "secret" not in "".join(art.links)
+
+
+# --- releases and Git links (FR-PUB-02, FR-PUB-07) --------------------------------------------
+
+TAGGED = datetime(2026, 11, 10, 12, 30, 15, 999, tzinfo=UTC)
+REL = ReleaseInfo(
+    version="1.0.0",
+    tag="retail/v1.0.0",
+    object_sha="a" * 40,
+    commit_sha="b" * 40,
+    released_at=TAGGED,
+)
+WEB = "https://git.example/org/onto"
+
+
+class FakeReader:
+    """The parts of ReleaseReader the artefacts use; records what was read."""
+
+    def __init__(self) -> None:
+        self.reads: list[tuple[str, ...]] = []
+
+    async def get(self, slug: str, version: str) -> ReleaseInfo:
+        if (slug, version) != ("retail", "1.0.0"):
+            raise LakeloomError("not_found", f"no release {version!r} of {slug!r}", "GET ...")
+        return REL
+
+    async def ontology(self, slug: str, version: str, fmt: str) -> bytes:
+        self.reads.append(("ontology", slug, version, fmt))
+        return f"ontology {fmt}\n".encode()
+
+    async def shapes(self, slug: str, version: str, media: str) -> bytes:
+        self.reads.append(("shapes", slug, version, media))
+        return b"shapes\n"
+
+    async def file(self, slug: str, version: str, name: str) -> bytes:
+        self.reads.append(("file", slug, version, name))
+        return b'{"@context": {}}\n'
+
+
+def links(last: str | None = "c" * 40, base: str = WEB) -> GitLinks:
+    async def last_commit(slug: str) -> str | None:
+        return last if slug == "retail" else None
+
+    return GitLinks(base, "gitea", last_commit)
+
+
+async def test_release_artifact_validators() -> None:
+    models, _ = make()
+    reader = FakeReader()
+    art = await model_artifact(
+        models,
+        "retail",
+        "text/turtle",
+        version="1.0.0",
+        releases=reader,
+        git=links(),  # type: ignore[arg-type]
+    )
+
+    assert art.body == b"ontology turtle\n"
+    assert art.etag == etag_for(art.body)
+    assert art.last_modified == TAGGED.replace(microsecond=0)  # the tagger date, whole seconds
+    assert art.links == [
+        f'<{WEB}/src/tag/retail/v1.0.0>; rel="via"',
+        f'<{WEB}/commit/{"b" * 40}>; rel="via"',
+    ]
+    shapes = await shapes_artifact(
+        models,
+        "retail",
+        "application/n-triples",
+        version="1.0.0",
+        releases=reader,
+        git=links(),  # type: ignore[arg-type]
+    )
+    ctx = await model_context_artifact(
+        models,
+        "retail",
+        version="1.0.0",
+        releases=reader,
+        git=None,  # type: ignore[arg-type]
+    )
+    assert (shapes.media_type, shapes.links, shapes.last_modified) == (
+        "application/n-triples", art.links, art.last_modified,
+    )  # fmt: skip
+    assert ctx.media_type == "application/ld+json" and ctx.links == []  # no web base, no links
+    assert reader.reads == [
+        ("ontology", "retail", "1.0.0", "turtle"),
+        ("shapes", "retail", "1.0.0", "application/n-triples"),
+        ("file", "retail", "1.0.0", "context.jsonld"),
+    ]
+
+
+async def test_latest_adds_related_commit_link() -> None:
+    models, _ = make()
+    art = await model_artifact(models, "retail", "text/turtle", version=None, git=links())
+    none_yet = await model_artifact(
+        models, "retail", "text/turtle", version="latest", git=links(None)
+    )
+    shapes = await shapes_artifact(models, "retail", "text/turtle", version=None, git=links())
+
+    assert art.links == [
+        '<http://om:8585/glossary/retail>; rel="via"',
+        f'<{WEB}/commit/{"c" * 40}>; rel="related"; title="last Git publication"',
+    ]
+    assert none_yet.links == ['<http://om:8585/glossary/retail>; rel="via"']
+    assert shapes.links == art.links
+    assert art.etag == none_yet.etag  # links never change the body
+
+
+async def test_latest_link_lookup_failure_only_drops_the_link() -> None:
+    async def broken(slug: str) -> str | None:
+        raise RuntimeError("state store down")
+
+    models, _ = make()
+    art = await model_artifact(
+        models, "retail", "text/turtle", version=None, git=GitLinks(WEB, "github", broken)
+    )
+    assert art.links == ['<http://om:8585/glossary/retail>; rel="via"']
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"git_remote": "https://user@git.example/org/onto.git", "forge": "gitea"},
+        {"git_remote": "ssh://git@git.example:2222/org/onto.git", "forge": "gitea"},
+        {
+            "git_remote": "git@git.example:org/onto.git",
+            "git_web_url": "https://u:s3cret@w.example/o",
+        },
+    ],
+)
+async def test_links_never_carry_userinfo(settings: dict[str, Any]) -> None:
+    base = web_base(Settings(_env_file=None, **settings))  # type: ignore[call-arg]
+    assert base is not None
+    models, _ = make()
+    rel = await model_artifact(
+        models,
+        "retail",
+        "text/turtle",
+        version="1.0.0",
+        releases=FakeReader(),
+        git=links(base=base),  # type: ignore[arg-type]
+    )
+    latest = await model_artifact(
+        models, "retail", "text/turtle", version=None, git=links(base=base)
+    )
+    text = "".join(rel.links + latest.links)
+    assert "s3cret" not in text and "user" not in text and "git@" not in text
+    assert all(link.startswith("<https://") for link in rel.links)
+
+
+async def test_resolve_version() -> None:
+    reader = FakeReader()
+    assert await resolve_version(reader, "retail", None) is None  # type: ignore[arg-type]
+    assert await resolve_version(reader, "retail", "latest") is None  # type: ignore[arg-type]
+    assert await resolve_version(reader, "retail", "1.0.0") == REL  # type: ignore[arg-type]
+    with pytest.raises(LakeloomError) as e:
+        await resolve_version(None, "retail", "9" * 300)
+    assert e.value.code == "not_found" and len(e.value.message) < 100
+    with pytest.raises(LakeloomError) as e:
+        require_latest("1.0.0", "asset context")
+    assert e.value.code == "not_found" and "only served at version=latest" in e.value.hint
+    require_latest(None, "x")
+    require_latest("latest", "x")

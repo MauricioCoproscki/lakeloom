@@ -3,8 +3,10 @@
 Every route is a ``GET`` that needs the ``lakeloom:read`` scope, negotiates the representation
 from ``Accept`` (a type the route does not offer gives ``406``), serves the artefact bytes
 unmodified with ``ETag``, ``Last-Modified``, ``Link``, ``Vary: Accept`` and ``Cache-Control``,
-and answers ``304`` to a matching ``If-None-Match``. Failures are typed JSON
-(``{"error": {"code", "message", "hint"}}``), never HTML or a stack trace.
+and answers ``304`` to a matching ``If-None-Match``. The model, its shapes and its context take
+``?version=`` (default ``latest``): a release is served from its Git tag (FR-PUB-02).
+Failures are typed JSON (``{"error": {"code", "message", "hint"}}``), never HTML or a stack
+trace.
 """
 
 import logging
@@ -21,13 +23,12 @@ from lakeloom.publish.artifacts import (
     Artifact,
     asset_context_artifact,
     concept_artifact,
-    etag_for,
-    json_bytes,
     matches_if_none_match,
     model_artifact,
     model_context_artifact,
     models_list_artifact,
     shapes_artifact,
+    versions_artifact,
 )
 from lakeloom.publish.negotiation import MediaType, choose
 from lakeloom.server.auth import Principal
@@ -73,6 +74,11 @@ JSON_TYPES: Final[tuple[MediaType, ...]] = ("application/json",)
 CONTEXT_TYPES: Final[tuple[MediaType, ...]] = ("application/ld+json", "application/json")
 
 _log = logging.getLogger("lakeloom.http")
+
+VersionQuery = Annotated[
+    str | None,
+    Query(description="latest (default) or a release MAJOR.MINOR.PATCH (see /versions)"),
+]
 
 
 def error_response(code: ErrorCode, message: str, hint: str, status: int | None = None) -> Response:
@@ -138,8 +144,15 @@ def _responses(
         name: {"schema": {"type": "string"}, "description": text}
         for name, text in (
             ("ETag", "Strong validator: sha256 of the body."),
-            ("Last-Modified", "When the source changed in OpenMetadata."),
-            ("Link", 'The OpenMetadata entity the artefact came from (rel="via").'),
+            (
+                "Last-Modified",
+                "latest: when the source changed in OpenMetadata; a release: its tag date.",
+            ),
+            (
+                "Link",
+                'latest: the OpenMetadata entity (rel="via") and the last Git publication '
+                '(rel="related"); a release: its Git tag and commit (rel="via").',
+            ),
         )
     }
     error = {"description": "Typed error", "content": {"application/json": {"schema": _ERROR}}}
@@ -215,6 +228,11 @@ def create_router(deps: "AppDeps") -> APIRouter:
             )
         return _respond(request, artifact)
 
+    def model(slug: str, media: MediaType, version: str | None) -> Awaitable[Artifact]:
+        return model_artifact(
+            deps.models, slug, media, version=version, releases=deps.reader, git=deps.git_links
+        )
+
     @router.get(
         "/models",
         summary="List the models",
@@ -238,10 +256,8 @@ def create_router(deps: "AppDeps") -> APIRouter:
         response_class=Response,
         responses=_responses(MODEL_TYPES),
     )
-    async def get_model(request: Request, slug: str) -> Response:
-        return await serve(
-            request, MODEL_TYPES, lambda m: model_artifact(deps.models, slug, m, version=None)
-        )
+    async def get_model(request: Request, slug: str, version: VersionQuery = None) -> Response:
+        return await serve(request, MODEL_TYPES, lambda m: model(slug, m, version))
 
     @router.get(
         "/models/{slug}/versions",
@@ -250,27 +266,21 @@ def create_router(deps: "AppDeps") -> APIRouter:
         responses=_responses(JSON_TYPES),
     )
     async def list_versions(request: Request, slug: str) -> Response:
-        async def build(_: MediaType) -> Artifact:
-            # Resolves the model (404) and supplies its Last-Modified and Link.
-            base = await model_artifact(deps.models, slug, "text/turtle", version=None)
-            data = [{"version": "latest", "media_types": list(MODEL_TYPES)}]
-            body = json_bytes(data)
-            return base.model_copy(
-                update={"body": body, "media_type": "application/json", "etag": etag_for(body)}
+        def build(_: MediaType) -> Awaitable[Artifact]:
+            return versions_artifact(
+                deps.models, slug, MODEL_TYPES, releases=deps.reader, git=deps.git_links
             )
 
         return await serve(request, JSON_TYPES, build)
 
     @router.get(
         "/models/{slug}/versions/{version}",
-        summary="One version of the model (only latest until releases arrive in M3)",
+        summary="One version of the model: latest or a release (MAJOR.MINOR.PATCH)",
         response_class=Response,
         responses=_responses(MODEL_TYPES),
     )
     async def get_model_version(request: Request, slug: str, version: str) -> Response:
-        return await serve(
-            request, MODEL_TYPES, lambda m: model_artifact(deps.models, slug, m, version=version)
-        )
+        return await serve(request, MODEL_TYPES, lambda m: model(slug, m, version))
 
     @router.get(
         "/models/{slug}/shapes",
@@ -278,13 +288,17 @@ def create_router(deps: "AppDeps") -> APIRouter:
         response_class=Response,
         responses=_responses(SHAPES_TYPES),
     )
-    async def get_model_shapes(request: Request, slug: str) -> Response:
+    async def get_model_shapes(
+        request: Request, slug: str, version: VersionQuery = None
+    ) -> Response:
         def build(media: MediaType) -> Awaitable[Artifact]:
             return shapes_artifact(
                 deps.models,
                 slug,
                 _narrow(media, "text/turtle", "application/ld+json", "application/n-triples"),
-                version=None,
+                version=version,
+                releases=deps.reader,
+                git=deps.git_links,
             )
 
         return await serve(request, SHAPES_TYPES, build)
@@ -295,12 +309,15 @@ def create_router(deps: "AppDeps") -> APIRouter:
         response_class=Response,
         responses=_responses(CONTEXT_TYPES),
     )
-    async def get_model_context(request: Request, slug: str) -> Response:
-        return await serve(
-            request,
-            CONTEXT_TYPES,
-            lambda _: model_context_artifact(deps.models, slug, version=None),
-        )
+    async def get_model_context(
+        request: Request, slug: str, version: VersionQuery = None
+    ) -> Response:
+        def build(_: MediaType) -> Awaitable[Artifact]:
+            return model_context_artifact(
+                deps.models, slug, version=version, releases=deps.reader, git=deps.git_links
+            )
+
+        return await serve(request, CONTEXT_TYPES, build)
 
     @router.get(
         "/concepts/{concept:path}",

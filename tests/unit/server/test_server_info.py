@@ -34,7 +34,12 @@ async def test_fr_om_06_server_info_reports_om_version_and_rdf(make_deps: DepsFa
     assert info.openmetadata.reachable is True
     assert info.openmetadata.version == "2.1.0"
     assert info.openmetadata.rdf_enabled is True
-    assert info.features == {"triplestore": True, "stdio": True, "token_exchange": False}
+    assert info.features == {
+        "triplestore": True,
+        "stdio": True,
+        "token_exchange": False,
+        "releases": False,
+    }
     assert info.sources == []
     assert info.models == []
     assert info.caller is not None
@@ -103,3 +108,15 @@ async def test_server_info_git_status_has_no_remote_url(make_deps: DepsFactory) 
 async def test_server_info_git_off(make_deps: DepsFactory) -> None:
     info = await build_server_info(make_deps(), None)
     assert info.git is not None and info.git["enabled"] is False
+
+
+async def test_server_info_reports_releases_feature(make_deps: DepsFactory) -> None:
+    off = await build_server_info(make_deps(), principal())
+    on = await build_server_info(
+        make_deps(git_remote="https://git.example.test/acme/onto.git", git_mode="direct"),
+        principal(),
+    )
+
+    assert off.features["releases"] is False
+    assert on.features["releases"] is True
+    assert "releases" in summarize(on) and "releases" not in summarize(off)

@@ -185,13 +185,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -502,13 +502,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -847,13 +847,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -1147,6 +1147,24 @@
               "title": "Slug",
               "type": "string"
             }
+          },
+          {
+            "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+              "title": "Version"
+            }
           }
         ],
         "responses": {
@@ -1166,13 +1184,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -1466,6 +1484,24 @@
               "title": "Slug",
               "type": "string"
             }
+          },
+          {
+            "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+              "title": "Version"
+            }
           }
         ],
         "responses": {
@@ -1483,13 +1519,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -1783,6 +1819,24 @@
               "title": "Slug",
               "type": "string"
             }
+          },
+          {
+            "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+              "title": "Version"
+            }
           }
         ],
         "responses": {
@@ -1801,13 +1855,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -2117,13 +2171,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -2445,13 +2499,13 @@
                 }
               },
               "Last-Modified": {
-                "description": "When the source changed in OpenMetadata.",
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
                 "schema": {
                   "type": "string"
                 }
               },
               "Link": {
-                "description": "The OpenMetadata entity the artefact came from (rel=\"via\").",
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
                 "schema": {
                   "type": "string"
                 }
@@ -2727,7 +2781,7 @@
             "description": "Typed error"
           }
         },
-        "summary": "One version of the model (only latest until releases arrive in M3)",
+        "summary": "One version of the model: latest or a release (MAJOR.MINOR.PATCH)",
         "tags": [
           "publication"
         ]

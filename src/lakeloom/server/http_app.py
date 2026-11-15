@@ -39,17 +39,21 @@ from lakeloom.core.model_policy import ModelPolicyEntry
 from lakeloom.core.models import ModelService
 from lakeloom.core.obo import OnBehalfOf
 from lakeloom.core.proposals import ProposalService
+from lakeloom.core.releases import ReleaseService
 from lakeloom.core.review import ReviewService
 from lakeloom.core.scans import ScanService
 from lakeloom.core.sources import close_sources, start_sources
 from lakeloom.errors import LakeloomError
 from lakeloom.gitstore.layout import Snapshot
+from lakeloom.gitstore.links import web_base
 from lakeloom.gitstore.publisher import GitPublisher
+from lakeloom.gitstore.release_reader import ReleaseReader
 from lakeloom.gitstore.snapshot import fill_exports
 from lakeloom.gitstore.wiring import FORGE_TIMEOUT, build_publisher
 from lakeloom.logging import request_id_var
 from lakeloom.metrics import HTTP_REQUESTS, REGISTRY
 from lakeloom.om.client import OMClient
+from lakeloom.publish.artifacts import GitLinks
 from lakeloom.server.auth import (
     PRM_PATH,
     PUBLIC_PATHS,
@@ -76,6 +80,7 @@ from lakeloom.state.audit import AuditRepository
 from lakeloom.state.db import create_engine, upgrade
 from lakeloom.state.proposals import ProposalRepository
 from lakeloom.state.publications import PublicationRepository
+from lakeloom.state.releases import ReleaseRepository
 from lakeloom.state.scans import ScanRepository
 from lakeloom.telemetry import configure_telemetry, is_active, start_span
 
@@ -116,6 +121,12 @@ class AppDeps:
     obo: OnBehalfOf = field(init=False)
     publications: PublicationRepository = field(init=False)
     publisher: GitPublisher = field(init=False)
+    releases_repo: ReleaseRepository = field(init=False)
+    # Releases (FR-GIT-06, FR-PUB-02): all None with Git publishing off; ``git_links`` is
+    # also None without a forge web base (LAKELOOM_FORGE=none and no LAKELOOM_GIT_WEB_URL).
+    reader: ReleaseReader | None = field(init=False, default=None)
+    release_service: ReleaseService | None = field(init=False, default=None)
+    git_links: GitLinks | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.confirm = confirm_tokens_from_settings(self.settings)
@@ -150,6 +161,27 @@ class AppDeps:
             self.policies,
             exporter=self._export,
         )
+        self.releases_repo = ReleaseRepository(self.engine)
+        wc = self.publisher.working_copy
+        if wc is not None:
+            key = self.publisher.repo_key
+            self.reader = ReleaseReader(wc, key)
+            # create_release is audited by guarded() (audit=None here, as for proposals).
+            self.release_service = ReleaseService(
+                self.settings,
+                self.models,
+                self.om,
+                wc,
+                self.reader,
+                self.releases_repo,
+                self.publications,
+                self.confirm,
+                None,
+                self.policies,
+            )
+            base = web_base(self.settings)
+            if base is not None:
+                self.git_links = GitLinks(base, self.settings.forge, self._last_commit)
         # Same for reviews: review_proposal is audited by guarded() (audit=None here).
         self.review = ReviewService(
             self.proposals,
@@ -162,6 +194,11 @@ class AppDeps:
             self.policies,
             publisher=self.publisher,
         )
+
+    async def _last_commit(self, slug: str) -> str | None:
+        """The commit of ``slug``'s last done Git publication (the latest artefacts' link)."""
+        pub = await self.publications.last_done(self.publisher.repo_key, slug)
+        return None if pub is None else pub.commit_sha
 
     async def _export(self, snapshot: Snapshot) -> Snapshot:
         """The publisher's exporter: the model as OM holds it now (bot client, reads)."""

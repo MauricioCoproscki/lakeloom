@@ -152,8 +152,8 @@ def delta_source() -> DeltaStorageSource:
     return DeltaStorageSource(cfg)
 
 
-def fake_deps(make_deps: DepsFactory) -> Any:
-    deps = make_deps(sources={"fx": delta_source()})
+def fake_deps(make_deps: DepsFactory, **settings: Any) -> Any:
+    deps = make_deps(sources={"fx": delta_source()}, **settings)
     fake = FakeOM()
     deps.om = fake  # pyright: ignore[reportAttributeAccessIssue]
     deps.models = ModelService(fake, deps.settings)  # pyright: ignore[reportArgumentType]
@@ -309,6 +309,40 @@ async def test_export_model_sha256_stable_and_parses(make_deps: DepsFactory, kit
     assert len(Graph().parse(data=text(first), format="turtle")) > 0
     assert structured(skos)["format"] == "skos"
     assert structured(missing)["error"]["code"] == "not_found"
+
+
+async def test_export_model_release_ntriples(
+    make_deps: DepsFactory, kit: AuthKit, tmp_path: Path
+) -> None:
+    from releases_kit import git_deps, seeded
+
+    remote = seeded(tmp_path)
+    app = create_server_app(git_deps(make_deps, remote))
+    async with mcp_session(app, kit.token()) as session:
+        nt = await session.call_tool(
+            "export_model", {"model": "retail", "format": "ntriples", "version": "1.0.0"}
+        )
+        ttl = await session.call_tool("export_model", {"model": "retail", "version": "1.1.0"})
+        unknown = await session.call_tool("export_model", {"model": "retail", "version": "9.0.0"})
+        bad = await session.call_tool("export_model", {"model": "retail", "version": "v1.0"})
+
+    data = structured(nt)
+    assert (data["version"], data["format"], data["media_type"]) == (
+        "1.0.0", "ntriples", "application/n-triples",
+    )  # fmt: skip
+    tagged = Graph().parse(data=remote.show("retail/v1.0.0", "ontology.ttl"), format="turtle")
+    assert len(Graph().parse(data=text(nt), format="nt")) == len(tagged)
+    assert data["sha256"] == hashlib.sha256(text(nt).encode()).hexdigest()
+    assert text(ttl).encode() == remote.show("retail/v1.1.0", "ontology.ttl")
+    assert structured(unknown)["error"]["code"] == "not_found"
+    assert structured(bad)["error"]["code"] == "validation_error"
+
+
+async def test_export_model_release_with_git_off(make_deps: DepsFactory, kit: AuthKit) -> None:
+    result = await call(make_deps, kit, "export_model", {"model": "retail", "version": "1.0.0"})
+
+    err = structured(result)["error"]
+    assert err["code"] == "not_found" and err["hint"] == "Git publishing is off"
 
 
 async def test_export_model_over_limit_is_validation_error(

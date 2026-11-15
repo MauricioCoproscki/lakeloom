@@ -34,9 +34,11 @@ from lakeloom.core.context import (
     render_markdown,
 )
 from lakeloom.core.models import ModelInfo
+from lakeloom.core.release_diff import parse_version
 from lakeloom.core.tokens import token_estimate
 from lakeloom.core.validation import ValidationReport, validation_markdown
 from lakeloom.errors import LakeloomError
+from lakeloom.publish.artifacts import resolve_version
 from lakeloom.rdf.canonical import MEDIA_TYPES, ExportFormat
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
@@ -146,10 +148,12 @@ quoted blocks. Read-only, no side effects.
 EXPORT_MODEL_DESCRIPTION = f"""\
 Export a semantic model as RDF in a deterministic serialisation (the same model state gives \
 byte-identical output): `turtle` (default), `rdfxml` (OWL), `ntriples`, `jsonld` or `skos` \
-(SKOS-only Turtle projection). The text is the serialisation itself; structured content has \
-`model`, `format`, `media_type`, `bytes` and `sha256`. Larger than 8 MiB → \
-`validation_error` (use the `lakeloom export` CLI). Unknown model → `not_found`. \
-Read-only, no side effects.
+(SKOS-only Turtle projection). `version` is `latest` (default: OpenMetadata's current state) \
+or a release `MAJOR.MINOR.PATCH` (see list_releases), served from its Git tag. The text is \
+the serialisation itself; structured content has `model`, `version`, `format`, \
+`media_type`, `bytes` and `sha256`. Larger than 8 MiB → `validation_error` (use the \
+`lakeloom export` CLI). A malformed version → `validation_error`; an unknown model or \
+release (or any release with Git publishing off) → `not_found`. Read-only, no side effects.
 
 {_SCOPE_NOTE}"""
 
@@ -181,6 +185,7 @@ class ExplainedConcept(ConceptDetail):
 
 class ExportResult(BaseModel):
     model: str
+    version: str = Field(default="latest", description="latest or the release exported.")
     format: ExportFormat
     media_type: str
     bytes: int
@@ -450,9 +455,18 @@ def register_semantic_tools(mcp: MCPServer, deps: AppDeps) -> None:
         model: Annotated[str, Field(description="Model slug, as returned by list_models.")],
         ctx: Context,
         format: Annotated[ExportFormat, Field(description="RDF serialisation.")] = "turtle",
+        version: Annotated[
+            str, Field(description="latest (default) or a release MAJOR.MINOR.PATCH.")
+        ] = "latest",
     ) -> Annotated[CallToolResult, ExportResult]:
         async def body(_: Principal) -> CallToolResult:
-            data = await deps.models.export(model, format)
+            if version != "latest":
+                parse_version(version)  # a malformed version is the caller's validation_error
+            rel = await resolve_version(deps.reader, model, version)
+            if rel is not None and deps.reader is not None:
+                data = await deps.reader.ontology(model, rel.version, format)
+            else:
+                data = await deps.models.export(model, format)
             if len(data) > MAX_EXPORT_BYTES:
                 raise LakeloomError(
                     "validation_error",
@@ -461,6 +475,7 @@ def register_semantic_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 )
             result = ExportResult(
                 model=model,
+                version=version,
                 format=format,
                 media_type=MEDIA_TYPES[format],
                 bytes=len(data),

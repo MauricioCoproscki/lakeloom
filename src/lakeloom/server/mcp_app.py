@@ -10,7 +10,8 @@ Tools: ``get_server_info`` (FR-OM-06, §7: scope ``lakeloom:read``, no side effe
 source/scan tools of :mod:`lakeloom.server.tools_sources` (M1a) and the semantic read
 tools of :mod:`lakeloom.server.tools_semantic` (M1b), the model and proposal tools of
 :mod:`lakeloom.server.tools_proposals` and the prompts of :mod:`lakeloom.server.prompts`
-(M2a), the review tools of :mod:`lakeloom.server.tools_review` (M2b). Shared plumbing
+(M2a), the review tools of :mod:`lakeloom.server.tools_review` (M2b), the release tools of
+:mod:`lakeloom.server.tools_release` (M3b). Shared plumbing
 (scope checks, typed errors, metrics) lives in :mod:`lakeloom.server.tools_common`.
 """
 
@@ -32,6 +33,7 @@ from lakeloom.server.resources import LakeloomMCP
 from lakeloom.server.server_info import ServerInfo, build_server_info, summarize
 from lakeloom.server.tools_common import READ_SCOPE, guarded, tool_error
 from lakeloom.server.tools_proposals import register_proposal_tools
+from lakeloom.server.tools_release import register_release_tools
 from lakeloom.server.tools_review import register_review_tools
 from lakeloom.server.tools_semantic import register_semantic_tools
 from lakeloom.server.tools_sources import register_source_tools
@@ -43,7 +45,8 @@ MCP_PATH = "/mcp"
 GET_SERVER_INFO_DESCRIPTION = """\
 Describe this Lakeloom server: its version and environment, the connected OpenMetadata \
 instance (version, whether it is reachable, whether its RDF/knowledge-graph support is \
-enabled), which optional features are switched on (triplestore, stdio, token_exchange; \
+enabled), which optional features are switched on (triplestore, stdio, token_exchange, \
+releases; \
 these are configuration flags, not a guarantee the capability is live in this release), the \
 configured lake sources and semantic models, and who you are authenticated as (subject, \
 principal type, granted scopes).
@@ -75,12 +78,15 @@ def create_mcp(deps: AppDeps) -> LakeloomMCP:
             "and rebase_proposal refreshes one against OpenMetadata. Nothing is applied until "
             "a human approves: list_pending_reviews and review_proposal are for human "
             "reviewers (an agent asks its human to decide, never decides itself). Show "
-            "proposal summaries to the user before submitting. The prompts "
+            "proposal summaries to the user before submitting. create_release tags the "
+            "model's current state in Git (dry run first, then confirm); list_releases and "
+            "diff_releases read the released versions. The prompts "
             "bootstrap_data_product, explain_table and review_with_specialist describe "
             "whole workflows. The same "
             "artefacts are MCP resources: lakeloom://models, "
             "lakeloom://models/{slug}/ontology.{ttl|jsonld|owl|nt}, "
-            "lakeloom://models/{slug}/context.jsonld and lakeloom://assets/{fqn}/context.md."
+            "lakeloom://models/{slug}/shapes.ttl, lakeloom://models/{slug}/context.jsonld "
+            "(each with ?version= for a release) and lakeloom://assets/{fqn}/context.md."
         ),
         log_level="WARNING",
     )
@@ -111,6 +117,7 @@ def create_mcp(deps: AppDeps) -> LakeloomMCP:
     register_semantic_tools(mcp, deps)
     register_proposal_tools(mcp, deps)
     register_review_tools(mcp, deps)
+    register_release_tools(mcp, deps)
     register_prompts(mcp)
     return mcp
 

@@ -96,6 +96,11 @@ class GitPublisher:
         self.enabled: bool = bool(remote) and working_copy is not None
         self.repo_key: str = hashlib.sha256(remote.encode()).hexdigest() if self.enabled else ""
 
+    @property
+    def working_copy(self) -> WorkingCopy | None:
+        """The working copy (``None`` when disabled), shared with releases and their reader."""
+        return self._wc if self.enabled else None
+
     # --- queue ----------------------------------------------------------------------------
 
     async def enqueue(self, pub: Publication) -> Publication:

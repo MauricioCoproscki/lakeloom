@@ -487,3 +487,101 @@ def test_cli_git_status_when_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     result = CliRunner().invoke(app, ["git", "status"])
     assert result.exit_code == 0, result.output
     assert "Git publishing is off" in result.output
+
+
+# --- releases (FR-GIT-06: the same operations as the MCP release tools) -----------------------
+
+
+TOK = "tok"  # the fake release service's confirm token
+
+
+def test_cli_release_create_and_list(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime
+
+    from lakeloom.core.release_diff import ReleaseDiff
+    from lakeloom.core.releases import ReleasePlan, ReleaseResult
+    from lakeloom.gitstore.release_reader import ReleaseInfo
+    from lakeloom.state.releases import Release
+
+    now = datetime(2026, 11, 15, 10, 0, tzinfo=UTC)
+    plan = ReleasePlan(
+        model="shop", version="1.0.0", tag="shop/v1.0.0", previous=None,
+        diff=ReleaseDiff(
+            from_version=None, to_version="1.0.0", added=[], changed=[], removed=[],
+            removed_triples=0, added_triples=3, annotation_only=False, bump=None,
+            reason="initial release",
+        ),
+        requested_bump=None, warnings=[], changelog_section="## [1.0.0] - 2026-11-15\n",
+        confirm_token=TOK, expires_at=1,
+    )  # fmt: skip
+    release = Release(
+        id="rel_1", repo="k", model="shop", version="1.0.0", tag="shop/v1.0.0",
+        commit_sha="e" * 40, released_by="op", created_at=now,
+    )  # fmt: skip
+    calls: list[tuple[str, Any, dict[str, Any]]] = []
+
+    class FakeService:
+        async def plan(self, principal: Any, model: str, **kw: Any) -> ReleasePlan:
+            calls.append(("plan", principal, {"model": model, **kw}))
+            return plan
+
+        async def create(self, principal: Any, model: str, **kw: Any) -> ReleaseResult:
+            calls.append(("create", principal, {"model": model, **kw}))
+            return ReleaseResult(release=release, plan=plan, already_done=False, triplestore="off")
+
+    class FakeReader:
+        async def list(self, slug: str) -> list[ReleaseInfo]:
+            if slug != "shop":
+                return []
+            return [
+                ReleaseInfo(version="1.0.0", tag="shop/v1.0.0", object_sha="a" * 40,
+                            commit_sha="e" * 40, released_at=now)
+            ]  # fmt: skip
+
+    @asynccontextmanager
+    async def opened(_settings: Any) -> AsyncIterator[Any]:
+        yield FakeService(), FakeReader()
+
+    _sources_env(monkeypatch, tmp_path)
+    monkeypatch.setattr("lakeloom.cli._open_releases", opened)
+    runner = CliRunner()
+
+    dry = runner.invoke(app, ["release", "create", "shop", "--bump", "minor"])
+    confirmed = runner.invoke(app, ["release", "create", "shop", "--yes"])
+    bad_bump = runner.invoke(app, ["release", "create", "shop", "--bump", "huge"])
+    listed = runner.invoke(app, ["release", "list", "shop"])
+    empty = runner.invoke(app, ["release", "list", "other"])
+
+    assert dry.exit_code == 0, dry.output
+    assert "# Release `shop/v1.0.0` of model `shop`" in dry.output
+    assert "## [1.0.0] - 2026-11-15" in dry.output
+    assert dry.output.rstrip().endswith("Re-run with --yes to release.")
+    assert confirmed.exit_code == 0, confirmed.output
+    assert "Released `shop/v1.0.0`." in confirmed.output and "`eeeeeee`" in confirmed.output
+    assert [(c[0], c[2].get("bump")) for c in calls] == [
+        ("plan", "minor"),
+        ("plan", None),
+        ("create", None),
+    ]
+    assert calls[2][2]["confirm_token"] == TOK and calls[2][2]["client"] == "lakeloom-cli"
+    assert calls[0][1].type == "human"
+    assert bad_bump.exit_code == 1 and "unknown bump" in bad_bump.output
+    assert listed.exit_code == 0, listed.output
+    assert listed.output.splitlines() == [
+        "version\ttag\tcommit\treleased_at",
+        "1.0.0\tshop/v1.0.0\teeeeeee\t2026-11-15T10:00:00+00:00",
+    ]
+    assert empty.exit_code == 0 and "No releases of other." in empty.output
+
+
+def test_cli_release_when_git_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LAKELOOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LAKELOOM_DB_URL", f"sqlite:///{tmp_path}/l.db")
+    monkeypatch.delenv("LAKELOOM_GIT_REMOTE", raising=False)
+    runner = CliRunner()
+    for args in (["release", "create", "shop"], ["release", "list", "shop"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+        assert "Git publishing is off" in result.output

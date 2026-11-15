@@ -1,14 +1,22 @@
 """Cache-validated publication artefacts (FR-PUB-02, FR-PUB-07).
 
 An :class:`Artifact` is a body plus the validators a cache needs: a strong ``ETag`` (SHA-256 of
-the body), ``Last-Modified`` (OpenMetadata ``updatedAt`` of the source entity, falling back to
-the time the model graph was loaded) and ``Link`` values pointing at the OpenMetadata entity the
-artefact was built from (``rel="via"``; Git links arrive with M2, ADR 0010).
+the body), ``Last-Modified`` and ``Link`` values.
+
+- ``latest`` (OpenMetadata's current state): ``Last-Modified`` is OpenMetadata ``updatedAt`` of
+  the source entity, falling back to the time the model graph was loaded; ``Link`` points at
+  the OpenMetadata entity (``rel="via"``, ADR 0010) plus, with Git links, the commit of the
+  model's last Git publication (``rel="related"``).
+- A release (``version=MAJOR.MINOR.PATCH``, read from its Git tag): ``Last-Modified`` is the
+  tagger date and ``Link`` points at the tag and its commit on the forge (both ``rel="via"``).
+  Git links need a web base (ADR 0015); web URLs never carry user info.
 """
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+import logging
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote
@@ -24,6 +32,8 @@ from lakeloom.core.context import (
 )
 from lakeloom.core.models import ModelInfo, ModelService
 from lakeloom.errors import LakeloomError
+from lakeloom.gitstore.links import commit_url, tag_url
+from lakeloom.gitstore.release_reader import ReleaseInfo, ReleaseReader
 from lakeloom.om.client import OMClient
 from lakeloom.publish.negotiation import FORMAT_BY_MEDIA, MediaType
 from lakeloom.publish.shacl_gen import ShapesMedia
@@ -31,8 +41,8 @@ from lakeloom.sources.base import LakeSource
 
 __all__ = [
     "Artifact",
+    "GitLinks",
     "asset_context_artifact",
-    "check_version",
     "concept_artifact",
     "context_bytes",
     "etag_for",
@@ -42,11 +52,16 @@ __all__ = [
     "model_artifact",
     "model_context_artifact",
     "models_list_artifact",
+    "require_latest",
+    "resolve_version",
     "shapes_artifact",
     "table_link",
+    "versions_artifact",
 ]
 
 type Clock = Callable[[], datetime]
+
+_log = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -98,13 +113,77 @@ def _from_ms(ms: int | None) -> datetime | None:
     return None if ms is None else datetime.fromtimestamp(ms / 1000, UTC)
 
 
-def check_version(version: str | None) -> None:
+@dataclass(frozen=True)
+class GitLinks:
+    """Forge web links for artefacts (FR-PUB-07): ``base`` has no user info; ``last_commit``
+    gives the commit of a model's last done Git publication (``None`` when there is none)."""
+
+    base: str
+    forge: str
+    last_commit: Callable[[str], Awaitable[str | None]]
+
+    def tag(self, tag: str) -> str:
+        return tag_url(self.base, self.forge, tag)
+
+    def commit(self, sha: str) -> str:
+        return commit_url(self.base, self.forge, sha)
+
+
+def _shown(version: str) -> str:
+    return version if len(version) <= 40 else version[:40] + "..."
+
+
+def require_latest(version: str | None, what: str) -> None:
+    """For artefacts that exist only at ``latest`` (the models list, asset context)."""
     if version not in (None, "latest"):
         raise LakeloomError(
             "not_found",
-            f"Unknown version {version!r}",
-            hint="releases are published from M3; use version=latest",
+            f"Unknown version {_shown(version)!r}",
+            hint=f"{what} is only served at version=latest",
         )
+
+
+async def resolve_version(
+    reader: ReleaseReader | None, slug: str, version: str | None
+) -> ReleaseInfo | None:
+    """The release ``version`` of ``slug``; ``None`` means latest (absent or ``latest``).
+
+    An unknown or malformed version is ``not_found`` (the reader validates it before any Git
+    call); with Git publishing off every version but ``latest`` is unknown.
+    """
+    if version is None or version == "latest":
+        return None
+    if reader is None:
+        raise LakeloomError(
+            "not_found",
+            f"no release {_shown(version)!r} of {_shown(slug)!r}",
+            "Git publishing is off",
+        )
+    return await reader.get(slug, version)
+
+
+def _release_links(git: GitLinks | None, rel: ReleaseInfo) -> list[str]:
+    if git is None:
+        return []
+    return [f'<{git.tag(rel.tag)}>; rel="via"', f'<{git.commit(rel.commit_sha)}>; rel="via"']
+
+
+async def _related_commit(git: GitLinks | None, slug: str) -> str | None:
+    """The web URL of the last Git publication of ``slug``; a lookup failure only drops it."""
+    if git is None:
+        return None
+    try:
+        sha = await git.last_commit(slug)
+    except Exception as exc:
+        _log.warning("last Git publication of %s unavailable (%s)", slug, type(exc).__name__)
+        return None
+    return None if sha is None else git.commit(sha)
+
+
+def _release_artifact(
+    body: bytes, media_type: str, rel: ReleaseInfo, git: GitLinks | None
+) -> Artifact:
+    return _make(body, media_type, rel.released_at.astimezone(UTC), _release_links(git, rel))
 
 
 def json_bytes(data: Any) -> bytes:
@@ -134,16 +213,28 @@ async def _model_modified(models: ModelService, info: ModelInfo) -> datetime:
     return max(loaded, updated) if updated else loaded
 
 
-async def _model_stamp(models: ModelService, info: ModelInfo) -> tuple[datetime, list[str]]:
+async def _model_stamp(
+    models: ModelService, info: ModelInfo, git: GitLinks | None = None
+) -> tuple[datetime, list[str]]:
     modified = await _model_modified(models, info)
     om_url = models.om_url
-    return modified, [] if om_url is None else [glossary_link(om_url, info.slug)]
+    links = [] if om_url is None else [glossary_link(om_url, info.slug)]
+    related = await _related_commit(git, info.slug)
+    if related is not None:
+        links.append(f'<{related}>; rel="related"; title="last Git publication"')
+    return modified, links
 
 
 async def model_artifact(
-    models: ModelService, slug: str, media: MediaType, *, version: str | None
+    models: ModelService,
+    slug: str,
+    media: MediaType,
+    *,
+    version: str | None,
+    releases: ReleaseReader | None = None,
+    git: GitLinks | None = None,
 ) -> Artifact:
-    check_version(version)
+    """The model as an ontology: OpenMetadata's current state, or a release's tagged bytes."""
     fmt = FORMAT_BY_MEDIA.get(media)
     if fmt is None:
         raise LakeloomError(
@@ -152,20 +243,31 @@ async def model_artifact(
             hint="use text/turtle, application/ld+json, application/rdf+xml or "
             "application/n-triples",
         )
+    rel = await resolve_version(releases, slug, version)
+    if rel is not None and releases is not None:
+        return _release_artifact(await releases.ontology(slug, rel.version, fmt), media, rel, git)
     info = await models.get_model(slug)
     body = await models.export(slug, fmt)  # loads (or reuses) the graph for loaded_at below
-    modified, links = await _model_stamp(models, info)
+    modified, links = await _model_stamp(models, info, git)
     return _make(body, media, modified, links)
 
 
 async def model_context_artifact(
-    models: ModelService, slug: str, *, version: str | None
+    models: ModelService,
+    slug: str,
+    *,
+    version: str | None,
+    releases: ReleaseReader | None = None,
+    git: GitLinks | None = None,
 ) -> Artifact:
     """The model's full JSON-LD ``@context`` (FR-PUB-05)."""
-    check_version(version)
+    rel = await resolve_version(releases, slug, version)
+    if rel is not None and releases is not None:
+        body = await releases.file(slug, rel.version, "context.jsonld")
+        return _release_artifact(body, "application/ld+json", rel, git)
     info = await models.get_model(slug)
     body = await models.jsonld_context_bytes(slug)  # also fails like the other artefacts
-    modified, links = await _model_stamp(models, info)
+    modified, links = await _model_stamp(models, info, git)
     return _make(body, "application/ld+json", modified, links)
 
 
@@ -175,14 +277,63 @@ async def shapes_artifact(
     media: ShapesMedia,
     *,
     version: str | None,
+    releases: ReleaseReader | None = None,
+    git: GitLinks | None = None,
 ) -> Artifact:
     """The model's SHACL shapes (FR-PUB-04); turtle is the bytes the Git file carries.
     The bytes are serialised once per model version and media type."""
-    check_version(version)
+    rel = await resolve_version(releases, slug, version)
+    if rel is not None and releases is not None:
+        return _release_artifact(await releases.shapes(slug, rel.version, media), media, rel, git)
     info = await models.get_model(slug)
     body = await models.shapes_bytes(slug, media)
-    modified, links = await _model_stamp(models, info)
+    modified, links = await _model_stamp(models, info, git)
     return _make(body, media, modified, links)
+
+
+def _url(link: str) -> str:
+    return link[1 : link.index(">")]
+
+
+async def versions_artifact(
+    models: ModelService,
+    slug: str,
+    media_types: Sequence[str],
+    *,
+    releases: ReleaseReader | None = None,
+    git: GitLinks | None = None,
+) -> Artifact:
+    """``latest`` first, then the releases semver-descending (FR-PUB-02).
+
+    Each entry is ``{version, tag, commit, released_at, media_types, links}``; ``links`` are
+    ``{href, rel}`` objects (the same URLs as the artefact's ``Link`` header). The listing's
+    validators: the latest artefact's links, and the later of its Last-Modified and the newest
+    tagger date.
+    """
+    latest = await model_artifact(
+        models, slug, "text/turtle", version=None, releases=releases, git=git
+    )  # resolves the model (404) and supplies Last-Modified and Link
+    rels = [] if releases is None else await releases.list(slug)
+
+    def entry(version: str, rel: ReleaseInfo | None, links: list[str]) -> dict[str, Any]:
+        return {
+            "version": version,
+            "tag": None if rel is None else rel.tag,
+            "commit": None if rel is None else rel.commit_sha,
+            "released_at": None
+            if rel is None
+            else rel.released_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "media_types": list(media_types),
+            "links": [
+                {"href": _url(link), "rel": "related" if 'rel="related"' in link else "via"}
+                for link in links
+            ],
+        }
+
+    data = [entry("latest", None, latest.links)]
+    data += [entry(r.version, r, _release_links(git, r)) for r in rels]
+    stamps = [latest.last_modified, *(r.released_at.astimezone(UTC) for r in rels)]
+    return _make(json_bytes(data), "application/json", max(stamps), latest.links)
 
 
 async def models_list_artifact(

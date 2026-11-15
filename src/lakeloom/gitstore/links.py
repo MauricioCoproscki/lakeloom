@@ -1,6 +1,6 @@
 """Web links to a release tag or commit on the forge (FR-PUB-07)."""
 
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from lakeloom.config import ConfigError, Settings
 from lakeloom.gitstore.forge import parse_owner_repo
@@ -11,7 +11,9 @@ __all__ = ["commit_url", "tag_url", "web_base"]
 def web_base(settings: Settings) -> str | None:
     """``LAKELOOM_GIT_WEB_URL``, else derived from the Git remote; ``None`` when unknown."""
     if settings.git_web_url is not None:
-        return str(settings.git_web_url).rstrip("/")
+        parts = urlsplit(str(settings.git_web_url))
+        host = parts.netloc.rpartition("@")[2]  # web links never carry user info (NFR-SEC-11)
+        return urlunsplit(parts._replace(netloc=host)).rstrip("/")
     remote = (settings.git_remote or "").strip()
     if not remote or settings.forge == "none":
         return None

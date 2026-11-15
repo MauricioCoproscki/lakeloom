@@ -4,7 +4,8 @@ The URIs are ``lakeloom://models``, ``lakeloom://models/{slug}/ontology.{ext}`` 
 ``jsonld``, ``owl``, ``nt``), ``lakeloom://models/{slug}/shapes.ttl``,
 ``lakeloom://models/{slug}/context.jsonld`` and
 ``lakeloom://assets/{fqn}/context.md`` (FQN percent-encoded), each optionally pinned with
-``?version=``. Only ``latest`` exists until releases arrive in M3.
+``?version=``. The ontology, shapes and context serve a release from its Git tag with
+``?version=MAJOR.MINOR.PATCH``; the models list and asset context exist only at ``latest``.
 
 A read builds the same :class:`~lakeloom.publish.artifacts.Artifact` as the HTTP API and returns
 its body unchanged, so the bytes equal the HTTP response for that representation. The server
@@ -43,10 +44,10 @@ from lakeloom.metrics import RESOURCE_READS
 from lakeloom.publish.artifacts import (
     Artifact,
     asset_context_artifact,
-    check_version,
     model_artifact,
     model_context_artifact,
     models_list_artifact,
+    require_latest,
     shapes_artifact,
 )
 from lakeloom.publish.negotiation import MediaType
@@ -72,19 +73,20 @@ TEMPLATES: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
         "lakeloom://models/{slug}/ontology.{ext}",
         "model_ontology",
-        "The model as an ontology; ext is ttl, jsonld, owl or nt. Add ?version=latest to pin.",
+        "The model as an ontology; ext is ttl, jsonld, owl or nt. Add ?version=1.0.0 to read "
+        "a release (default latest).",
         "text/turtle",
     ),
     (
         "lakeloom://models/{slug}/context.jsonld",
         "model_context",
-        "The full JSON-LD context of the model.",
+        "The full JSON-LD context of the model; ?version= reads a release.",
         "application/ld+json",
     ),
     (
         "lakeloom://models/{slug}/shapes.ttl",
         "model_shapes",
-        "The model's SHACL shapes as Turtle.",
+        "The model's SHACL shapes as Turtle; ?version= reads a release.",
         "text/turtle",
     ),
     (
@@ -267,13 +269,27 @@ class LakeloomMCP(MCPServer[Any]):
                         f"unknown ontology format {ext!r}",
                         "use one of: " + ", ".join(MEDIA_BY_EXT),
                     )
-                return "ontology", lambda: model_artifact(deps.models, slug, media, version=version)
+                return "ontology", lambda: model_artifact(
+                    deps.models,
+                    slug,
+                    media,
+                    version=version,
+                    releases=deps.reader,
+                    git=deps.git_links,
+                )
             if name == "shapes.ttl":
                 return "shapes", lambda: shapes_artifact(
-                    deps.models, slug, "text/turtle", version=version
+                    deps.models,
+                    slug,
+                    "text/turtle",
+                    version=version,
+                    releases=deps.reader,
+                    git=deps.git_links,
                 )
             if name == "context.jsonld":
-                return "context", lambda: model_context_artifact(deps.models, slug, version=version)
+                return "context", lambda: model_context_artifact(
+                    deps.models, slug, version=version, releases=deps.reader, git=deps.git_links
+                )
         if head == "assets" and tail.endswith("/context.md"):
             fqn = unquote(tail[: -len("/context.md")])
             return "asset", lambda: _asset(deps, fqn, version)
@@ -289,10 +305,10 @@ def _not_found(uri: str) -> LakeloomError:
 
 
 async def _models(deps: "AppDeps", version: str | None) -> Artifact:
-    check_version(version)
+    require_latest(version, "the models list")
     return await models_list_artifact(deps.models)
 
 
 async def _asset(deps: "AppDeps", fqn: str, version: str | None) -> Artifact:
-    check_version(version)
+    require_latest(version, "asset context")
     return await asset_context_artifact(deps.models, deps.om, deps.sources, fqn, "text/markdown")

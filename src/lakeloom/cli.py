@@ -10,7 +10,9 @@ models in OpenMetadata (FR-CTX-01..04, FR-IO-01). ``lakeloom propose SCAN_ID --m
 (drafts and submissions only; nothing is applied); ``lakeloom pending [--model M]`` lists the
 proposals awaiting review and ``lakeloom rebase ID`` rebases one. ``lakeloom git status``
 lists the queued and blocked Git publications and ``lakeloom git retry`` requeues the blocked
-ones and publishes once (FR-GIT-09). There is no review command:
+ones and publishes once (FR-GIT-09). ``lakeloom release create MODEL`` prints the release dry
+run and, with ``--yes``, releases (FR-GIT-06); ``lakeloom release list MODEL`` lists the
+released versions. There is no review command:
 approving and rejecting are for human reviewers through MCP (ADR 0012). They write their own
 audit rows. Typed
 errors (``not_found``, ``upstream_unavailable``, ...) exit with code 1.
@@ -37,7 +39,9 @@ from lakeloom.untrusted import single_line
 if TYPE_CHECKING:
     from lakeloom.core.models import ModelService
     from lakeloom.core.proposals import Actor, ProposalService
+    from lakeloom.core.releases import ReleaseService
     from lakeloom.gitstore.publisher import GitPublisher
+    from lakeloom.gitstore.release_reader import ReleaseReader
     from lakeloom.om.client import OMClient
     from lakeloom.sources.base import LakeSource
     from lakeloom.state.publications import PublicationRepository
@@ -719,6 +723,139 @@ def git_retry_cmd() -> None:
                 else:
                     error = single_line(r.last_error) if r.last_error else "-"
                     typer.echo(f"{r.id} {r.status} (attempt {r.attempts}): {error}")
+
+    _run(_go())
+
+
+# --- releases (operator side, FR-GIT-06; the same operations as the MCP release tools) -------
+
+release_app = typer.Typer(name="release", help="Release commands.", no_args_is_help=True)
+app.add_typer(release_app)
+
+
+@asynccontextmanager
+async def _open_releases(
+    settings: Settings,
+) -> AsyncGenerator[tuple["ReleaseService", "ReleaseReader"] | None]:
+    """The release service and reader (``None`` with Git publishing off); it writes its own
+    audit rows. The release commit goes straight to the branch, so no forge is needed."""
+    import hashlib
+    import secrets
+
+    from lakeloom.core.confirm import MIN_SECRET_BYTES, ConfirmTokens
+    from lakeloom.core.releases import ReleaseService
+    from lakeloom.gitstore.git import GitRunner
+    from lakeloom.gitstore.release_reader import ReleaseReader
+    from lakeloom.gitstore.repo import WorkingCopy
+    from lakeloom.server.http_app import load_config
+    from lakeloom.state.audit import AuditRepository
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.publications import PublicationRepository
+    from lakeloom.state.releases import ReleaseRepository
+
+    if not settings.git_remote:
+        yield None
+        return
+    # The dry run and the confirmation run in this one process: an ephemeral key will do.
+    secret = settings.confirm_secret
+    key = (
+        secret.get_secret_value().encode("utf-8")
+        if secret is not None
+        else secrets.token_bytes(MIN_SECRET_BYTES)
+    )
+    config = load_config(settings)
+    engine = create_engine(settings.db_url)
+    try:
+        await upgrade(engine)
+        root = settings.data_dir / "git"
+        wc = WorkingCopy(GitRunner(settings, root), root / "repo", settings.git_remote)
+        reader = ReleaseReader(wc, hashlib.sha256(settings.git_remote.encode()).hexdigest())
+        async with _open_semantic(settings) as (om, models, _s):
+            service = ReleaseService(
+                settings,
+                models,
+                om,
+                wc,
+                reader,
+                ReleaseRepository(engine),
+                PublicationRepository(engine),
+                ConfirmTokens(key, settings.confirm_ttl_seconds),
+                AuditRepository(engine),
+                config.models,
+            )
+            yield service, reader
+    finally:
+        await engine.dispose()
+
+
+_GIT_OFF = "Git publishing is off (LAKELOOM_GIT_REMOTE is not set)."
+
+
+@release_app.command("create")
+def release_create_cmd(
+    model: Annotated[str, typer.Argument(help="Model slug.")],
+    version: Annotated[
+        str | None, typer.Option("--version", help="Explicit MAJOR.MINOR.PATCH.")
+    ] = None,
+    bump: Annotated[
+        str | None, typer.Option("--bump", help="Override the computed bump: major|minor|patch.")
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="Release after printing the plan.")] = False,
+) -> None:
+    """Print the release plan (dry run); with --yes, commit, tag and push the release."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        from lakeloom.server.tools_release import plan_text, released_text
+
+        if bump is not None and bump not in ("major", "minor", "patch"):
+            raise LakeloomError(
+                "validation_error", f"unknown bump {bump!r}", "pass major, minor or patch"
+            )
+        chosen = bump
+        async with _open_releases(settings) as opened:
+            if opened is None:
+                typer.echo(_GIT_OFF)
+                return
+            service, _reader = opened
+            actor = _actor()
+            plan = await service.plan(actor, model, version=version, bump=chosen)
+            typer.echo(plan_text(plan), nl=False)
+            if not yes:
+                typer.echo("\nDry run: nothing was changed. Re-run with --yes to release.")
+                return
+            out = await service.create(
+                actor,
+                model,
+                version=version,
+                bump=chosen,
+                confirm_token=plan.confirm_token,
+                client=CLI_CLIENT,
+            )
+            typer.echo("")
+            typer.echo(released_text(out), nl=False)
+
+    _run(_go())
+
+
+@release_app.command("list")
+def release_list_cmd(model: Annotated[str, typer.Argument(help="Model slug.")]) -> None:
+    """List the released versions of a model, highest first."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        async with _open_releases(settings) as opened:
+            if opened is None:
+                typer.echo(_GIT_OFF)
+                return
+            _service, reader = opened
+            releases = await reader.list(model)
+            if not releases:
+                typer.echo(f"No releases of {single_line(model)}.")
+                return
+            typer.echo("version\ttag\tcommit\treleased_at")
+            for r in releases:
+                typer.echo(f"{r.version}\t{r.tag}\t{r.commit_sha[:7]}\t{r.released_at.isoformat()}")
 
     _run(_go())
 

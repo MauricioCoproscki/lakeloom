@@ -28,6 +28,7 @@ from lakeloom.telemetry import record_tool_call, start_span
 __all__ = [
     "ADMIN_SCOPE",
     "PROPOSE_SCOPE",
+    "PUBLISH_SCOPE",
     "READ_SCOPE",
     "REVIEW_SCOPE",
     "client_name",
@@ -40,6 +41,7 @@ __all__ = [
 READ_SCOPE = "lakeloom:read"
 PROPOSE_SCOPE = "lakeloom:propose"
 REVIEW_SCOPE = "lakeloom:review"
+PUBLISH_SCOPE = "lakeloom:publish"
 ADMIN_SCOPE = "lakeloom:admin"
 
 _log = logging.getLogger("lakeloom.mcp")
