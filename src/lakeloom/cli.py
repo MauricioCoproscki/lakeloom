@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from lakeloom.core.releases import ReleaseService
     from lakeloom.gitstore.publisher import GitPublisher
     from lakeloom.gitstore.release_reader import ReleaseReader
+    from lakeloom.gitstore.repo import WorkingCopy
     from lakeloom.om.client import OMClient
     from lakeloom.sources.base import LakeSource
     from lakeloom.state.publications import PublicationRepository
@@ -734,6 +735,17 @@ release_app = typer.Typer(name="release", help="Release commands.", no_args_is_h
 app.add_typer(release_app)
 
 
+def _cli_working_copy(settings: Settings) -> "WorkingCopy":
+    """The CLI's own clone (``data_dir/git/cli-repo``): the repository lock serialises only
+    one process, so a CLI release next to a running server must not share the server's
+    working copy. Remote updates still serialise: a rejected push re-renders on the new tip."""
+    from lakeloom.gitstore.git import GitRunner
+    from lakeloom.gitstore.repo import WorkingCopy
+
+    root = settings.data_dir / "git"
+    return WorkingCopy(GitRunner(settings, root), root / "cli-repo", settings.git_remote or "")
+
+
 @asynccontextmanager
 async def _open_releases(
     settings: Settings,
@@ -745,9 +757,7 @@ async def _open_releases(
 
     from lakeloom.core.confirm import MIN_SECRET_BYTES, ConfirmTokens
     from lakeloom.core.releases import ReleaseService
-    from lakeloom.gitstore.git import GitRunner
     from lakeloom.gitstore.release_reader import ReleaseReader
-    from lakeloom.gitstore.repo import WorkingCopy
     from lakeloom.server.http_app import load_config
     from lakeloom.state.audit import AuditRepository
     from lakeloom.state.db import create_engine, upgrade
@@ -768,8 +778,7 @@ async def _open_releases(
     engine = create_engine(settings.db_url)
     try:
         await upgrade(engine)
-        root = settings.data_dir / "git"
-        wc = WorkingCopy(GitRunner(settings, root), root / "repo", settings.git_remote)
+        wc = _cli_working_copy(settings)
         reader = ReleaseReader(wc, hashlib.sha256(settings.git_remote.encode()).hexdigest())
         async with _open_semantic(settings) as (om, models, _s):
             service = ReleaseService(

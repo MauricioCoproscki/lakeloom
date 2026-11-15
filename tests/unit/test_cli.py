@@ -644,3 +644,23 @@ def test_sink_retry_cli_requeues_failed(monkeypatch: pytest.MonkeyPatch, tmp_pat
     after = asyncio.run(counts())
     assert (after["failed"], after["pending"], after["done"]) == (0, 2, 1)
     assert "ts:3030" not in out.output and str(tmp_path) not in out.output
+
+
+def test_cli_releases_use_their_own_working_copy(tmp_path: Path) -> None:
+    """The repository lock is per process: the CLI must never share the server's clone."""
+    from lakeloom.cli import _cli_working_copy
+    from lakeloom.config import Settings
+    from lakeloom.gitstore.wiring import build_publisher
+    from lakeloom.state.db import create_engine
+    from lakeloom.state.publications import PublicationRepository
+
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, data_dir=tmp_path, git_remote="file:///tmp/remote.git", git_mode="direct"
+    )
+    server = build_publisher(
+        settings, PublicationRepository(create_engine("sqlite+aiosqlite://")), None
+    )
+    assert server.working_copy is not None
+    cli = _cli_working_copy(settings)
+    assert cli.path == tmp_path / "git" / "cli-repo"
+    assert cli.path != server.working_copy.path
