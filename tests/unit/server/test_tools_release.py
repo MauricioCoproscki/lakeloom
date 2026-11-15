@@ -181,6 +181,9 @@ async def test_list_and_diff_releases(make_deps: DepsFactory, kit: AuthKit, tmp_
         latest = await s.call_tool("diff_releases", {"model": "retail", "from_version": "1.1.0"})
         bad = await s.call_tool("diff_releases", {"model": "retail", "from_version": "1.0"})
         unknown = await s.call_tool("diff_releases", {"model": "retail", "from_version": "3.0.0"})
+        from_latest = await s.call_tool(
+            "diff_releases", {"model": "retail", "from_version": "latest"}
+        )
 
     releases = structured(listed)["releases"]
     assert structured(listed)["model"] == "retail"
@@ -203,3 +206,5 @@ async def test_list_and_diff_releases(make_deps: DepsFactory, kit: AuthKit, tmp_
     assert {t["label"] for t in to_latest["removed"]} == {"Invoice"}  # not in the OM state
     assert structured(bad)["error"]["code"] == "validation_error"
     assert structured(unknown)["error"]["code"] == "not_found"
+    err = structured(from_latest)["error"]
+    assert err["code"] == "validation_error" and "from_version" in err["message"]

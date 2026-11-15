@@ -228,6 +228,13 @@ def register_release_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ] = "latest",
     ) -> Annotated[CallToolResult, ReleaseDiff]:
         async def body(_: Principal) -> CallToolResult:
+            if from_version == "latest":
+                raise LakeloomError(
+                    "validation_error",
+                    "from_version must be a release, not latest",
+                    "pass the older release as from_version (see list_releases); "
+                    "to_version defaults to latest",
+                )
             _check_version(from_version)
             _check_version(to_version)
             reader = _reader(deps)
