@@ -46,8 +46,10 @@ deliberately deferred. Triage when planning M4. Decisions, live research and kno
   `origin="scan"`.
 
 ## Drift
-- A proposal that spans several sources records a single scan id in its provenance.
-  (Final review should weigh this.)
+- A proposal that spans several sources records a single scan id in its provenance
+  (weighed in the final review: warned, accepted for M3c).
+- When two removed tables are bound to the same concept, each queues the full removal set
+  (concept, axiom, relations), so the draft can hold duplicate removal operations.
 - `applied_scan_ids` orders scans by proposal id, not by scan age.
 - A table dropped from a one-table schema is reported as removed on every run.
 - A schema filter that matches nothing turns every baseline table into a removal, without a
