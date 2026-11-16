@@ -521,3 +521,12 @@ async def test_table_moved_between_baseline_schemas_keeps_its_concept() -> None:
     (call,) = env.proposals.calls
     assert [op_key(op) for op in call["operations"]] == ["attr:Order.total"]
     assert env.om.term_reads == []  # no RemoveConcept, so no version read
+
+
+def test_scan_id_is_none_without_a_fresh_scan() -> None:
+    """No fresh scan record: the provenance holds no scan id (``None``), never ``""``."""
+    from lakeloom.core.drift_service import _Baseline, _Fresh  # pyright: ignore[reportPrivateUsage]
+
+    warnings: list[str] = []
+    assert DriftService._scan_id(_Fresh(), _Baseline(), [], warnings) is None  # pyright: ignore[reportPrivateUsage]
+    assert warnings == []

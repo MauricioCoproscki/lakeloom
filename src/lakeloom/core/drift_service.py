@@ -198,7 +198,11 @@ class DriftService:
     async def _plan(
         self, principal: Caller, client: str | None, model: str, include_new_tables: bool
     ) -> tuple[
-        DriftReport, list[ProposalOperation], list[TableProvenance], list[ProposalMatch], str
+        DriftReport,
+        list[ProposalOperation],
+        list[TableProvenance],
+        list[ProposalMatch],
+        str | None,
     ]:
         scan_ids = await self._repo.applied_scan_ids(model)
         if not scan_ids:
@@ -569,11 +573,14 @@ class DriftService:
         return kept
 
     @staticmethod
-    def _scan_id(fresh: _Fresh, base: _Baseline, used: Sequence[str], warnings: list[str]) -> str:
-        """The new scan the proposal records: that of the source of its tables. Provenance
-        holds one scan id; drift over several sources names the others in a warning."""
+    def _scan_id(
+        fresh: _Fresh, base: _Baseline, used: Sequence[str], warnings: list[str]
+    ) -> str | None:
+        """The new scan the proposal records: that of the source of its tables (``None``
+        without a fresh scan). Provenance holds one scan id; drift over several sources names
+        the others in a warning."""
         if not fresh.records:
-            return ""
+            return None
         sources = Counter(fresh.source_of.get(t) or base.source_of.get(t) for t in used)
         ids = {r.source: r.id for r in fresh.records}
         chosen = next(
