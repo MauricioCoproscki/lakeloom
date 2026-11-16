@@ -2,7 +2,7 @@
 # into the lakeloom service at /etc/lakeloom/sources.yaml (LAKELOOM_CONFIG_FILE). Agents can
 # only name these sources; they can never add one or pass a URL.
 #
-# All three expose the same fixture lake (tests/fixtures/lake, mounted at /lake):
+# The first three expose the same fixture lake (tests/fixtures/lake, mounted at /lake):
 # catalog `retail`, schema `sales`, tables customers/products/orders/invoices, registered in
 # OpenMetadata under the database service `lakeloom_fixture` by the om-seed one-shot.
 sources:
@@ -38,6 +38,15 @@ sources:
     token_file: /secrets/om_bot_token
     mapping: /etc/lakeloom/mappings/openmetadata.yaml
     om_service: lakeloom_fixture
+
+  # A scratch Delta table for the M3c drift contract test (FR-PRO-07). The directory
+  # .scratch-lake/ at the repository root (git-ignored, mounted read-only at /scratch-lake) is
+  # written only by tests/contract/test_m3c_acceptance.py, which copies the fixture `orders`
+  # table there, appends a column and empties the directory afterwards. Not in OpenMetadata.
+  - type: delta
+    name: fixture_scratch
+    tables:
+      - {uri: "file:///scratch-lake/orders_drift", catalog: retail, schema: drift}
 
 # Per-model policy (core/model_policy.py). The M2c contract test publishes its throwaway
 # model `retail_m2c_pr` through a pull request instead of the stack's default direct push

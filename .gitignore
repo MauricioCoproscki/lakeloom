@@ -16,3 +16,4 @@ build/
 .hypothesis/
 .coverage
 htmlcov/
+.scratch-lake/

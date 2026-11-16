@@ -583,7 +583,8 @@ services:
       LAKELOOM_FORGE_API_URL: http://gitea:3000/api/v1
       # Development only: role + database from lakeloom-db-init.sql.
       LAKELOOM_DB_URL: postgresql://lakeloom:lakeloom@postgresql:5432/lakeloom
-      # Operator-managed lake sources (fixture_delta, fixture_uc, openmetadata_mcp).
+      # Operator-managed lake sources (fixture_delta, fixture_uc, openmetadata_mcp,
+      # fixture_scratch).
       LAKELOOM_CONFIG_FILE: /etc/lakeloom/sources.yaml
     volumes:
       - lakeloom-data:/data
@@ -591,6 +592,10 @@ services:
       - ../../tests/fixtures/lake:/lake:ro
       - ./lakeloom-sources.yaml:/etc/lakeloom/sources.yaml:ro
       - ../../examples/mcp-mappings:/etc/lakeloom/mappings:ro
+      # Scratch lake of the M3c drift contract test (source fixture_scratch): the host test
+      # writes .scratch-lake/orders_drift and empties it afterwards. Create the directory
+      # first (`mkdir -p .scratch-lake`), or Docker creates it owned by root.
+      - ../../.scratch-lake:/scratch-lake:ro
     depends_on:
       postgresql:
         condition: service_healthy

@@ -44,15 +44,16 @@ async def test_m1_acceptance_scan_returns_all_tables_with_versions(
     assert data["scan_id"] in data["summary"]
 
 
-async def test_list_sources_reports_three_available(lakeloom_url: str, agent_token: str) -> None:
+async def test_list_sources_reports_all_available(lakeloom_url: str, agent_token: str) -> None:
     data = await _call(lakeloom_url, agent_token, "list_sources", {})
 
     by_name = {s["name"]: s for s in data["sources"]}
-    assert set(by_name) == {"fixture_delta", "fixture_uc", "openmetadata_mcp"}
+    # fixture_scratch: the M3c drift test's scratch table (empty outside that test)
     assert {n: s["kind"] for n, s in by_name.items()} == {
         "fixture_delta": "delta",
         "fixture_uc": "unity_catalog",
         "openmetadata_mcp": "mcp",
+        "fixture_scratch": "delta",
     }
     for name, status in by_name.items():
         assert status["available"] is True, (name, status["error"])

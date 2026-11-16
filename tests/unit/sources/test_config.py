@@ -110,7 +110,7 @@ def test_fr_src_01_compose_sources_config_is_valid() -> None:
     config = load_sources_config(repo / "deploy/compose/lakeloom-sources.yaml")
 
     by_name = {s.name: s for s in config.sources}
-    assert list(by_name) == ["fixture_delta", "fixture_uc", "openmetadata_mcp"]
+    assert list(by_name) == ["fixture_delta", "fixture_uc", "openmetadata_mcp", "fixture_scratch"]
     delta = by_name["fixture_delta"]
     assert isinstance(delta, DeltaSourceConfig)
     assert [t.uri for t in delta.tables] == [
@@ -126,3 +126,8 @@ def test_fr_src_01_compose_sources_config_is_valid() -> None:
     assert om.token_file == Path("/secrets/om_bot_token")
     assert (repo / "examples/mcp-mappings" / om.mapping.name).is_file()
     assert {delta.om_service, uc.om_service, om.om_service} == {"lakeloom_fixture"}
+    scratch = by_name["fixture_scratch"]  # the M3c drift test's table, not in OM
+    assert isinstance(scratch, DeltaSourceConfig) and scratch.om_service is None
+    assert [(t.uri, t.catalog, t.schema_) for t in scratch.tables] == [
+        ("file:///scratch-lake/orders_drift", "retail", "drift")
+    ]
