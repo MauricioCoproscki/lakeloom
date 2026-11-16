@@ -397,3 +397,22 @@ def test_values_the_operations_reject_are_counted_not_raised(body: str, warning:
     import_operations(
         empty, incoming, mode="merge", versions={}, axiom_names={}, rule_id="R-IMPORT"
     )
+
+
+@pytest.mark.parametrize("mode", ["merge", "replace"])
+def test_mapping_iris_normalised_like_anyurl(mode: str) -> None:
+    """A model holding ``https://schema.org/`` and a file holding ``https://schema.org`` are
+    the same mapping: nothing to import in merge mode, nothing removed in replace mode."""
+    model = ttl("ex:A a owl:Class ; skos:exactMatch <https://schema.org/> .")
+    upload = ttl("ex:A a owl:Class ; skos:exactMatch <https://schema.org> .")
+    current, incoming = extract_terms(model, EX), extract_terms(upload, EX)
+    assert incoming.mappings == {MappingTerm("A", "exactMatch", "https://schema.org/")}
+    result = import_operations(
+        current,
+        incoming,
+        mode=mode,  # type: ignore[arg-type]
+        versions={"A": 0.1},
+        axiom_names={},
+        rule_id="R-IMPORT",
+    )
+    assert result.operations == []

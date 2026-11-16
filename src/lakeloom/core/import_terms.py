@@ -430,10 +430,10 @@ class _Reader:
             self.use(s, p, o)
         elif p in _MATCHES and isinstance(o, URIRef):
             try:
-                _URL.validate_python(str(o))
+                target = str(_URL.validate_python(str(o)))  # as AddMapping normalises it
             except ValidationError:
                 return
-            self.mappings.add(MappingTerm(name, _MATCHES[p], str(o)))
+            self.mappings.add(MappingTerm(name, _MATCHES[p], target))
             self.use(s, p, o)
         elif p == RDFS.subClassOf:
             self.use(s, p, o)
