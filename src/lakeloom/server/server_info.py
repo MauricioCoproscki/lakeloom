@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 import lakeloom
 from lakeloom.core.obo import OboMode
 from lakeloom.core.sources import SourceStatus, source_status
+from lakeloom.core.sparql import sparql_available
 from lakeloom.om.models import OMCapabilities
 from lakeloom.server.auth import Principal, PrincipalType
 from lakeloom.server.http_app import AppDeps
@@ -37,11 +38,13 @@ class ServerInfo(BaseModel):
     openmetadata: OMCapabilities = Field(description="OpenMetadata version and RDF status.")
     features: dict[str, bool] = Field(
         description=(
-            "Optional features (triplestore, stdio, token_exchange, releases, import, drift) as "
-            "configuration flags, not live capabilities: a flag can be on before the feature "
-            "ships. `releases` is on with Git publishing (create_release, list_releases, "
-            "?version= reads); `import` (import_model, and import_from_git with Git "
-            "publishing) and `drift` (detect_drift) are always on."
+            "Optional features (triplestore, stdio, token_exchange, releases, import, drift, "
+            "sparql) as configuration flags, not live capabilities: a flag can be on before "
+            "the feature ships. `releases` is on with Git publishing (create_release, "
+            "list_releases, ?version= reads); `import` (import_model, and import_from_git "
+            "with Git publishing) and `drift` (detect_drift) are always on. `sparql` "
+            "(sparql_query, POST /v1/models/{slug}/sparql) is on with OpenMetadata 2.1 or "
+            "later, and off once OpenMetadata answered 404 for its glossary SPARQL endpoint."
         )
     )
     git: dict[str, Any] | None = Field(
@@ -82,10 +85,15 @@ async def build_server_info(deps: AppDeps, principal: Principal | None) -> Serve
             scopes=sorted(principal.scopes),
         )
     )
+    capabilities = await deps.om.get_capabilities()
+    # SPARQL (FR-PUB-03): from the detected OM version, then off for good once a real query
+    # met a 404 for the endpoint itself (SparqlService.endpoint_missing, cached there). No
+    # probe query is sent: a 404 for a made-up glossary would not tell the two apart.
+    sparql = sparql_available(capabilities.version) and not deps.sparql_service.endpoint_missing
     return ServerInfo(
         version=lakeloom.__version__,
         environment=settings.env,
-        openmetadata=await deps.om.get_capabilities(),
+        openmetadata=capabilities,
         features={
             "triplestore": settings.triplestore_enabled,
             "stdio": bool(settings.stdio_enabled),
@@ -93,6 +101,7 @@ async def build_server_info(deps: AppDeps, principal: Principal | None) -> Serve
             "releases": deps.release_service is not None,
             "import": True,
             "drift": True,
+            "sparql": sparql,
         },
         git=await _git_status(deps),
         triplestore=await deps.sink_worker.status() if deps.sink_worker is not None else None,

@@ -550,3 +550,92 @@ def test_latest_links_om_and_last_publication(
         f'<{WEB}/commit/{"c" * 40}>; rel="related"; title="last Git publication"'
     )
     assert listing[0]["links"][1] == {"href": f"{WEB}/commit/{'c' * 40}", "rel": "related"}
+
+
+# --- POST /v1/models/{slug}/sparql (FR-PUB-03) -------------------------------------------
+
+
+@pytest.fixture
+def sparql_calls(deps: Any) -> list[Any]:
+    from lakeloom.core.sparql import MEDIA, SparqlService
+
+    calls: list[Any] = []
+
+    async def glossary_sparql(gid: str, query: str, fmt: str, **kw: Any) -> tuple[bytes, str]:
+        calls.append((gid, query, fmt))
+        return f"result as {fmt}".encode(), MEDIA[fmt]  # type: ignore[index]
+
+    deps.om.glossary_sparql = glossary_sparql
+    deps.sparql_service = SparqlService(deps.settings, deps.models, deps.om)
+    return calls
+
+
+SELECT = "SELECT ?s WHERE { ?s ?p ?o } LIMIT 3"
+
+
+def test_http_sparql_bodies_and_accept(
+    client: TestClient, auth: dict[str, str], sparql_calls: list[Any]
+) -> None:
+    url = "/v1/models/retail/sparql"
+    raw = client.post(url, content=SELECT,
+                      headers={**auth, "Content-Type": "application/sparql-query"})  # fmt: skip
+    form = client.post(url, data={"query": SELECT},
+                       headers={**auth, "Accept": "text/csv"})  # fmt: skip
+    js = client.post(url, json={"query": "CONSTRUCT WHERE { ?s ?p ?o }"},
+                     headers={**auth, "Accept": "*/*"})  # fmt: skip
+    nt = client.post(url, json={"query": "DESCRIBE <http://x/a>"},
+                     headers={**auth, "Accept": "application/n-triples"})  # fmt: skip
+    png = client.post(url, json={"query": SELECT}, headers={**auth, "Accept": "image/png"})
+    wrong_form = client.post(url, json={"query": SELECT},
+                             headers={**auth, "Accept": "text/turtle"})  # fmt: skip
+    update = client.post(url, json={"query": "DROP ALL"}, headers=auth)
+    service = client.post(url, json={"query": "SELECT * { SERVICE <http://e> { ?s ?p ?o } }"},
+                          headers=auth)  # fmt: skip
+    no_query = client.post(url, json={"q": SELECT}, headers=auth)
+    xml_body = client.post(url, content="<q/>", headers={**auth, "Content-Type": "text/xml"})
+    unknown = client.post("/v1/models/nope/sparql", json={"query": SELECT}, headers=auth)
+
+    assert raw.status_code == 200, raw.text
+    assert raw.headers["content-type"].split(";")[0] == "application/sparql-results+json"
+    assert raw.headers["cache-control"] == "no-store"
+    assert "etag" not in raw.headers
+    assert raw.content == b"result as json"
+    assert form.status_code == 200 and form.headers["content-type"].startswith("text/csv")
+    assert form.content == b"result as csv"
+    assert js.status_code == 200 and js.headers["content-type"].startswith("text/turtle")
+    assert nt.status_code == 200
+    assert nt.headers["content-type"].split(";")[0] == "application/n-triples"
+    assert png.status_code == 406 and png.json()["error"]["code"] == "validation_error"
+    assert wrong_form.status_code == 406
+    assert update.status_code == 403 and update.json()["error"]["code"] == "forbidden"
+    assert service.status_code == 403
+    assert service.json()["error"]["message"] == "SERVICE is not allowed"
+    assert no_query.status_code == 400
+    assert xml_body.status_code == 415
+    assert xml_body.json()["error"]["code"] == "validation_error"
+    assert unknown.status_code == 404
+    assert [c[2] for c in sparql_calls] == ["json", "csv", "turtle", "ntriples"]
+    assert {c[0] for c in sparql_calls} == {"id-retail"}
+
+
+def test_http_sparql_requires_read_scope(
+    client: TestClient, kit: AuthKit, sparql_calls: list[Any]
+) -> None:
+    headers = {"Authorization": f"Bearer {kit.token(scope='openid')}"}
+    r = client.post("/v1/models/retail/sparql", json={"query": SELECT}, headers=headers)
+    anonymous = client.post("/v1/models/retail/sparql", json={"query": SELECT})
+
+    assert r.status_code == 403 and r.json()["error"]["code"] == "forbidden"
+    assert anonymous.status_code == 401
+    assert sparql_calls == []
+
+
+def test_openapi_lists_sparql_route(client: TestClient, auth: dict[str, str]) -> None:
+    op = client.get("/openapi.json", headers=auth).json()["paths"]["/v1/models/{slug}/sparql"]
+    post = op["post"]
+
+    assert set(post["requestBody"]["content"]) == {
+        "application/sparql-query", "application/x-www-form-urlencoded", "application/json",
+    }  # fmt: skip
+    assert "text/turtle" in post["responses"]["200"]["content"]
+    assert "406" in post["responses"]

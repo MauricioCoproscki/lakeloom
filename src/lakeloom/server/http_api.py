@@ -1,23 +1,33 @@
-"""Read-only publication API under ``/v1`` (FR-PUB-02, FR-PUB-07).
+"""Read-only publication API under ``/v1`` (FR-PUB-02, FR-PUB-03, FR-PUB-07).
 
-Every route is a ``GET`` that needs the ``lakeloom:read`` scope, negotiates the representation
-from ``Accept`` (a type the route does not offer gives ``406``), serves the artefact bytes
+Every route needs the ``lakeloom:read`` scope. The artefact routes are ``GET``s that
+negotiate the representation from ``Accept`` (a type the route does not offer gives ``406``),
+serve the artefact bytes
 unmodified with ``ETag``, ``Last-Modified``, ``Link``, ``Vary: Accept`` and ``Cache-Control``,
-and answers ``304`` to a matching ``If-None-Match``. The model, its shapes and its context take
+and answer ``304`` to a matching ``If-None-Match``. The model, its shapes and its context take
 ``?version=`` (default ``latest``): a release is served from its Git tag (FR-PUB-02).
 Failures are typed JSON (``{"error": {"code", "message", "hint"}}``), never HTML or a stack
 trace.
+
+``POST /v1/models/{slug}/sparql`` (FR-PUB-03) runs a guarded read-only SPARQL query over the
+model's glossary (:mod:`lakeloom.core.sparql`). The query comes as ``application/sparql-query``,
+a form ``query=`` or JSON ``{"query": ...}``; ``Accept`` picks the result format among those
+the query's form allows (406 otherwise) and the answer is OpenMetadata's bytes with
+``Cache-Control: no-store`` and no validators.
 """
 
+import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from email.utils import format_datetime
 from typing import TYPE_CHECKING, Annotated, Any, Final, cast
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from lakeloom.core.sparql import FORMATS, MEDIA, ResultFormat, check_query
 from lakeloom.errors import ErrorCode, LakeloomError
 from lakeloom.publish.artifacts import (
     Artifact,
@@ -71,6 +81,13 @@ ASSET_TYPES: Final[tuple[MediaType, ...]] = (
     "application/ld+json",
 )
 JSON_TYPES: Final[tuple[MediaType, ...]] = ("application/json",)
+SPARQL_BODIES: Final = (
+    "application/sparql-query",
+    "application/x-www-form-urlencoded",
+    "application/json",
+)
+SPARQL_TYPES: Final[tuple[str, ...]] = tuple(MEDIA.values())
+_FORMAT_BY_SPARQL_MEDIA: Final[dict[str, ResultFormat]] = {m: f for f, m in MEDIA.items()}
 CONTEXT_TYPES: Final[tuple[MediaType, ...]] = ("application/ld+json", "application/json")
 
 _log = logging.getLogger("lakeloom.http")
@@ -100,6 +117,25 @@ async def request_validation_handler(_: Request, exc: Exception) -> Response:
         "validation_error",
         f"invalid parameter {where}" if where else "invalid request",
         "max_tokens must be an integer >= 1; limit an integer from 1 to 200",
+    )
+
+
+def _not_acceptable(offered: Sequence[str]) -> Response:
+    return error_response(
+        "validation_error", "not acceptable", "supported: " + ", ".join(offered), status=406
+    )
+
+
+def _internal_error() -> Response:
+    return JSONResponse(
+        {
+            "error": {
+                "code": "upstream_unavailable",
+                "message": "internal error",
+                "hint": "check the server logs",
+            }
+        },
+        status_code=500,
     )
 
 
@@ -192,6 +228,92 @@ _ERROR: Final[dict[str, Any]] = {
 }
 
 
+def _sparql_query_text(content_type: str, body: bytes, max_chars: int) -> str:
+    """The query from one of the three request body forms (FR-PUB-03)."""
+    if len(body) > max_chars * 4 + 1024:  # UTF-8 is at most 4 bytes a character
+        raise LakeloomError(
+            "validation_error",
+            f"query is over the {max_chars} character limit",
+            "shorten the query (LAKELOOM_SPARQL_MAX_QUERY_CHARS)",
+        )
+    try:
+        raw = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise LakeloomError("validation_error", "body is not UTF-8", "send UTF-8") from None
+    media = content_type.split(";", 1)[0].strip().lower()
+    query: object = None
+    if media == "application/sparql-query":
+        query = raw
+    elif media == "application/x-www-form-urlencoded":
+        values = parse_qs(raw, keep_blank_values=True).get("query")
+        query = values[0] if values and len(values) == 1 else None
+    elif media == "application/json":
+        try:
+            payload: object = json.loads(raw)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            query = cast(dict[str, object], payload).get("query")
+    else:
+        raise _UnsupportedBody
+    if not isinstance(query, str) or not query.strip():
+        raise LakeloomError(
+            "validation_error",
+            "no query in the request body",
+            "send the query as the body (application/sparql-query), as query= in a form, "
+            'or as JSON {"query": "..."}',
+        )
+    return query
+
+
+class _UnsupportedBody(Exception):
+    """The request body's content type is none of :data:`SPARQL_BODIES` (415)."""
+
+
+def _sparql_responses() -> dict[int | str, Any]:
+    error = {"description": "Typed error", "content": {"application/json": {"schema": _ERROR}}}
+    return {
+        200: {
+            "description": "OpenMetadata's result: SELECT/ASK as SPARQL JSON (default), XML, "
+            "CSV or TSV; CONSTRUCT/DESCRIBE as Turtle (default), JSON-LD, N-Triples or "
+            "RDF/XML. Not cached (Cache-Control: no-store).",
+            "content": {m: {} for m in SPARQL_TYPES},
+        },
+        400: error,
+        401: {"description": "Missing or invalid bearer token"},
+        403: error,
+        404: error,
+        406: error,
+        415: error,
+        500: error,
+        503: error,
+    }
+
+
+_SPARQL_REQUEST_BODY: Final[dict[str, Any]] = {
+    "required": True,
+    "description": "A read-only SPARQL query (SELECT, ASK, CONSTRUCT or DESCRIBE; no "
+    "updates, no SERVICE).",
+    "content": {
+        "application/sparql-query": {"schema": {"type": "string"}},
+        "application/x-www-form-urlencoded": {
+            "schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            }
+        },
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            }
+        },
+    },
+}
+
+
 def create_router(deps: "AppDeps") -> APIRouter:
     """The ``/v1`` router; dependencies are read per request (tests swap them)."""
     router = APIRouter(prefix="/v1", tags=["publication"], dependencies=[Depends(_require_read)])
@@ -204,28 +326,14 @@ def create_router(deps: "AppDeps") -> APIRouter:
         accept = ", ".join(request.headers.getlist("accept")) or None
         media = choose(accept, offered)
         if media is None:
-            return error_response(
-                "validation_error",
-                "not acceptable",
-                "supported: " + ", ".join(offered),
-                status=406,
-            )
+            return _not_acceptable(offered)
         try:
             artifact = await build(media)
         except LakeloomError as exc:
             return error_response(exc.code, exc.message, exc.hint)
         except Exception as exc:
             _log.error("http api request failed unexpectedly (%s)", type(exc).__name__)
-            return JSONResponse(
-                {
-                    "error": {
-                        "code": "upstream_unavailable",
-                        "message": "internal error",
-                        "hint": "check the server logs",
-                    }
-                },
-                status_code=500,
-            )
+            return _internal_error()
         return _respond(request, artifact)
 
     def model(slug: str, media: MediaType, version: str | None) -> Awaitable[Artifact]:
@@ -357,6 +465,54 @@ def create_router(deps: "AppDeps") -> APIRouter:
             )
 
         return await serve(request, ASSET_TYPES, build)
+
+    @router.post(
+        "/models/{slug}/sparql",
+        summary="Read-only SPARQL over the model's glossary (proxied to OpenMetadata)",
+        description="Only the glossary is in the dataset (concepts, labels, definitions, "
+        "broader/narrower, mappings, links): the model's attributes, object properties and "
+        "axioms are not. Updates and SERVICE are refused (403). `Accept` chooses the result "
+        "format among those of the query's form; `*/*` or none gives the form's default.",
+        response_class=Response,
+        responses=_sparql_responses(),
+        openapi_extra={"requestBody": _SPARQL_REQUEST_BODY},
+    )
+    async def sparql(request: Request, slug: str) -> Response:
+        settings = deps.settings
+        accept = ", ".join(request.headers.getlist("accept")) or None
+        if choose(accept, SPARQL_TYPES) is None:
+            return _not_acceptable(SPARQL_TYPES)
+        try:
+            try:
+                text = _sparql_query_text(
+                    request.headers.get("content-type", ""),
+                    await request.body(),
+                    settings.sparql_max_query_chars,
+                )
+            except _UnsupportedBody:
+                return error_response(
+                    "validation_error",
+                    "unsupported request body type",
+                    "supported: " + ", ".join(SPARQL_BODIES),
+                    status=415,
+                )
+            form = check_query(text, max_chars=settings.sparql_max_query_chars)
+            offered = tuple(MEDIA[f] for f in FORMATS[form])
+            media = choose(accept, offered)
+            if media is None:
+                return _not_acceptable(offered)
+            result = await deps.sparql_service.query(slug, text, _FORMAT_BY_SPARQL_MEDIA[media])
+        except LakeloomError as exc:
+            return error_response(exc.code, exc.message, exc.hint)
+        except Exception as exc:
+            _log.error("sparql request failed unexpectedly (%s)", type(exc).__name__)
+            return _internal_error()
+        headers = {
+            "Content-Type": _content_type(result.media_type),
+            "Cache-Control": "no-store",
+            "Vary": "Accept",
+        }
+        return Response(content=result.body, headers=headers)
 
     return router
 

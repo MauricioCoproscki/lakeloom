@@ -71,6 +71,12 @@ TABLE_FIELDS = (
     "tableConstraints",
 )
 ExportFormat = Literal["turtle", "rdfxml", "ntriples", "jsonld"]
+# ``SparqlQuery.format`` of the glossary SPARQL endpoint (ADR 0016 R3).
+SparqlFormat = Literal["json", "xml", "csv", "tsv", "turtle", "jsonld", "ntriples", "rdfxml"]
+# Margin added to OM's own query timeout for the HTTP read (FR-PUB-03).
+SPARQL_HTTP_MARGIN_SECONDS = 5.0
+# An error body is only read this far (OM's messages are short; the rest is never needed).
+_ERROR_BODY_MAX = 64 * 1024
 _EXPORT_MIME: dict[str, str] = {
     "turtle": "text/turtle",
     "rdfxml": "application/rdf+xml",
@@ -115,6 +121,14 @@ class OMError(Exception):
 
 class OMUnavailable(OMError):
     """OpenMetadata is down, too slow, or answered 5xx."""
+
+
+class OMResultTooLarge(OMError):
+    """A streamed result passed the caller's byte cap; reading stopped there (FR-PUB-03)."""
+
+    def __init__(self, message: str, status: int | None = None, *, limit: int) -> None:
+        super().__init__(message, status)
+        self.limit = limit
 
 
 class OMForbidden(OMError):
@@ -222,6 +236,8 @@ class OMClient:
         "get_permissions": ("GET", "/v1/permissions/{resource}/{id}"),
         "get_current_user": ("GET", "/v1/users/loggedInUser"),
         "patch_table": ("PATCH", "/v1/tables/{id}"),
+        # Read-only SPARQL over one glossary (M3c Task 7, FR-PUB-03; ADR 0016 R3)
+        "glossary_sparql": ("POST", "/v1/glossaries/{id}/sparql"),
     }
 
     def __init__(
@@ -263,6 +279,19 @@ class OMClient:
             span.set_status(Status(StatusCode.ERROR, status))
         record_om_request(name, status, time.perf_counter() - started)
 
+    def _target(
+        self, name: str, path_args: dict[str, str] | None, accept: str
+    ) -> tuple[str, str, dict[str, str]]:
+        """Method, URL and headers (with the bearer token) of the ``PATHS`` entry ``name``."""
+        method, path = self.PATHS[name]
+        if path_args:
+            # Every path segment is percent-encoded, including "/" (FQNs may hold quotes).
+            path = path.format(**{k: quote(v, safe="") for k, v in path_args.items()})
+        headers = {"Accept": accept}
+        if self._token is not None:
+            headers["Authorization"] = f"Bearer {self._token.get_secret_value()}"
+        return method, f"{self._base_url}{API_PREFIX}{path}", headers
+
     async def _request(
         self,
         name: str,
@@ -273,20 +302,13 @@ class OMClient:
         json: object | None = None,
         content_type: str | None = None,
     ) -> httpx.Response:
-        method, path = self.PATHS[name]
-        if path_args:
-            # Every path segment is percent-encoded, including "/" (FQNs may hold quotes).
-            path = path.format(**{k: quote(v, safe="") for k, v in path_args.items()})
-        headers = {"Accept": accept}
+        method, url, headers = self._target(name, path_args, accept)
         content: bytes | None = None
         if content_type is not None:
             # httpx's json= always sends application/json; JSON Patch needs its own type.
             headers["Content-Type"] = content_type
             content = jsonlib.dumps(json).encode()
             json = None
-        if self._token is not None:
-            headers["Authorization"] = f"Bearer {self._token.get_secret_value()}"
-        url = f"{self._base_url}{API_PREFIX}{path}"
         started = time.perf_counter()
         # Span attributes: the operation name and status only, never the URL or headers.
         with start_span(
@@ -315,6 +337,81 @@ class OMClient:
                 self.session_rejected = True
             raise _client_error(response)
         return response
+
+    async def glossary_sparql(
+        self,
+        glossary_id: str,
+        query: str,
+        fmt: SparqlFormat,
+        *,
+        timeout: float,  # noqa: ASYNC109 - OM's query timeout, sent in the body
+        max_bytes: int,
+    ) -> tuple[bytes, str]:
+        """Run a read-only SPARQL query over one glossary; ``(body, content type)``.
+
+        ``timeout`` (seconds) is sent as OM's ``timeout`` in milliseconds (OM accepts
+        1-30000) and, plus :data:`SPARQL_HTTP_MARGIN_SECONDS`, bounds the HTTP exchange; an
+        expired OM query is HTTP 500, so :class:`OMUnavailable`. The body is streamed and
+        reading stops past ``max_bytes`` (:class:`OMResultTooLarge`). The query text is the
+        caller's: it is sent, never logged or put in a span (FR-PUB-03, NFR-SEC-11). The
+        caller has guarded it (updates and ``SERVICE`` refused, lakeloom.core.sparql).
+        """
+        name = "glossary_sparql"
+        method, url, headers = self._target(name, {"id": glossary_id}, "*/*")
+        payload = {"query": query, "format": fmt, "timeout": int(timeout * 1000)}
+        limit = httpx.Timeout(timeout + SPARQL_HTTP_MARGIN_SECONDS)
+        started = time.perf_counter()
+        body = b""
+        content_type = ""
+        status = 0
+        too_large = False
+        error_response: httpx.Response | None = None
+        with start_span(
+            f"om.{name}", attributes={"lakeloom.om.operation": name, "http.method": method}
+        ) as span:
+            try:
+                with OM_REQUEST_SECONDS.labels(operation=name).time():
+                    async with self._http.stream(
+                        method, url, headers=headers, json=payload, timeout=limit
+                    ) as response:
+                        status = response.status_code
+                        cap = _ERROR_BODY_MAX if status >= 400 else max_bytes
+                        chunks: list[bytes] = []
+                        size = 0
+                        async for chunk in response.aiter_bytes():
+                            size += len(chunk)
+                            if size > cap:
+                                too_large = status < 400
+                                break
+                            chunks.append(chunk)
+                        body = b"".join(chunks)
+                        content_type = response.headers.get("content-type", "")
+                        if status >= 400:
+                            error_response = httpx.Response(
+                                status, headers=response.headers, content=body
+                            )
+            except httpx.TimeoutException as exc:
+                self._observe(span, name, "error", started)
+                raise OMUnavailable(f"OpenMetadata timed out ({type(exc).__name__})") from None
+            except httpx.TransportError as exc:
+                self._observe(span, name, "error", started)
+                raise OMUnavailable(
+                    f"cannot connect to OpenMetadata ({type(exc).__name__})"
+                ) from None
+            span.set_attribute("http.status_code", status)
+            self._observe(span, name, str(status), started, ok=status < 500)
+        if status >= 500:
+            raise OMUnavailable(f"OpenMetadata returned HTTP {status}", status)
+        if error_response is not None:
+            if status == 401:
+                self.session_rejected = True
+            raise _client_error(error_response)
+        if too_large:
+            raise OMResultTooLarge(
+                f"OpenMetadata's SPARQL result is larger than {max_bytes} bytes", status,
+                limit=max_bytes,
+            )  # fmt: skip
+        return body, content_type
 
     async def get_version(self) -> OMVersion:
         return OMVersion.model_validate(_json(await self._request("get_version")))

@@ -61,7 +61,7 @@ def _specificity(rng: str, media: str) -> int:
     return 0
 
 
-def choose(accept: str | None, offered: Sequence[MediaType]) -> MediaType | None:
+def choose[M: str](accept: str | None, offered: Sequence[M]) -> M | None:
     """The offered media type with the highest q.
 
     Ties go to the more specific range, then to the order of ``offered``.
@@ -75,7 +75,7 @@ def choose(accept: str | None, offered: Sequence[MediaType]) -> MediaType | None
     ranges = _parse(accept) if accept and accept.strip() else None
     if ranges is None:
         return offered[0]
-    best: MediaType | None = None
+    best: M | None = None
     best_key: tuple[float, int, int] | None = None
     for index, media in enumerate(offered):
         matches = [(_specificity(r, media), q) for r, q in ranges if _specificity(r, media)]

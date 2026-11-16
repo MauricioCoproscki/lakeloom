@@ -793,3 +793,47 @@ def test_cli_drift(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         {"client": "lakeloom-cli", "model": "shop", "include_new_tables": True},
         {"client": "lakeloom-cli", "model": "shop", "include_new_tables": False},
     ]
+
+
+def test_cli_sparql(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    from lakeloom.core.sparql import SparqlResult
+    from lakeloom.errors import LakeloomError
+
+    calls: list[tuple[str, str, Any]] = []
+
+    class FakeSparql:
+        async def query(self, model: str, text: str, fmt: Any) -> SparqlResult:
+            calls.append((model, text, fmt))
+            if "DROP" in text:
+                raise LakeloomError("forbidden", "SPARQL updates are not allowed", "read only")
+            return SparqlResult(form="select", format=fmt or "json",
+                                media_type="text/csv", body=b"s\r\nhttp://x/a\r\n")  # fmt: skip
+
+    @asynccontextmanager
+    async def opened(_settings: Any) -> AsyncIterator[Any]:
+        yield FakeSparql()
+
+    _sources_env(monkeypatch, tmp_path)
+    monkeypatch.setattr("lakeloom.cli._open_sparql", opened)
+    query_file = tmp_path / "q.rq"
+    query_file.write_text("SELECT ?s { ?s ?p ?o }")
+    runner = CliRunner()
+
+    from_file = runner.invoke(app, ["sparql", "shop", str(query_file), "--format", "csv"])
+    from_stdin = runner.invoke(app, ["sparql", "shop", "-"], input="ASK {}")
+    update = runner.invoke(app, ["sparql", "shop", "-"], input="DROP ALL")
+    missing = runner.invoke(app, ["sparql", "shop", str(tmp_path / "nope.rq")])
+
+    assert from_file.exit_code == 0, from_file.output
+    assert from_file.stdout_bytes == b"s\r\nhttp://x/a\r\n"
+    assert from_stdin.exit_code == 0, from_stdin.output
+    assert update.exit_code == 1 and "forbidden" in update.output
+    assert missing.exit_code == 1
+    assert calls == [
+        ("shop", "SELECT ?s { ?s ?p ?o }", "csv"),
+        ("shop", "ASK {}", None),
+        ("shop", "DROP ALL", None),
+    ]

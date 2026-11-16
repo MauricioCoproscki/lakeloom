@@ -2143,6 +2143,386 @@
         ]
       }
     },
+    "/v1/models/{slug}/sparql": {
+      "post": {
+        "description": "Only the glossary is in the dataset (concepts, labels, definitions, broader/narrower, mappings, links): the model's attributes, object properties and axioms are not. Updates and SERVICE are refused (403). `Accept` chooses the result format among those of the query's form; `*/*` or none gives the form's default.",
+        "operationId": "sparql_v1_models__slug__sparql_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            "application/sparql-query": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "description": "A read-only SPARQL query (SELECT, ASK, CONSTRUCT or DESCRIBE; no updates, no SERVICE).",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/ld+json": {},
+              "application/n-triples": {},
+              "application/rdf+xml": {},
+              "application/sparql-results+json": {},
+              "application/sparql-results+xml": {},
+              "text/csv": {},
+              "text/tab-separated-values": {},
+              "text/turtle": {}
+            },
+            "description": "OpenMetadata's result: SELECT/ASK as SPARQL JSON (default), XML, CSV or TSV; CONSTRUCT/DESCRIBE as Turtle (default), JSON-LD, N-Triples or RDF/XML. Not cached (Cache-Control: no-store)."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "406": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          }
+        },
+        "summary": "Read-only SPARQL over the model's glossary (proxied to OpenMetadata)",
+        "tags": [
+          "publication"
+        ]
+      }
+    },
     "/v1/models/{slug}/versions": {
       "get": {
         "operationId": "list_versions_v1_models__slug__versions_get",

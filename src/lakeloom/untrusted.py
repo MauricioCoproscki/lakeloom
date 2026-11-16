@@ -61,15 +61,16 @@ def code_span(name: str) -> str:
     return "`" + single_line(name.replace("`", "'")) + "`"
 
 
-def quote_untrusted(text: str, *, source: str) -> str:
+def quote_untrusted(text: str, *, source: str, max_chars: int | None = MAX_QUOTED_CHARS) -> str:
     """Render ``text`` as a Markdown blockquote that cannot break out of its quote.
 
     Ampersands, backticks, angle brackets and square brackets are escaped (so fences,
     HTML, links, images and a forged quote header stay inert), every line is prefixed
-    ``> ``, and the text is cut to 2000 characters with an ellipsis.
+    ``> ``, and the text is cut to ``max_chars`` characters (default 2000; ``None`` keeps
+    it whole, for a caller that bounds it itself) with an ellipsis.
     """
-    if len(text) > MAX_QUOTED_CHARS:
-        text = text[: MAX_QUOTED_CHARS - 1] + "…"
+    if max_chars is not None and len(text) > max_chars:
+        text = text[: max(max_chars - 1, 0)] + "…"
     safe_source = _escape(" ".join(source.split()))
     lines = [f"> [untrusted text from {safe_source}]"]
     # splitlines() breaks on every line boundary a renderer might honour (\r, \v, \f,

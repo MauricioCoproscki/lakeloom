@@ -1,6 +1,6 @@
 """``build_server_info`` (FR-OM-06, NFR-SEC-11)."""
 
-from kit import OM_BOT_TOKEN, DepsFactory, om_down
+from kit import OM_BOT_TOKEN, DepsFactory, om_down, om_up
 from pydantic import SecretStr
 
 import lakeloom
@@ -43,6 +43,7 @@ async def test_fr_om_06_server_info_reports_om_version_and_rdf(make_deps: DepsFa
         "releases": False,
         "import": True,
         "drift": True,
+        "sparql": True,
     }
     assert info.sources == []
     assert info.models == []
@@ -231,3 +232,46 @@ async def test_release_hook_runs_the_attempt_in_the_background(make_deps: DepsFa
     release_gate.set()
     await asyncio.gather(*deps.sink_tasks)
     assert seen == ["rel_1"] and not deps.sink_tasks
+
+
+async def test_server_info_sparql_degrades_on_404(make_deps: DepsFactory) -> None:
+    import httpx
+    import pytest
+
+    from lakeloom.errors import LakeloomError
+
+    def old_om(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/system/version":
+            return httpx.Response(200, json={"version": "1.9.4"})
+        return om_up(request)
+
+    def no_endpoint(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/v1/glossaries/name/retail":
+            return httpx.Response(200, json={"id": "g1", "name": "retail",
+                                             "fullyQualifiedName": "retail"})  # fmt: skip
+        if path.endswith("/sparql"):
+            return httpx.Response(404, json={"code": 404, "message": "HTTP 404 Not Found"})
+        return om_up(request)
+
+    def unknown_glossary(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/sparql"):
+            message = "glossary instance for g1 not found"
+            return httpx.Response(404, json={"code": 404, "message": message})
+        return no_endpoint(request)
+
+    assert (await build_server_info(make_deps(old_om), None)).features["sparql"] is False
+    assert (await build_server_info(make_deps(om_down), None)).features["sparql"] is False
+
+    deps = make_deps(no_endpoint)
+    assert (await build_server_info(deps, None)).features["sparql"] is True
+    with pytest.raises(LakeloomError) as info:
+        await deps.sparql_service.query("retail", "ASK {}", None)
+    assert info.value.code == "not_found"
+    after = await build_server_info(deps, None)
+    assert after.features["sparql"] is False and "sparql" not in summarize(after)
+
+    other = make_deps(unknown_glossary)
+    with pytest.raises(LakeloomError):
+        await other.sparql_service.query("retail", "ASK {}", None)
+    assert (await build_server_info(other, None)).features["sparql"] is True

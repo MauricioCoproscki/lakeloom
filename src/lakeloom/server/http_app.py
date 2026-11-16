@@ -45,6 +45,7 @@ from lakeloom.core.releases import ReleaseService
 from lakeloom.core.review import ReviewService
 from lakeloom.core.scans import ScanService
 from lakeloom.core.sources import close_sources, start_sources
+from lakeloom.core.sparql import SparqlService
 from lakeloom.errors import LakeloomError
 from lakeloom.gitstore.layout import Snapshot
 from lakeloom.gitstore.links import web_base
@@ -135,6 +136,9 @@ class AppDeps:
     import_service: ImportService = field(init=False)
     # Drift detection (FR-PRO-07): always on.
     drift_service: DriftService = field(init=False)
+    # Read-only SPARQL over a model's glossary (FR-PUB-03): always on; get_server_info says
+    # whether this OpenMetadata offers it.
+    sparql_service: SparqlService = field(init=False)
     # Optional triple-store sink (FR-TS): only with Git releases and LAKELOOM_TRIPLESTORE_ENABLED.
     sink_http: httpx.AsyncClient | None = field(init=False, default=None)
     sink_worker: SinkWorker | None = field(init=False, default=None)
@@ -237,6 +241,7 @@ class AppDeps:
             self.om,
             self.policies,
         )
+        self.sparql_service = SparqlService(self.settings, self.models, self.om)
         # Same for reviews: review_proposal is audited by guarded() (audit=None here).
         self.review = ReviewService(
             self.proposals,

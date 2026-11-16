@@ -3,12 +3,15 @@
 Response shapes were captured from the live 2.1.0-rc1 server.
 """
 
+import json
+from typing import Any
+
 import httpx
 import pytest
 import respx
 from pydantic import SecretStr
 
-from lakeloom.om.client import OMClient, OMError, OMUnavailable
+from lakeloom.om.client import OMClient, OMError, OMResultTooLarge, OMUnavailable
 from lakeloom.om.models import OMEntityRef
 
 BASE = "http://om.test:8585"
@@ -335,3 +338,117 @@ async def test_fr_om_01_semantic_reads_map_unavailable(client: OMClient) -> None
     respx.get(f"{API}/glossaries").mock(side_effect=httpx.ConnectError("boom"))
     with pytest.raises(OMUnavailable):
         await client.list_glossaries()
+
+
+# --- glossary SPARQL (FR-PUB-03): streamed, capped, with the bot token -----------------
+
+
+def sparql_client(handler: Any) -> OMClient:
+    return OMClient(BASE, SecretStr("bot-secret"), http=httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)))  # fmt: skip
+
+
+async def test_client_sends_format_and_timeout() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            content=b'{"head": {"vars": ["s"]}, "results": {"bindings": []}}',
+            headers={"Content-Type": "application/sparql-results+json"},
+        )
+
+    body, ctype = await sparql_client(handler).glossary_sparql(
+        GID, "SELECT ?s { ?s ?p ?o }", "json", timeout=7.0, max_bytes=1024
+    )
+
+    (request,) = seen
+    assert request.method == "POST"
+    assert request.url.path == f"/api/v1/glossaries/{GID}/sparql"
+    assert request.headers["authorization"] == "Bearer bot-secret"
+    assert json.loads(request.content) == {
+        "query": "SELECT ?s { ?s ?p ?o }", "format": "json", "timeout": 7000,
+    }  # fmt: skip
+    assert request.extensions["timeout"]["read"] == 12.0
+    assert body.startswith(b'{"head"') and ctype == "application/sparql-results+json"
+
+
+async def test_client_result_cap_streams_and_fails() -> None:
+    produced: list[int] = []
+
+    async def chunks() -> Any:
+        for i in range(100):
+            produced.append(i)
+            yield b"x" * 100
+
+    class Stream(httpx.AsyncByteStream):
+        def __aiter__(self) -> Any:
+            return chunks()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=Stream(), headers={"Content-Type": "text/turtle"})
+
+    client = sparql_client(handler)
+    with pytest.raises(OMResultTooLarge) as info:
+        await client.glossary_sparql(GID, "CONSTRUCT WHERE { ?s ?p ?o }", "turtle",
+                                     timeout=1.0, max_bytes=550)  # fmt: skip
+    first_read = len(produced)
+    exact, _ = await client.glossary_sparql(
+        GID, "CONSTRUCT WHERE { ?s ?p ?o }", "turtle", timeout=1.0, max_bytes=10_000
+    )
+
+    assert info.value.limit == 550
+    assert "bot-secret" not in str(info.value)
+    assert first_read <= 7  # the first read stopped at the cap, not at the end
+    assert len(exact) == 10_000
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "error", "detail"),
+    [
+        (
+            400,
+            {"code": 400, "message": "Invalid SPARQL query: Lexical error"},
+            OMError,
+            "Invalid SPARQL query: Lexical error",
+        ),
+        (
+            404,
+            {"code": 404, "message": f"glossary instance for {GID} not found"},
+            OMError,
+            f"glossary instance for {GID} not found",
+        ),
+        (401, {"code": 401, "message": "Not authorized"}, OMError, "Not authorized"),
+        (
+            500,
+            {"errorType": "UNHANDLED_SERVER_EXCEPTION", "message": "[null]"},
+            OMUnavailable,
+            None,
+        ),
+    ],
+)
+async def test_client_4xx_validation_5xx_upstream(
+    status: int, body: dict[str, Any], error: type[Exception], detail: str | None
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=body)
+
+    with pytest.raises(error) as info:
+        await sparql_client(handler).glossary_sparql(
+            GID, "ASK {}", "json", timeout=1.0, max_bytes=1024
+        )
+
+    assert isinstance(info.value, OMError) and info.value.status == status
+    if detail is not None:
+        assert info.value.detail == detail
+
+
+async def test_client_sparql_transport_error_is_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with pytest.raises(OMUnavailable):
+        await sparql_client(handler).glossary_sparql(
+            GID, "ASK {}", "json", timeout=1.0, max_bytes=1024
+        )

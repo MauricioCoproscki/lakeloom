@@ -15,6 +15,8 @@ run and, with ``--yes``, releases (FR-GIT-06); ``lakeloom release list MODEL`` l
 released versions; ``lakeloom release sink-retry`` requeues failed triple-store pushes
 (FR-TS-03). ``lakeloom import MODEL FILE`` and ``lakeloom import-git MODEL`` print the import
 dry run and, with ``--yes``, create the draft proposal (FR-IO-02, FR-GIT-07).
+``lakeloom sparql MODEL FILE|-`` runs a read-only SPARQL query over a model's glossary and
+writes OpenMetadata's result bytes (FR-PUB-03).
 There is no review command: approving and rejecting are for human reviewers through MCP
 (ADR 0012). They write their own audit rows. Typed errors (``not_found``,
 ``upstream_unavailable``, ...) exit with code 1.
@@ -44,6 +46,7 @@ if TYPE_CHECKING:
     from lakeloom.core.models import ModelService
     from lakeloom.core.proposals import Actor, ProposalService
     from lakeloom.core.releases import ReleaseService
+    from lakeloom.core.sparql import SparqlService
     from lakeloom.gitstore.publisher import GitPublisher
     from lakeloom.gitstore.release_reader import ReleaseReader
     from lakeloom.gitstore.repo import WorkingCopy
@@ -1176,6 +1179,46 @@ def drift_cmd(
                 _actor(), CLI_CLIENT, model, include_new_tables=not no_new_tables
             )
             typer.echo(drift_text(report, submit=_SUBMIT), nl=False)
+
+    _run(_go())
+
+
+# --- SPARQL (operator side, FR-PUB-03; the same operation as the MCP sparql_query tool) -----
+
+SparqlFormatOption = Literal["json", "xml", "csv", "tsv", "turtle", "jsonld", "ntriples", "rdfxml"]
+
+
+@asynccontextmanager
+async def _open_sparql(settings: Settings) -> AsyncGenerator["SparqlService"]:
+    from lakeloom.core.sparql import SparqlService
+
+    async with _open_semantic(settings) as (om, models, _s):
+        yield SparqlService(settings, models, om)
+
+
+@app.command("sparql")
+def sparql_cmd(
+    model: Annotated[str, typer.Argument(help="Model slug.")],
+    query_file: Annotated[str, typer.Argument(help="File with the SPARQL query, or - for stdin.")],
+    format: Annotated[
+        SparqlFormatOption | None,
+        typer.Option("--format", help="Result format (default: json or turtle by form)."),
+    ] = None,
+) -> None:
+    """Run a read-only SPARQL query over a model's glossary; the result bytes are written."""
+    settings = _cli_settings()
+    try:
+        text = sys.stdin.read() if query_file == "-" else Path(query_file).read_text("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        typer.echo(f"cannot read {query_file} ({type(exc).__name__})", err=True)
+        raise typer.Exit(code=1) from None
+
+    async def _go() -> None:
+        async with _open_sparql(settings) as service:
+            result = await service.query(model, text, format)
+        sys.stdout.flush()
+        sys.stdout.buffer.write(result.body)
+        sys.stdout.buffer.flush()
 
     _run(_go())
 
