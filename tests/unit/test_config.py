@@ -403,3 +403,29 @@ def test_nfr_ops_04_shutdown_timeout_default_and_bounds(monkeypatch: pytest.Monk
         monkeypatch.setenv("LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS", str(bad))
         with pytest.raises(ValidationError):
             Settings()
+
+
+def test_settings_ranges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FR-GIT-08, FR-PRO-07: reconcile hourly by default, scheduled drift off by default."""
+    s = Settings()
+    assert (s.reconcile_interval_seconds, s.reconcile_commit, s.drift_interval_seconds) == (
+        3600,
+        False,
+        0,
+    )
+    cases = {
+        "LAKELOOM_RECONCILE_INTERVAL_SECONDS": ((0, 60, 86400), (1, 59, 86401, -1)),
+        "LAKELOOM_DRIFT_INTERVAL_SECONDS": ((0, 300, 604800), (1, 299, 604801, -1)),
+    }
+    for env, (good, bad) in cases.items():
+        attr = env.removeprefix("LAKELOOM_").lower()
+        for ok in good:
+            monkeypatch.setenv(env, str(ok))
+            assert getattr(Settings(), attr) == ok
+        for wrong in bad:
+            monkeypatch.setenv(env, str(wrong))
+            with pytest.raises(ValidationError):
+                Settings()
+        monkeypatch.delenv(env)
+    monkeypatch.setenv("LAKELOOM_RECONCILE_COMMIT", "true")
+    assert Settings().reconcile_commit is True

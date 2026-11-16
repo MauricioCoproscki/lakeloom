@@ -230,6 +230,18 @@ class ProposalRepository:
             found = list((await session.execute(stmt)).scalars())
         return list(dict.fromkeys(s for s in found if s is not None))
 
+    async def models_with_applied_scans(self) -> list[str]:
+        """The models with at least one ``applied`` scan-based proposal, sorted: those
+        :meth:`applied_scan_ids` gives a drift baseline (the drift-schedule job, FR-PRO-07)."""
+        stmt = (
+            select(ProposalRow.model)
+            .where(ProposalRow.status == "applied", ProposalRow.scan_id.is_not(None))
+            .distinct()
+            .order_by(ProposalRow.model)
+        )
+        async with self._sessions() as session:
+            return list((await session.execute(stmt)).scalars())
+
     async def pending_op_keys(self, model: str) -> dict[str, str]:
         """``op_key`` -> proposal id of every operation in an open proposal of ``model``
         (the ``pending`` callable of :func:`lakeloom.core.dedupe.dedupe`)."""

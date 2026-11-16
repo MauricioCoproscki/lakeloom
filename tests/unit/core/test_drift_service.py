@@ -16,7 +16,8 @@ from rdflib import Graph
 from lakeloom.core import drift_service
 from lakeloom.core.callers import Actor
 from lakeloom.core.dedupe import DedupeResult, Match
-from lakeloom.core.drift_service import DriftService
+from lakeloom.core.drift import TableDrift
+from lakeloom.core.drift_service import DRIFT_ACTOR, DriftReport, DriftSchedule, DriftService
 from lakeloom.core.model_policy import ModelAccess, ModelPolicyEntry
 from lakeloom.core.operations import (
     AddAttribute,
@@ -569,3 +570,102 @@ async def test_concurrent_detects_create_one_draft(monkeypatch: pytest.MonkeyPat
     assert [e.code for e in errors] == ["conflict"]
     (call,) = env.proposals.calls
     assert call["recheck_pending"] is True
+
+
+# --- scheduled drift (FR-PRO-07: report only) -------------------------------------------------
+
+
+async def test_check_never_writes_a_proposal() -> None:
+    env = Env()
+    env.baseline("prop_1", scan("scan_1", ORDERS_V1), ORDER_OPS, [ORDERS])
+    now = table("orders", [("id", "bigint"), ("total", "decimal")], version=7)
+    env.scans.lake["lake"] = [now]
+
+    report = await env.svc.check(AGENT, None, "shop")
+
+    assert report.proposal is None and env.proposals.calls == []
+    assert [(d.fqn, d.status) for d in report.tables] == [(ORDERS, "changed")]
+    assert report.scan_ids == ["scan_new_lake"]
+    assert "scan_new_lake" in env.scan_repo.records  # the fresh scan record is written
+
+
+async def test_check_enforces_propose_groups() -> None:
+    env = Env([ModelPolicyEntry(name="shop", access=ModelAccess(propose_groups=["stewards"]))])
+    principal = SimpleNamespace(
+        subject="bob", type="human", groups=frozenset[str](), scopes=frozenset[str]()
+    )
+    with pytest.raises(LakeloomError) as info:
+        await env.svc.check(principal, None, "shop")  # type: ignore[arg-type]
+    assert info.value.code == "forbidden"
+
+
+class _ScheduleRepo:
+    def __init__(self, models: list[str]) -> None:
+        self.models = models
+
+    async def models_with_applied_scans(self) -> list[str]:
+        return list(self.models)
+
+
+class _CheckingService:
+    def __init__(self, reports: dict[str, DriftReport | Exception]) -> None:
+        self.reports = reports
+        self.calls: list[tuple[Any, str | None, str]] = []
+
+    async def check(self, principal: Any, client: str | None, model: str) -> DriftReport:
+        self.calls.append((principal, client, model))
+        found = self.reports[model]
+        if isinstance(found, Exception):
+            raise found
+        return found
+
+
+def _report(model: str, *statuses: str) -> DriftReport:
+    tables = [TableDrift(fqn=f"c.s.t{i}", status=s) for i, s in enumerate(statuses)]  # type: ignore[arg-type]
+    return DriftReport(
+        model=model, baseline_scan_ids=["scan_1"], scan_ids=["scan_2"], tables=tables,
+        proposal=None, warnings=["a warning with <term> text"],
+    )  # fmt: skip
+
+
+async def test_drift_job_runs_check_per_model_with_applied_scan(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from lakeloom import metrics
+
+    service = _CheckingService(
+        {
+            "shop": _report("shop", "changed", "added", "removed", "unchanged", "error"),
+            "retail": _report("retail", "unchanged"),
+            "broken": LakeloomError("upstream_unavailable", "lake down: secret-ish text", "x"),
+        }
+    )
+    schedule = DriftSchedule(
+        service,  # type: ignore[arg-type]
+        _ScheduleRepo(["broken", "retail", "shop"]),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+    )
+
+    with caplog.at_level("INFO", logger="lakeloom.drift"):
+        run = await schedule.run()
+
+    assert [c[2] for c in service.calls] == ["broken", "retail", "shop"]
+    assert all(c[0] == DRIFT_ACTOR and c[0].type == "system" for c in service.calls)
+    assert DRIFT_ACTOR.subject == "system:drift"
+    assert schedule.last_run is run
+    assert run.summary() == {
+        "last_run": NOW.isoformat(),
+        "models": 3,
+        "drifted": ["shop"],
+        "tables": {"retail": 0, "shop": 3},
+        "errors": {"broken": "upstream_unavailable"},
+    }
+    gauge = metrics.REGISTRY.get_sample_value("lakeloom_drift_tables", {"model": "shop"})
+    assert gauge == 3
+    assert metrics.REGISTRY.get_sample_value("lakeloom_drift_tables", {"model": "retail"}) == 0
+    lines = [r for r in caplog.records if r.name == "lakeloom.drift"]
+    assert {getattr(r, "model", None) for r in lines} == {"broken", "retail", "shop"}
+    shop = next(r for r in lines if getattr(r, "model", None) == "shop")
+    assert (shop.changed, shop.added, shop.removed, shop.errors) == (1, 1, 1, 1)  # type: ignore[attr-defined]
+    text = " ".join(r.getMessage() + str(r.__dict__) for r in lines)
+    assert "c.s.t" not in text and "<term>" not in text and "secret-ish" not in text

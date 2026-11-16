@@ -54,3 +54,14 @@ async def test_applied_scan_ids_newest_first_distinct(engine: AsyncEngine) -> No
     assert await repo.applied_scan_ids("shop") == ["scan_a", "scan_b"]
     assert await repo.applied_scan_ids("retail") == ["scan_other"]
     assert await repo.applied_scan_ids("none") == []
+
+
+async def test_models_with_applied_scans(engine: AsyncEngine) -> None:
+    """The models the drift-schedule job checks: those with an applied scan (FR-PRO-07)."""
+    repo = ProposalRepository(engine)
+    await repo.add(_proposal("prop_01A", "applied", "scan_a"))
+    await repo.add(_proposal("prop_01B", "applied", "scan_b"))
+    await repo.add(_proposal("prop_01C", "applied", None, model="imported"))  # no scan
+    await repo.add(_proposal("prop_01D", "draft", "scan_d", model="drafty"))  # not applied
+    await repo.add(_proposal("prop_01E", "applied", "scan_e", model="retail"))
+    assert await repo.models_with_applied_scans() == ["retail", "shop"]

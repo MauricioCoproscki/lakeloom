@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     # M4a graceful shutdown (NFR-OPS-04, ADR 0017): uvicorn's timeout_graceful_shutdown, and the
     # time a running background job tick may take to finish on shutdown.
     shutdown_timeout_seconds: int = Field(30, ge=1, le=600)
+    # M4a scheduled jobs (ADR 0017): reconciliation of OpenMetadata with Git (FR-GIT-08), 0 or
+    # 60-86400 s (0 = off; needs Git publishing), committing drift only when asked; the
+    # report-only drift check (FR-PRO-07), 0 (off) or 300-604800 s: every run scans the lake.
+    reconcile_interval_seconds: int = Field(3600, ge=0, le=86400)
+    reconcile_commit: bool = False
+    drift_interval_seconds: int = Field(0, ge=0, le=604800)
     # None means "auto": False in production, True in development (resolved after validation).
     stdio_enabled: bool | None = None
     otel_exporter_otlp_endpoint: str | None = None
@@ -237,6 +243,20 @@ class Settings(BaseSettings):
             raise ConfigError(
                 f"LAKELOOM_STDIO_SCOPES names unknown scopes {unknown}; known: {list(SCOPES)}"
             )
+        return value
+
+    @field_validator("reconcile_interval_seconds", mode="after")
+    @classmethod
+    def _reconcile_interval(cls, value: int) -> int:
+        if 0 < value < 60:
+            raise ValueError("must be 0 (off) or between 60 and 86400 seconds")
+        return value
+
+    @field_validator("drift_interval_seconds", mode="after")
+    @classmethod
+    def _drift_interval(cls, value: int) -> int:
+        if 0 < value < 300:
+            raise ValueError("must be 0 (off) or between 300 and 604800 seconds")
         return value
 
     @model_validator(mode="after")

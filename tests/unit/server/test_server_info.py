@@ -1,5 +1,6 @@
 """``build_server_info`` (FR-OM-06, NFR-SEC-11)."""
 
+import pytest
 from kit import OM_BOT_TOKEN, DepsFactory, om_down, om_up
 from pydantic import SecretStr
 
@@ -276,3 +277,75 @@ async def test_server_info_sparql_degrades_on_404(make_deps: DepsFactory) -> Non
     with pytest.raises(LakeloomError):
         await other.sparql_service.query("retail", "ASK {}", None)
     assert (await build_server_info(other, None)).features["sparql"] is True
+
+
+async def test_server_info_jobs_block(
+    make_deps: DepsFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Job state for operators: slugs and counts, never term text, the remote or its hash."""
+    from datetime import UTC, datetime
+
+    from lakeloom.core.drift_service import DriftRun
+    from lakeloom.core.jobs import JobStatus
+    from lakeloom.core.reconcile import ReconcileResult, ReconcileRun
+    from lakeloom.state.db import upgrade
+
+    deps = make_deps(
+        git_remote="https://bot-remote-tok-981@git.example.test/acme/onto.git",
+        git_mode="direct",
+        forge="none",
+        drift_interval_seconds=300,
+    )
+    await upgrade(deps.engine)
+    key = deps.publisher.repo_key
+
+    fresh = await build_server_info(deps, principal())
+    assert set(fresh.jobs) == {"git-publisher", "reconcile", "drift-schedule"}
+    assert fresh.jobs["reconcile"] == {"held": False, "last_run_at": None, "last_error": None}
+
+    at = datetime(2026, 11, 16, 12, tzinfo=UTC)
+    status = {
+        f"git-publisher:{key}": JobStatus(True, at, None),
+        "reconcile": JobStatus(True, at, None),
+        "drift-schedule": JobStatus(False, None, "RuntimeError"),
+    }
+    monkeypatch.setattr(deps.jobs, "status", lambda: status)
+    assert deps.reconcile_service is not None
+    deps.reconcile_service.last_run = ReconcileRun(
+        at=at,
+        results=[
+            ReconcileResult(model="shop", status="drifted", changed=["http://x/onto/SecretTerm"]),
+            ReconcileResult(model="retail", status="in_sync"),
+        ],
+    )
+    deps.drift_schedule.last_run = DriftRun(
+        at=at, tables={"shop": 2, "retail": 0}, errors={"lake": "upstream_unavailable"}
+    )
+
+    info = await build_server_info(deps, principal())
+
+    assert info.jobs["git-publisher"] == {
+        "held": True,
+        "last_run_at": at.isoformat(),
+        "last_error": None,
+    }
+    assert info.jobs["reconcile"] == {
+        "held": True,
+        "last_run_at": at.isoformat(),
+        "last_error": None,
+        "last_run": at.isoformat(),
+        "counts": {"in_sync": 1, "drifted": 1, "skipped": 0, "error": 0},
+        "drifted": ["shop"],
+    }
+    assert info.jobs["drift-schedule"]["last_error"] == "RuntimeError"
+    assert info.jobs["drift"] == {
+        "last_run": at.isoformat(),
+        "models": 3,
+        "drifted": ["shop"],
+        "tables": {"shop": 2, "retail": 0},
+        "errors": {"lake": "upstream_unavailable"},
+    }
+    dumped = info.model_dump_json()
+    assert "SecretTerm" not in dumped and "http://x/onto" not in dumped
+    assert "remote-tok-981" not in dumped and key not in dumped
+    assert "1 drifted" in summarize(info)

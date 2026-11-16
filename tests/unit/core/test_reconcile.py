@@ -578,3 +578,17 @@ async def test_drift_log_line_has_counts_not_term_text(
     assert rec.__dict__["model"] == "shop"
     assert (rec.__dict__["added"], rec.__dict__["changed"], rec.__dict__["removed"]) == (0, 1, 0)
     assert "Customer" not in rec.getMessage() and "Customer" not in str(rec.__dict__)
+
+
+async def test_run_limited_to_models(engine: AsyncEngine) -> None:
+    """``lakeloom reconcile --model``: only the named models, published or not."""
+    kit = await _kit(engine, OM_EDITED)
+    run = await kit.service.run(commit=False, models=["shop", "other"])
+    assert [(r.model, r.status, r.reason) for r in run.results] == [
+        ("shop", "drifted", None),
+        ("other", "skipped", "never published"),
+    ]
+    assert kit.service.last_run is None  # a partial run is not the job's last run
+    with pytest.raises(LakeloomError) as err:
+        await kit.service.run(commit=False, models=["Not A Slug"])
+    assert err.value.code == "validation_error"

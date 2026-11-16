@@ -15,6 +15,10 @@ run and, with ``--yes``, releases (FR-GIT-06); ``lakeloom release list MODEL`` l
 released versions; ``lakeloom release sink-retry`` requeues failed triple-store pushes
 (FR-TS-03). ``lakeloom import MODEL FILE`` and ``lakeloom import-git MODEL`` print the import
 dry run and, with ``--yes``, create the draft proposal (FR-IO-02, FR-GIT-07).
+``lakeloom reconcile [--model M] [--commit] [--json]`` compares each published model in
+OpenMetadata with its last Git commit (FR-GIT-08): exit code 0 when all are in sync (skipped
+models do not count), 3 when any drifted, 1 when any failed; ``--commit`` queues a
+publication per drift under the server's ``reconcile`` lease.
 ``lakeloom sparql MODEL FILE|-`` runs a read-only SPARQL query over a model's glossary and
 writes OpenMetadata's result bytes (FR-PUB-03).
 There is no review command: approving and rejecting are for human reviewers through MCP
@@ -27,6 +31,8 @@ import getpass
 import sys
 from collections.abc import AsyncGenerator, Coroutine
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -38,13 +44,14 @@ import lakeloom
 from lakeloom.config import ConfigError, Settings, get_settings
 from lakeloom.errors import LakeloomError
 from lakeloom.logging import configure_logging
-from lakeloom.untrusted import single_line
+from lakeloom.untrusted import code_span, single_line
 
 if TYPE_CHECKING:
     from lakeloom.core.drift_service import DriftService
     from lakeloom.core.imports import ImportService
     from lakeloom.core.models import ModelService
     from lakeloom.core.proposals import Actor, ProposalService
+    from lakeloom.core.reconcile import ReconcileResult, ReconcileRun, ReconcileService
     from lakeloom.core.releases import ReleaseService
     from lakeloom.core.sparql import SparqlService
     from lakeloom.gitstore.publisher import GitPublisher
@@ -53,7 +60,8 @@ if TYPE_CHECKING:
     from lakeloom.om.client import OMClient
     from lakeloom.rdf.canonical import InputFormat
     from lakeloom.sources.base import LakeSource
-    from lakeloom.state.publications import PublicationRepository
+    from lakeloom.state.leases import LeaseRepository
+    from lakeloom.state.publications import Publication, PublicationRepository
 
 CLI_CLIENT = "lakeloom-cli"
 
@@ -1183,6 +1191,180 @@ def drift_cmd(
             typer.echo(drift_text(report, submit=_SUBMIT), nl=False)
 
     _run(_go())
+
+
+# --- reconciliation (operator side, FR-GIT-08; the same service as the ``reconcile`` job) -----
+
+RECONCILE_LEASE = "reconcile"  # the server job's lease name
+_RECONCILE_LEASE_FLOOR = timedelta(minutes=15)
+_LISTED_TERMS = 50
+EXIT_DRIFT = 3
+
+
+@dataclass
+class _CliPublisher:
+    """The server's publication queue with the CLI's own clone for reading baselines: the
+    repository lock serialises one process only, so the CLI never touches the server's
+    working copy (as for releases). Enqueued publications are published by the server."""
+
+    enabled: bool
+    repo_key: str
+    wc: "WorkingCopy"
+    inner: "GitPublisher"
+
+    @property
+    def working_copy(self) -> "WorkingCopy":
+        return self.wc
+
+    async def enqueue(self, pub: "Publication") -> "Publication":
+        return await self.inner.enqueue(pub)
+
+
+@asynccontextmanager
+async def _open_reconcile(
+    settings: Settings,
+) -> AsyncGenerator[tuple["ReconcileService", "LeaseRepository"]]:
+    """The reconcile service (it writes its own audit rows) and the job leases."""
+    import httpx
+
+    from lakeloom.core.reconcile import ReconcileService
+    from lakeloom.gitstore.wiring import FORGE_TIMEOUT, build_publisher
+    from lakeloom.server.http_app import load_config
+    from lakeloom.state.audit import AuditRepository
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.leases import LeaseRepository
+    from lakeloom.state.proposals import ProposalRepository
+    from lakeloom.state.publications import PublicationRepository
+
+    config = load_config(settings)
+    engine = create_engine(settings.db_url)
+    http = httpx.AsyncClient(timeout=FORGE_TIMEOUT)
+    try:
+        await upgrade(engine)
+        pubs = PublicationRepository(engine)
+        inner = build_publisher(settings, pubs, http, config.models)
+        publisher = _CliPublisher(inner.enabled, inner.repo_key, _cli_working_copy(settings), inner)
+        async with _open_semantic(settings) as (_om, models, _s):
+            service = ReconcileService(
+                settings=settings,
+                models=models,
+                publisher=publisher,
+                publications=pubs,
+                proposals=ProposalRepository(engine),
+                audit=AuditRepository(engine),
+                policies=config.models,
+            )
+            yield service, LeaseRepository(engine)
+    finally:
+        await http.aclose()
+        await engine.dispose()
+
+
+async def _reconcile_run(
+    service: "ReconcileService",
+    leases: "LeaseRepository",
+    settings: Settings,
+    *,
+    commit: bool,
+    models: list[str] | None,
+) -> "ReconcileRun":
+    """Run once; a committing run holds the ``reconcile`` lease, so it never races the server's
+    job into queueing a second publication of the same drift. A check-only run writes no Git
+    row and takes no lease."""
+    if not commit:
+        return await service.run(commit=False, models=models)
+    from lakeloom.core.jobs import lease_ttl
+    from lakeloom.state.leases import instance_id
+
+    me = instance_id()
+    ttl = max(lease_ttl(settings.reconcile_interval_seconds), _RECONCILE_LEASE_FLOOR)
+    if not await leases.acquire(RECONCILE_LEASE, me, ttl):
+        raise LakeloomError(
+            "conflict",
+            "reconciliation is running in the server; try again later",
+            "the server's reconcile job holds its lease while it is on: let it commit "
+            "(LAKELOOM_RECONCILE_COMMIT=true), or run without --commit to only report",
+        )
+    try:
+        return await service.run(commit=True, models=models)
+    finally:
+        await leases.release(RECONCILE_LEASE, me)
+
+
+def _terms_text(label: str, iris: list[str]) -> list[str]:
+    """Term IRIs come from OpenMetadata: each one an inert code span (NFR-SEC-14)."""
+    lines = [f"    {label}: {code_span(iri)}" for iri in iris[:_LISTED_TERMS]]
+    if len(iris) > _LISTED_TERMS:
+        lines.append(f"    ... and {len(iris) - _LISTED_TERMS} more {label}")
+    return lines
+
+
+def _reconcile_text(run: "ReconcileRun", *, commit: bool) -> str:
+    lines = [f"Reconciliation of OpenMetadata with Git at {run.at.isoformat()}:"]
+    if not run.results:
+        lines.append("- no published model")
+    for r in run.results:
+        model = single_line(r.model)
+        if r.status == "drifted":
+            lines.append(
+                f"- {model}: drifted ({len(r.added)} added, {len(r.changed)} changed, "
+                f"{len(r.removed)} removed)"
+            )
+            lines += _terms_text("added", r.added)
+            lines += _terms_text("changed", r.changed)
+            lines += _terms_text("removed", r.removed)
+            if r.publication_id:
+                lines.append(f"    queued publication {r.publication_id} (the server publishes it)")
+            elif r.reason:
+                lines.append(f"    {single_line(r.reason)}")
+        else:
+            reason = f" ({single_line(r.reason)})" if r.reason else ""
+            lines.append(f"- {model}: {r.status}{reason}")
+    if not commit and any(r.status == "drifted" for r in run.results):
+        lines.append("Nothing was committed. Re-run with --commit to queue the drift for Git.")
+    return "\n".join(lines) + "\n"
+
+
+def _reconcile_exit(results: list["ReconcileResult"]) -> int:
+    """0 in sync (skips included), 3 any drift, 1 any error (an error wins over drift)."""
+    if any(r.status == "error" for r in results):
+        return 1
+    return EXIT_DRIFT if any(r.status == "drifted" for r in results) else 0
+
+
+@app.command("reconcile")
+def reconcile_cmd(
+    model: Annotated[str | None, typer.Option("--model", help="Only this model (slug).")] = None,
+    commit: Annotated[
+        bool, typer.Option("--commit", help="Queue a Git publication for each drifted model.")
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the run as JSON.")] = False,
+) -> None:
+    """Compare OpenMetadata with the last Git commit of each published model (FR-GIT-08).
+
+    Exit code 0: in sync (skipped models do not count); 3: drift found; 1: an error."""
+    settings = _cli_settings()
+    code: list[int] = []
+
+    async def _go() -> None:
+        if not settings.git_remote:
+            raise LakeloomError(
+                "validation_error",
+                "Git publishing is not configured",
+                "set LAKELOOM_GIT_REMOTE to reconcile OpenMetadata with Git",
+            )
+        models = [model] if model is not None else None
+        async with _open_reconcile(settings) as (service, leases):
+            run = await _reconcile_run(service, leases, settings, commit=commit, models=models)
+        if as_json:
+            typer.echo(run.model_dump_json(indent=2))
+        else:
+            typer.echo(_reconcile_text(run, commit=commit), nl=False)
+        code.append(_reconcile_exit(run.results))
+
+    _run(_go())
+    if code and code[0]:
+        raise typer.Exit(code=code[0])
 
 
 # --- SPARQL (operator side, FR-PUB-03; the same operation as the MCP sparql_query tool) -----

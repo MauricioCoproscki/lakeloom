@@ -44,6 +44,7 @@ from lakeloom import metrics
 from lakeloom.config import Settings
 from lakeloom.core.audit import AuditRecord, record
 from lakeloom.core.callers import Actor
+from lakeloom.core.model_create import validate_slug
 from lakeloom.core.model_policy import ModelPolicyEntry, git_mode_for
 from lakeloom.core.models import ModelInfo, ModelService
 from lakeloom.core.proposals import Proposal
@@ -196,12 +197,22 @@ class ReconcileService:
         self._require_git()
         return (await self._check(slug)).result
 
-    async def run(self, *, commit: bool) -> ReconcileRun:
-        """Check every published model; with ``commit``, enqueue each drift's publication."""
+    async def run(self, *, commit: bool, models: Sequence[str] | None = None) -> ReconcileRun:
+        """Check every published model (or only ``models``, ``lakeloom reconcile --model``);
+        with ``commit``, enqueue each drift's publication. Only a full run sets the metrics
+        and :attr:`last_run` (the ``jobs.reconcile`` block of ``get_server_info``)."""
         self._require_git()
+        if models is not None:
+            for slug in models:
+                validate_slug(slug)
         at = self._clock()
         results: list[ReconcileResult] = []
-        for slug in await self._pubs.done_models(self._publisher.repo_key):
+        slugs = (
+            list(models)
+            if models is not None
+            else await self._pubs.done_models(self._publisher.repo_key)
+        )
+        for slug in slugs:
             try:
                 checked = await self._check(slug)
             except Exception as exc:  # one model's failure never stops the run
@@ -216,6 +227,8 @@ class ReconcileService:
                 await self._report(result, rec_id)
             results.append(result)
         run = ReconcileRun(at=at, results=results)
+        if models is not None:
+            return run
         drifted = sum(r.status == "drifted" for r in results)
         metrics.RECONCILE_DRIFTED.set(drifted)
         outcome = (

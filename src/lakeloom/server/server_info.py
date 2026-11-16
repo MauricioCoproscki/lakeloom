@@ -61,6 +61,20 @@ class ServerInfo(BaseModel):
             "the last error. Never carries the endpoint URL or the password."
         ),
     )
+    jobs: dict[str, Any] = Field(
+        default_factory=dict[str, Any],
+        description=(
+            "Background jobs of this replica (NFR-DEP-07), by name (git-publisher, "
+            "triplestore-sink, reconcile, drift-schedule; only the configured ones): `held` is "
+            "whether this replica held the job's lease at its last renewal (renewed once per "
+            "interval, so it can lag a takeover by one interval), `last_run_at` the end of its "
+            "last run here and `last_error` that run's error class. `reconcile` adds the last "
+            "reconciliation of OpenMetadata with Git (FR-GIT-08: `last_run`, `counts` per "
+            "status, the `drifted` model slugs) and `drift` is the last scheduled drift check "
+            "(FR-PRO-07: tables changed, added or removed per model, error codes). Slugs and "
+            "counts only, never term text."
+        ),
+    )
     review_identity: OboMode = Field(
         description=(
             "How human review reaches OpenMetadata: 'exchange' (RFC 8693), 'forward' (the "
@@ -106,6 +120,7 @@ async def build_server_info(deps: AppDeps, principal: Principal | None) -> Serve
         },
         git=await _git_status(deps),
         triplestore=await deps.sink_worker.status() if deps.sink_worker is not None else None,
+        jobs=_jobs(deps),
         review_identity=deps.obo.mode,
         sources=[source_status(n, s) for n, s in deps.sources.items()],
         models=[],
@@ -123,6 +138,25 @@ async def _git_status(deps: AppDeps) -> dict[str, Any]:
             "mode": deps.settings.git_mode,
             "error": f"publication queue unavailable ({type(exc).__name__})",
         }
+
+
+def _jobs(deps: AppDeps) -> dict[str, Any]:
+    """Job states and the reconcile and drift summaries. ``git-publisher:<repo key>`` is shown
+    as ``git-publisher``: the key is a hash of the remote URL, which is never shown."""
+    out: dict[str, Any] = {}
+    for name, status in deps.jobs.status().items():
+        key = "git-publisher" if name.startswith("git-publisher:") else name
+        out[key] = {
+            "held": status.held,
+            "last_run_at": status.last_run_at.isoformat() if status.last_run_at else None,
+            "last_error": status.last_error,
+        }
+    service = deps.reconcile_service
+    if service is not None and service.last_run is not None:
+        out.setdefault("reconcile", {}).update(service.last_run.summary())
+    if deps.drift_schedule.last_run is not None:
+        out["drift"] = deps.drift_schedule.last_run.summary()
+    return out
 
 
 def summarize(info: ServerInfo) -> str:
@@ -156,6 +190,13 @@ def summarize(info: ServerInfo) -> str:
         lines.append(
             f"- Triple store: {ts.get('pending', 0)} pending, {ts.get('failed', 0)} failed"
         )
+    if info.jobs:
+        names = ", ".join(sorted(k for k in info.jobs if k != "drift"))
+        line = f"- Jobs: {names}"
+        last = info.jobs.get("reconcile", {})
+        if "counts" in last:
+            line += f" (last reconciliation: {last['counts'].get('drifted', 0)} drifted)"
+        lines.append(line)
     if info.caller is not None:
         scopes = ", ".join(info.caller.scopes) or "none"
         lines.append(f"- Caller: {info.caller.type} `{info.caller.subject}` (scopes: {scopes})")

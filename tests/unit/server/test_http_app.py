@@ -322,7 +322,11 @@ async def test_unreachable_db_app_starts_and_cancels_retry(tmp_path: Path) -> No
 
 
 def _git_settings(tmp_path: Path, **kw: object) -> Settings:
-    values: dict[str, object] = {"git_remote": f"file://{tmp_path}/remote.git", **kw}
+    values: dict[str, object] = {
+        "git_remote": f"file://{tmp_path}/remote.git",
+        "reconcile_interval_seconds": 0,  # the reconcile job has tests of its own
+        **kw,
+    }
     return _settings(tmp_path).model_copy(update=values)
 
 
@@ -467,3 +471,66 @@ async def test_lifespan_without_git_starts_no_worker(deps: AppDeps) -> None:
     async with app.router.lifespan_context(app):
         assert not _job_tasks()
         assert deps.jobs.status() == {}
+
+
+# --- scheduled reconciliation and drift (FR-GIT-08, FR-PRO-07) --------------------------------
+
+
+def test_reconcile_job_off_without_git(tmp_path: Path) -> None:
+    off = build_deps(_settings(tmp_path))  # the default interval (3600 s), no Git
+    assert off.settings.reconcile_interval_seconds == 3600
+    assert off.reconcile_service is None and "reconcile" not in off.jobs.status()
+
+    on = build_deps(
+        _git_settings(tmp_path, git_mode="direct", forge="none", reconcile_interval_seconds=3600)
+    )
+    assert on.reconcile_service is not None and "reconcile" in on.jobs.status()
+
+    manual = build_deps(_git_settings(tmp_path, git_mode="direct", forge="none"))  # interval 0
+    assert manual.reconcile_service is not None and "reconcile" not in manual.jobs.status()
+
+
+async def test_reconcile_job_commit_flag(tmp_path: Path) -> None:
+    calls: list[bool] = []
+
+    class FakeReconcile:
+        async def run(self, *, commit: bool) -> None:
+            calls.append(commit)
+
+    for flag in (False, True):
+        deps = build_deps(
+            _git_settings(
+                tmp_path,
+                git_mode="direct",
+                forge="none",
+                reconcile_interval_seconds=60,
+                reconcile_commit=flag,
+            )
+        )
+        deps.reconcile_service = FakeReconcile()  # pyright: ignore[reportAttributeAccessIssue]
+        await deps._reconcile_tick()  # pyright: ignore[reportPrivateUsage]
+    assert calls == [False, True]
+    assert deps._reconcile_interval() == 60  # pyright: ignore[reportPrivateUsage]
+
+
+def test_drift_job_off_by_default(tmp_path: Path) -> None:
+    off = build_deps(_settings(tmp_path))
+    assert off.settings.drift_interval_seconds == 0
+    assert "drift-schedule" not in off.jobs.status()
+
+    on = build_deps(_settings(tmp_path).model_copy(update={"drift_interval_seconds": 300}))
+    assert "drift-schedule" in on.jobs.status()  # no Git needed
+    assert on._drift_interval() == 300  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_drift_tick_runs_the_schedule(tmp_path: Path) -> None:
+    deps = build_deps(_settings(tmp_path).model_copy(update={"drift_interval_seconds": 300}))
+    runs: list[str] = []
+
+    class FakeSchedule:
+        async def run(self) -> None:
+            runs.append("run")
+
+    deps.drift_schedule = FakeSchedule()  # pyright: ignore[reportAttributeAccessIssue]
+    await deps._drift_tick()  # pyright: ignore[reportPrivateUsage]
+    assert runs == ["run"]

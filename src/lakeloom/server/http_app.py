@@ -35,13 +35,14 @@ from lakeloom.core.confirm import (
     confirm_tokens_from_settings,
     require_confirm_secret,
 )
-from lakeloom.core.drift_service import DriftService
+from lakeloom.core.drift_service import DriftSchedule, DriftService
 from lakeloom.core.imports import ImportService
 from lakeloom.core.jobs import Job, JobRunner
 from lakeloom.core.model_policy import ModelPolicyEntry
 from lakeloom.core.models import ModelService
 from lakeloom.core.obo import OnBehalfOf
 from lakeloom.core.proposals import ProposalService
+from lakeloom.core.reconcile import ReconcileService
 from lakeloom.core.releases import ReleaseService
 from lakeloom.core.review import ReviewService
 from lakeloom.core.scans import ScanService
@@ -137,8 +138,14 @@ class AppDeps:
     git_links: GitLinks | None = field(init=False, default=None)
     # Imports (FR-IO-02, FR-GIT-07): always on; import_from_git needs Git publishing.
     import_service: ImportService = field(init=False)
-    # Drift detection (FR-PRO-07): always on.
+    proposal_repo: ProposalRepository = field(init=False)
+    # Drift detection (FR-PRO-07): always on; the scheduled report-only check
+    # (``drift-schedule`` job) only with LAKELOOM_DRIFT_INTERVAL_SECONDS > 0.
     drift_service: DriftService = field(init=False)
+    drift_schedule: DriftSchedule = field(init=False)
+    # Reconciliation of OpenMetadata with Git (FR-GIT-08): None with Git publishing off; the
+    # ``reconcile`` job only with LAKELOOM_RECONCILE_INTERVAL_SECONDS > 0. It audits itself.
+    reconcile_service: ReconcileService | None = field(init=False, default=None)
     # Read-only SPARQL over a model's glossary (FR-PUB-03): always on; get_server_info says
     # whether this OpenMetadata offers it.
     sparql_service: SparqlService = field(init=False)
@@ -150,7 +157,7 @@ class AppDeps:
     )
     # Background jobs, each under a lease in the state store (NFR-DEP-07); started and stopped
     # by the app lifespan. ``git-publisher:<repo>`` with Git publishing, ``triplestore-sink``
-    # with the sink.
+    # with the sink, ``reconcile`` with Git publishing, ``drift-schedule`` when set.
     jobs: JobRunner = field(init=False)
     # Per-principal rate limit (NFR-SEC-16), shared by the MCP tools and the /v1 API.
     limiter: RateLimiter = field(init=False)
@@ -168,7 +175,7 @@ class AppDeps:
         scan_repo = ScanRepository(self.engine)
         self.scans = ScanService(self.sources, scan_repo, self.om, self.settings)
         # audit=None: MCP tools audit through guarded() (one row per write; see proposals.py).
-        proposal_repo = ProposalRepository(self.engine)
+        proposal_repo = self.proposal_repo = ProposalRepository(self.engine)
         self.proposals = ProposalService(
             self.om,
             self.models,
@@ -253,6 +260,18 @@ class AppDeps:
             self.om,
             self.policies,
         )
+        self.drift_schedule = DriftSchedule(self.drift_service, proposal_repo)
+        if self.publisher.enabled:
+            # The job has no guarded() call around it: the service writes its own audit rows.
+            self.reconcile_service = ReconcileService(
+                settings=self.settings,
+                models=self.models,
+                publisher=self.publisher,
+                publications=self.publications,
+                proposals=proposal_repo,
+                audit=self.audit,
+                policies=self.policies,
+            )
         self.sparql_service = SparqlService(self.settings, self.models, self.om)
         # Same for reviews: review_proposal is audited by guarded() (audit=None here).
         self.review = ReviewService(
@@ -273,6 +292,10 @@ class AppDeps:
             self.jobs.add(Job(name, self._git_interval, self._publish_tick))
         if self.sink_worker is not None:
             self.jobs.add(Job("triplestore-sink", self._git_interval, self._sink_tick))
+        if self.reconcile_service is not None and self.settings.reconcile_interval_seconds > 0:
+            self.jobs.add(Job("reconcile", self._reconcile_interval, self._reconcile_tick))
+        if self.settings.drift_interval_seconds > 0:
+            self.jobs.add(Job("drift-schedule", self._drift_interval, self._drift_tick))
 
     def _git_interval(self) -> float:
         return float(self.settings.git_retry_interval_seconds)
@@ -283,6 +306,19 @@ class AppDeps:
     async def _sink_tick(self) -> None:
         if self.sink_worker is not None:
             await self.sink_worker.process()  # never raises; the runner logs it if it does
+
+    def _reconcile_interval(self) -> float:
+        return float(self.settings.reconcile_interval_seconds)
+
+    async def _reconcile_tick(self) -> None:
+        if self.reconcile_service is not None:
+            await self.reconcile_service.run(commit=self.settings.reconcile_commit)
+
+    def _drift_interval(self) -> float:
+        return float(self.settings.drift_interval_seconds)
+
+    async def _drift_tick(self) -> None:
+        await self.drift_schedule.run()  # one model's failure never stops the run
 
     async def _sink_inline(self, release: Release) -> None:
         """One attempt right after a release, in the background: the tool never waits for it."""

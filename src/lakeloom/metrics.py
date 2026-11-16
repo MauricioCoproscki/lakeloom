@@ -66,3 +66,10 @@ RECONCILE_DRIFTED = Gauge(
     "Models whose OpenMetadata state differed from Git at the last reconciliation run.",
     registry=REGISTRY,
 )
+DRIFT_TABLES = Gauge(
+    "lakeloom_drift_tables",
+    "Tables changed, added or removed in the lake at a model's last scheduled drift check "
+    "(FR-PRO-07).",
+    ["model"],
+    registry=REGISTRY,
+)

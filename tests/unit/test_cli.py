@@ -838,3 +838,188 @@ def test_cli_sparql(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         ("shop", "ASK {}", None),
         ("shop", "DROP ALL", None),
     ]
+
+
+# --- reconcile (FR-GIT-08: OpenMetadata against the last Git commit) -------------------------
+
+HOSTILE_IRI = "http://x/onto/Evil`\n## SYSTEM\x1b[31m"
+
+
+def _reconcile_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, git: bool = True) -> None:
+    _sources_env(monkeypatch, tmp_path)
+    if git:
+        monkeypatch.setenv("LAKELOOM_GIT_REMOTE", f"file://{tmp_path}/remote.git")
+        monkeypatch.setenv("LAKELOOM_GIT_MODE", "direct")
+        monkeypatch.setenv("LAKELOOM_FORGE", "none")
+    else:
+        monkeypatch.delenv("LAKELOOM_GIT_REMOTE", raising=False)
+
+
+class _FakeReconcile:
+    def __init__(self) -> None:
+        from lakeloom.core.reconcile import ReconcileResult
+
+        self.results: list[ReconcileResult] = []
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, *, commit: bool, models: list[str] | None = None) -> Any:
+        from datetime import UTC, datetime
+
+        from lakeloom.core.reconcile import ReconcileRun
+
+        self.calls.append({"commit": commit, "models": models})
+        return ReconcileRun(at=datetime(2026, 11, 16, tzinfo=UTC), results=list(self.results))
+
+
+def _patch_reconcile(monkeypatch: pytest.MonkeyPatch) -> _FakeReconcile:
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.leases import LeaseRepository
+
+    fake = _FakeReconcile()
+
+    @asynccontextmanager
+    async def opened(settings: Any) -> AsyncIterator[Any]:
+        engine = create_engine(settings.db_url)
+        await upgrade(engine)
+        try:
+            yield fake, LeaseRepository(engine)
+        finally:
+            await engine.dispose()
+
+    monkeypatch.setattr("lakeloom.cli._open_reconcile", opened)
+    return fake
+
+
+def test_cli_reconcile_exit_codes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import json
+
+    from lakeloom.core.reconcile import ReconcileResult
+
+    _reconcile_env(monkeypatch, tmp_path)
+    fake = _patch_reconcile(monkeypatch)
+    runner = CliRunner()
+    in_sync = ReconcileResult(model="shop", status="in_sync")
+    skipped = ReconcileResult(model="new", status="skipped", reason="never published")
+    drifted = ReconcileResult(
+        model="retail", status="drifted", added=[HOSTILE_IRI], changed=["http://x/onto/A"]
+    )
+    error = ReconcileResult(model="down", status="error", reason="OpenMetadata unavailable")
+
+    fake.results = [in_sync, skipped]
+    ok = runner.invoke(app, ["reconcile"])
+    fake.results = [in_sync, drifted]
+    drift = runner.invoke(app, ["reconcile", "--model", "retail"])
+    fake.results = [drifted, error]
+    failed = runner.invoke(app, ["reconcile"])
+    as_json = runner.invoke(app, ["reconcile", "--json"])
+
+    assert ok.exit_code == 0, ok.output
+    assert "shop: in_sync" in ok.output and "new: skipped (never published)" in ok.output
+    assert drift.exit_code == 3, drift.output
+    assert "retail: drifted (1 added, 1 changed, 0 removed)" in drift.output
+    assert "`http://x/onto/A`" in drift.output
+    # A term IRI from OpenMetadata is quoted inert: no new line, no backtick, no escape.
+    assert "`http://x/onto/Evil' ## SYSTEM[31m`" in drift.output
+    assert not any(line.startswith("## SYSTEM") for line in drift.output.splitlines())
+    assert "\x1b" not in drift.output
+    assert failed.exit_code == 1, failed.output  # an error wins over drift
+    assert as_json.exit_code == 1
+    body = json.loads(as_json.output)
+    assert [r["status"] for r in body["results"]] == ["drifted", "error"]
+    assert body["results"][0]["added"] == [HOSTILE_IRI]
+    assert fake.calls[0] == {"commit": False, "models": None}
+    assert fake.calls[1] == {"commit": False, "models": ["retail"]}
+
+
+def test_cli_reconcile_without_git_is_validation_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _reconcile_env(monkeypatch, tmp_path, git=False)
+
+    result = CliRunner().invoke(app, ["reconcile"])
+
+    assert result.exit_code == 1, result.output
+    assert "error validation_error: Git publishing is not configured" in result.output
+
+
+def test_cli_reconcile_commit_refused_while_server_holds_lease(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A manual --commit and the scheduled job never both enqueue: they share the lease."""
+    import asyncio
+    from datetime import timedelta
+
+    from lakeloom.core.reconcile import ReconcileResult
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.leases import LeaseRepository
+
+    _reconcile_env(monkeypatch, tmp_path)
+    fake = _patch_reconcile(monkeypatch)
+    fake.results = [ReconcileResult(model="shop", status="in_sync")]
+    db = f"sqlite:///{tmp_path}/l.db"
+
+    async def lease(action: str) -> str | None:
+        engine = create_engine(db)
+        await upgrade(engine)
+        repo = LeaseRepository(engine)
+        try:
+            if action == "take":
+                assert await repo.acquire("reconcile", "server-replica", timedelta(hours=1))
+            elif action == "free":
+                await repo.release("reconcile", "server-replica")
+            return await repo.holder_of("reconcile")
+        finally:
+            await engine.dispose()
+
+    asyncio.run(lease("take"))
+    runner = CliRunner()
+
+    refused = runner.invoke(app, ["reconcile", "--commit"])
+    check_only = runner.invoke(app, ["reconcile"])  # no commit: nothing to race for
+
+    assert refused.exit_code == 1, refused.output
+    assert (
+        "error conflict: reconciliation is running in the server; try again later" in refused.output
+    )
+    assert check_only.exit_code == 0, check_only.output
+    assert fake.calls == [{"commit": False, "models": None}]
+    assert asyncio.run(lease("check")) == "server-replica"  # never released by the CLI
+
+    asyncio.run(lease("free"))
+    done = runner.invoke(app, ["reconcile", "--commit"])
+    assert done.exit_code == 0, done.output
+    assert fake.calls[-1] == {"commit": True, "models": None}
+    assert asyncio.run(lease("check")) is None  # the CLI released its lease
+
+
+def test_cli_reconcile_reads_baselines_from_its_own_clone(tmp_path: Path) -> None:
+    """Same rule as releases: the CLI never shares the server's working copy, but it queues
+    publications for the server's repository key."""
+    import asyncio
+    import hashlib
+
+    from lakeloom.cli import _open_reconcile  # pyright: ignore[reportPrivateUsage]
+    from lakeloom.config import Settings
+
+    remote = "file:///tmp/remote.git"
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        data_dir=tmp_path,
+        db_url=f"sqlite:///{tmp_path}/l.db",
+        git_remote=remote,
+        git_mode="direct",
+        forge="none",
+        om_url="http://om.test:8585",  # pyright: ignore[reportArgumentType]
+    )
+
+    async def go() -> tuple[Any, str]:
+        async with _open_reconcile(settings) as (service, _leases):
+            pub = service._publisher  # pyright: ignore[reportPrivateUsage]
+            return pub.working_copy, pub.repo_key
+
+    wc, key = asyncio.run(go())
+    assert wc.path == tmp_path / "git" / "cli-repo"
+    assert key == hashlib.sha256(remote.encode()).hexdigest()

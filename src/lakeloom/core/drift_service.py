@@ -22,22 +22,30 @@ the pending operations under the model lock (``recheck_pending``): a concurrent 
 that proposed them first makes this one a ``conflict``. No drift is not an error: the report
 has ``proposal=None``.
 
+:meth:`DriftService.check` is the report-only run of the ``drift-schedule`` job: the same
+plan (fresh scan records included) and never a proposal. :class:`DriftSchedule` checks every
+model with an applied scan as ``system:drift`` and reports through the gauge
+``lakeloom_drift_tables{model}``, one log line per model (counts only: table names come from
+the lake, NFR-SEC-11) and ``jobs.drift`` in ``get_server_info``.
+
 Audit: ``propose_operations`` audits a created draft as ``detect_drift``. The no-drift path
 and refusals before it are audited here when the service owns auditing (the CLI); MCP passes
 ``audit=None`` and ``guarded`` writes the only row.
 """
 
 import asyncio
+import logging
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Final, Literal, Protocol
 from urllib.parse import quote
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from lakeloom import metrics
 from lakeloom.core.audit import AuditRecord, current_audit, record
-from lakeloom.core.callers import Caller
+from lakeloom.core.callers import Actor, Caller
 from lakeloom.core.dedupe import dedupe
 from lakeloom.core.drift import (
     TableBinding,
@@ -88,9 +96,20 @@ from lakeloom.state.proposals import ProposalRepository
 from lakeloom.state.scans import ScannedTable, ScanRecord, ScanRepository
 from lakeloom.untrusted import code_span
 
-__all__ = ["DRIFT_TOOL", "DriftReport", "DriftService", "drift_text"]
+__all__ = [
+    "DRIFT_ACTOR",
+    "DRIFT_TOOL",
+    "DriftReport",
+    "DriftRun",
+    "DriftSchedule",
+    "DriftService",
+    "drift_text",
+]
+
+_log = logging.getLogger("lakeloom.drift")
 
 DRIFT_TOOL = "detect_drift"
+DRIFT_ACTOR: Final = Actor(subject="system:drift", type="system")
 _PAGE = 200
 _TERM_READS = 8
 _MAX_LISTED = 10
@@ -195,6 +214,15 @@ class DriftService:
             recheck_pending=True,  # dedupe and the pending filter ran before the model lock
         )
         return report.model_copy(update={"proposal": proposal})
+
+    async def check(self, principal: Caller, client: str | None, model: str) -> DriftReport:
+        """Scan the model's baseline tables again and report the drift; never a proposal.
+
+        The fresh scan records are stored, as with :meth:`detect`."""
+        validate_slug(model)
+        require_group(principal, access_for(self._policies, model), "propose", model=model)
+        report, *_ = await self._plan(principal, client, model, True)
+        return report
 
     # --- planning -------------------------------------------------------------------------
 
@@ -619,6 +647,90 @@ class DriftService:
             error_code=code,
         )
         await record(self._audit, rec)
+
+
+# --- the drift-schedule job (report only) -----------------------------------------------------
+
+
+class DriftRun(BaseModel):
+    """One scheduled run: per model, the tables changed, added or removed, or the error code."""
+
+    at: datetime
+    tables: dict[str, int] = Field(default_factory=dict[str, int])
+    errors: dict[str, str] = Field(default_factory=dict[str, str])
+
+    def summary(self) -> dict[str, Any]:
+        """The ``jobs.drift`` block of ``get_server_info`` (slugs and counts only)."""
+        return {
+            "last_run": self.at.isoformat(),
+            "models": len(self.tables) + len(self.errors),
+            "drifted": sorted(m for m, n in self.tables.items() if n),
+            "tables": dict(self.tables),
+            "errors": dict(self.errors),
+        }
+
+
+class _Checker(Protocol):
+    async def check(self, principal: Caller, client: str | None, model: str) -> DriftReport: ...
+
+
+class _Baselined(Protocol):
+    async def models_with_applied_scans(self) -> list[str]: ...
+
+
+class DriftSchedule:
+    """Runs :meth:`DriftService.check` for every model with an applied scan, as
+    ``system:drift``; one model's failure never stops the run."""
+
+    def __init__(
+        self,
+        service: _Checker,
+        proposals: _Baselined,
+        *,
+        clock: Callable[[], datetime] = _now,
+    ) -> None:
+        self._service = service
+        self._proposals = proposals
+        self._clock = clock
+        self.last_run: DriftRun | None = None
+
+    async def run(self) -> DriftRun:
+        run = DriftRun(at=self._clock())
+        for model in await self._proposals.models_with_applied_scans():
+            try:
+                report = await self._service.check(DRIFT_ACTOR, None, model)
+            except (LakeloomError, OMError) as exc:  # the message may carry lake text: code only
+                code = (
+                    exc.code
+                    if isinstance(exc, LakeloomError)
+                    else map_om_error(exc, f"checking {model!r}").code
+                )
+                run.errors[model] = code
+                _log.warning("scheduled drift check failed", extra={"model": model, "error": code})
+                continue
+            except Exception as exc:
+                run.errors[model] = "internal"
+                _log.error(
+                    "scheduled drift check failed",
+                    extra={"model": model, "error": type(exc).__name__},
+                )
+                continue
+            counts = Counter(t.status for t in report.tables)
+            drifted = counts["changed"] + counts["added"] + counts["removed"]
+            run.tables[model] = drifted
+            metrics.DRIFT_TABLES.labels(model=model).set(drifted)
+            _log.info(
+                "scheduled drift check",
+                extra={
+                    "model": model,
+                    "changed": counts["changed"],
+                    "added": counts["added"],
+                    "removed": counts["removed"],
+                    "errors": counts["error"],
+                },
+            )
+        self.last_run = run
+        return run
 
 
 def _cols(names: Sequence[str]) -> str:
