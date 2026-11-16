@@ -1,11 +1,13 @@
 """MCP sessions are bound to the principal that opened them (NFR-DEP-07, NFR-SEC-02)."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx2
 import pytest
 from kit import AuthKit, Clock, DepsFactory
+from pydantic import SecretStr
 from starlette.types import ASGIApp, Receive, Scope, Send
 from test_tools_semantic import fake_deps
 
@@ -28,12 +30,17 @@ class FakeMcp:
 
     def __init__(self) -> None:
         self.seen: list[str | None] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         headers = dict(scope["headers"])
         sid = headers.get(HEADER.encode())
         self.seen.append(sid.decode() if sid else None)
         out: list[tuple[bytes, bytes]] = []
+        if b"x-hold" in headers:  # a long call or an open GET stream
+            self.entered.set()
+            await self.release.wait()
         if sid is None:
             out.append((HEADER.encode(), b"s1"))
         await send({"type": "http.response.start", "status": 200, "headers": out})
@@ -53,7 +60,7 @@ def as_principal(app: ASGIApp) -> ASGIApp:
                 username=None,
                 scopes=frozenset(),
                 groups=frozenset(),
-                token=None,  # pyright: ignore[reportArgumentType]
+                token=SecretStr("t"),
             )
         await app(scope, receive, send)
 
@@ -147,6 +154,25 @@ async def test_idle_binding_expires(client: httpx2.AsyncClient, clock: Clock) ->
     assert (await use(client, sid, "a")).status_code == 404
 
 
+async def test_binding_kept_while_a_request_is_in_flight(
+    client: httpx2.AsyncClient, inner: FakeMcp, clock: Clock
+) -> None:
+    sid = await open_session(client)
+    held = asyncio.create_task(
+        client.get("/mcp", headers={"x-who": "a", HEADER: sid, "x-hold": "1"})
+    )
+    await inner.entered.wait()
+
+    clock.advance(1801)  # the SDK keeps a session with a request in flight alive
+    assert (await use(client, sid, "a")).status_code == 200
+    inner.release.set()
+    assert (await held).status_code == 200
+
+    assert (await use(client, sid, "a")).status_code == 200  # completion renewed it
+    clock.advance(1801)
+    assert (await use(client, sid, "a")).status_code == 404
+
+
 async def test_pass_through_when_disabled(inner: FakeMcp) -> None:
     app = as_principal(SessionBindingMiddleware(inner, enabled=False))
     async with httpx2.AsyncClient(
@@ -173,6 +199,12 @@ INIT = {
 
 async def test_full_app_foreign_session_is_404(make_deps: DepsFactory, kit: AuthKit) -> None:
     app = create_server_app(fake_deps(make_deps))
+    call = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "list_models", "arguments": {}},
+    }
     async with (
         app.router.lifespan_context(app),
         httpx2.AsyncClient(
@@ -183,14 +215,20 @@ async def test_full_app_foreign_session_is_404(make_deps: DepsFactory, kit: Auth
         b = {"Authorization": f"Bearer {kit.token(sub='b')}", **ACCEPT}
         opened = await http.post("/mcp", headers=a, json=INIT)
         sid = opened.headers[HEADER]
+        await http.post(
+            "/mcp",
+            headers={**a, HEADER: sid},
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
 
-        theirs = await http.post("/mcp", headers={**b, HEADER: sid}, json=INIT)
-        unknown = await http.post("/mcp", headers={**b, HEADER: "nope"}, json=INIT)
-        mine = await http.post("/mcp", headers={**a, HEADER: sid}, json=INIT)
+        theirs = await http.post("/mcp", headers={**b, HEADER: sid}, json=call)
+        unknown = await http.post("/mcp", headers={**b, HEADER: "nope"}, json=call)
+        mine = await http.post("/mcp", headers={**a, HEADER: sid}, json=call)
 
     assert theirs.status_code == unknown.status_code == 404
     assert theirs.json() == unknown.json() == UNKNOWN
-    assert mine.status_code != 404
+    assert mine.status_code == 200
+    assert "isError" in mine.text and '"isError":false' in mine.text.replace(" ", "")
 
 
 async def test_stateless_mode_has_no_session_header(make_deps: DepsFactory, kit: AuthKit) -> None:

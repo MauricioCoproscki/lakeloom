@@ -5,7 +5,10 @@ replay it. This wrapper records ``session id -> (principal type, subject)`` when
 carries a new id and refuses any request for that id from another principal. Unknown ids,
 which the SDK would answer in its own shape, get the same typed ``404`` here, so a foreign
 id cannot be told from an unknown one. Entries go on ``DELETE`` or after ``idle_timeout``
-seconds without use (the SDK's own default is 1800). Only ids are held, never tokens.
+seconds with no request in flight (the SDK's own meaning of ``session_idle_timeout``, default
+1800: an open GET stream or a long tool call keeps the session alive). Only ids are held,
+never tokens. A session the SDK has already reaped gives its owner the SDK's own 404. A
+request with no principal passes through (only possible outside ``BearerAuthMiddleware``).
 
 With stateless MCP (``LAKELOOM_MCP_STATELESS``) no ids exist and the wrapper is built
 disabled, a pass-through.
@@ -24,6 +27,16 @@ __all__ = ["SESSION_HEADER", "SessionBindingMiddleware"]
 
 SESSION_HEADER = b"mcp-session-id"
 Owner = tuple[str, str]
+PRUNE_EVERY = 60.0
+
+
+class _Binding:
+    __slots__ = ("inflight", "owner", "seen")
+
+    def __init__(self, owner: Owner, seen: float) -> None:
+        self.owner = owner
+        self.seen = seen
+        self.inflight = 0
 
 
 class SessionBindingMiddleware:
@@ -39,7 +52,8 @@ class SessionBindingMiddleware:
         self.idle_timeout = idle_timeout
         self.clock = clock
         self.enabled = enabled
-        self._bound: dict[str, tuple[Owner, float]] = {}
+        self._bound: dict[str, _Binding] = {}
+        self._pruned_at = clock()
 
     @staticmethod
     def _owner(scope: Scope) -> Owner | None:
@@ -50,7 +64,15 @@ class SessionBindingMiddleware:
         return (principal.type.value, principal.subject)
 
     def _expire(self, now: float) -> None:
-        for sid in [s for s, (_, seen) in self._bound.items() if now - seen > self.idle_timeout]:
+        """Drop idle bindings (none in flight, unused past the timeout), at most once a minute."""
+        if now - self._pruned_at < PRUNE_EVERY:
+            return
+        self._pruned_at = now
+        for sid in [
+            s
+            for s, b in self._bound.items()
+            if b.inflight == 0 and now - b.seen > self.idle_timeout
+        ]:
             del self._bound[sid]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -63,14 +85,22 @@ class SessionBindingMiddleware:
         self._expire(now)
         sid_raw = dict(scope["headers"]).get(SESSION_HEADER)
         sid = sid_raw.decode("latin-1") if sid_raw is not None else None
+        binding: _Binding | None = None
         if sid is not None:
-            bound = self._bound.get(sid)
-            if bound is None or bound[0] != owner:
+            binding = self._bound.get(sid)
+            # An idle binding not yet pruned still counts as expired.
+            if (
+                binding is None
+                or binding.owner != owner
+                or (binding.inflight == 0 and now - binding.seen > self.idle_timeout)
+            ):
+                if binding is not None and binding.owner == owner:
+                    del self._bound[sid]
                 await error_response(
                     "not_found", "unknown MCP session", "initialize a new MCP session"
                 )(scope, receive, send)
                 return
-            self._bound[sid] = (owner, now)
+            binding.inflight += 1
         is_delete = scope["method"] == "DELETE"
 
         async def send_wrapper(message: Message) -> None:
@@ -79,9 +109,14 @@ class SessionBindingMiddleware:
                 if sid is None and status < 400:
                     for name, value in message.get("headers", []):
                         if name.lower() == SESSION_HEADER:
-                            self._bound[value.decode("latin-1")] = (owner, self.clock())
+                            self._bound[value.decode("latin-1")] = _Binding(owner, self.clock())
                 elif sid is not None and is_delete and status < 400:
                     self._bound.pop(sid, None)
             await send(message)
 
-        await self.app(scope, receive, send_wrapper)
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            if binding is not None:
+                binding.inflight -= 1
+                binding.seen = self.clock()
