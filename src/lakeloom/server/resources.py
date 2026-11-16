@@ -39,8 +39,8 @@ from mcp.types import (
 from opentelemetry.trace import Span
 from pydantic import AnyUrl
 
-from lakeloom.errors import LakeloomError
-from lakeloom.metrics import RESOURCE_READS
+from lakeloom.errors import LakeloomError, RateLimited
+from lakeloom.metrics import RATE_LIMITED, RESOURCE_READS
 from lakeloom.publish.artifacts import (
     Artifact,
     asset_context_artifact,
@@ -51,6 +51,7 @@ from lakeloom.publish.artifacts import (
     shapes_artifact,
 )
 from lakeloom.publish.negotiation import MediaType
+from lakeloom.server.ratelimit import principal_key
 from lakeloom.server.tools_common import READ_SCOPE, current_principal
 from lakeloom.telemetry import record_resource_read, start_span
 
@@ -128,6 +129,22 @@ class LakeloomMCP(MCPServer[Any]):
                     f"{what} require the {READ_SCOPE} scope",
                     f"token lacks {READ_SCOPE}",
                 )
+            )
+
+    def _check_rate(self, context: Context[Any, Any] | None) -> None:
+        """The same bucket as ``guarded()`` (NFR-SEC-16): a resource read is a call, unlike
+        ``initialize`` and the ``*/list`` requests."""
+        principal = None if context is None else current_principal(context)
+        if principal is None:
+            return  # _require_read refused it already
+        retry_after = self._deps.limiter.check(principal_key(principal))
+        if retry_after is not None:
+            RATE_LIMITED.labels(surface="mcp").inc()
+            limited = RateLimited(retry_after)
+            raise MCPError(
+                code=INTERNAL_ERROR,
+                message=limited.message,
+                data={**limited.to_dict(), **limited.details()},
             )
 
     def _context(self, ctx: ServerRequestContext[Any]) -> Context[Any, Any]:
@@ -226,6 +243,11 @@ class LakeloomMCP(MCPServer[Any]):
             self._require_read(context)  # before routing: no not_found/validation oracle
         except MCPError:
             self._count(span, "any", "forbidden")
+            raise
+        try:
+            self._check_rate(context)
+        except MCPError:
+            self._count(span, "any", "rate_limited")
             raise
         try:
             kind, build = self._route(text)

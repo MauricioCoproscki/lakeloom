@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from lakeloom.core.jobs import Job, JobRunner
+from lakeloom.core.jobs import Job, JobRunner, LeaseBusy, LeaseLost, renewing, run_leased
 
 NOW = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
 
@@ -46,12 +46,20 @@ class Sleeps:
         await asyncio.sleep(0)
 
 
-def _runner(leases: FakeLeases, sleeps: Sleeps) -> JobRunner:
+def _runner(leases: FakeLeases, sleeps: Sleeps, heartbeat: Sleeps | None = None) -> JobRunner:
+    if heartbeat is None:
+        return JobRunner(
+            leases,  # pyright: ignore[reportArgumentType]
+            "me",
+            clock=lambda: NOW,
+            sleep=sleeps,
+        )
     return JobRunner(
         leases,  # pyright: ignore[reportArgumentType]
         "me",
         clock=lambda: NOW,
         sleep=sleeps,
+        heartbeat_sleep=heartbeat,
     )
 
 
@@ -242,3 +250,101 @@ async def test_release_error_is_logged_by_class(caplog: pytest.LogCaptureFixture
     with caplog.at_level(logging.WARNING, logger="lakeloom.jobs"):
         await runner.stop()
     assert "OSError" in caplog.text and "pw@db" not in caplog.text
+
+
+# --- the heartbeat while a tick runs (a tick longer than the TTL) --------------------------
+
+
+async def test_long_tick_keeps_renewing() -> None:
+    """A tick that outlasts its TTL renews every TTL/3 and is not cut."""
+    renewed = asyncio.Event()
+    # 1 loop acquire + 5 heartbeat renewals: 5 x 20 s outlasts the 60 s TTL.
+    leases = FakeLeases(lambda n: renewed.set() or True if n >= 6 else True)
+    sleeps, beats = Sleeps(rounds=0), Sleeps(rounds=10)
+    runner = _runner(leases, sleeps, beats)
+    finished = asyncio.Event()
+
+    async def tick() -> None:
+        await renewed.wait()
+        finished.set()
+
+    runner.add(Job("job", lambda: 5.0, tick))
+    await runner.start()
+    await asyncio.wait_for(sleeps.parked.wait(), 2)
+    assert finished.is_set()
+    assert beats.calls[:5] == [20.0] * 5  # TTL 60 s / 3
+    assert all(a == ("job", "me", timedelta(seconds=60)) for a in leases.acquires)
+    status = runner.status()["job"]
+    assert status.held and status.last_error is None
+    await runner.stop()
+
+
+async def test_lost_renewal_cancels_the_tick(caplog: pytest.LogCaptureFixture) -> None:
+    # The loop's acquire and one renewal succeed, the next renewal is refused.
+    leases, sleeps, beats = FakeLeases(lambda n: n <= 2), Sleeps(rounds=0), Sleeps(rounds=10)
+    runner = _runner(leases, sleeps, beats)
+    cancelled = asyncio.Event()
+
+    async def tick() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    runner.add(Job("job", lambda: 5.0, tick))
+    with caplog.at_level(logging.ERROR, logger="lakeloom.jobs"):
+        await runner.start()
+        await asyncio.wait_for(sleeps.parked.wait(), 2)
+    assert cancelled.is_set()
+    assert len(leases.acquires) == 3
+    status = runner.status()["job"]
+    assert not status.held and status.last_error == "LeaseLost"
+    assert "lease lost" in caplog.text
+    await runner.stop()
+
+
+async def test_two_failed_renewals_cancel_one_does_not() -> None:
+    class Flaky(FakeLeases):
+        async def acquire(
+            self, name: str, holder: str, ttl: timedelta, *, now: datetime | None = None
+        ) -> bool:
+            await super().acquire(name, holder, ttl, now=now)
+            if len(self.acquires) in (2, 4, 5):  # one failure, a success, then two in a row
+                raise OSError("postgresql://u:pw@db gone")
+            return True
+
+    leases = Flaky()
+
+    async def work() -> None:
+        await asyncio.Event().wait()
+
+    async def beat(_: float) -> None:
+        await asyncio.sleep(0)
+
+    await leases.acquire("job", "me", timedelta(seconds=60))
+    with pytest.raises(LeaseLost):
+        await asyncio.wait_for(
+            renewing(leases, "job", "me", timedelta(seconds=60), work, sleep=beat), 2
+        )
+    assert len(leases.acquires) == 5
+
+
+async def test_run_leased_busy_and_release() -> None:
+    leases = FakeLeases(lambda n: n != 1)
+
+    async def work() -> int:
+        return 7
+
+    with pytest.raises(LeaseBusy):
+        await run_leased(leases, "x", "me", timedelta(minutes=15), work)
+    assert leases.releases == []
+    assert await run_leased(leases, "x", "me", timedelta(minutes=15), work) == 7
+    assert leases.releases == [("x", "me")]
+
+    async def boom() -> int:
+        raise RuntimeError("no")
+
+    with pytest.raises(RuntimeError):
+        await run_leased(leases, "x", "me", timedelta(minutes=15), boom)
+    assert leases.releases == [("x", "me"), ("x", "me")]

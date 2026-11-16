@@ -3,8 +3,11 @@
 Each :class:`Job` is a loop: renew (or take) its lease, run one tick if the lease is held,
 sleep for the job's interval. The lease TTL is ``max(3 * interval, 60 s)``, so a replica that
 stops renewing loses the job after three missed rounds at most; a replica that lost the lease
-skips the tick. A tick that raises is logged with the exception class only (its text may carry
-a URL with credentials, NFR-SEC-11) and the loop goes on.
+skips the tick. While a tick runs, a heartbeat renews the lease every TTL/3
+(:func:`renewing`), so a tick longer than the TTL keeps it; when a renewal is refused (another
+replica took the lease), or two in a row fail, the tick is cancelled: two replicas never run
+one job at the same time. A tick that raises is logged with the exception class only (its
+text may carry a URL with credentials, NFR-SEC-11) and the loop goes on.
 
 :meth:`JobRunner.stop` ends every loop between ticks: a loop that is sleeping or renewing is
 cancelled at once, a running tick may finish within ``grace`` seconds (then it is cancelled
@@ -18,10 +21,22 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 from lakeloom.state.leases import LeaseRepository
 
-__all__ = ["MIN_TTL_SECONDS", "Job", "JobRunner", "JobStatus", "lease_ttl"]
+__all__ = [
+    "MIN_TTL_SECONDS",
+    "Job",
+    "JobRunner",
+    "JobStatus",
+    "LeaseBusy",
+    "LeaseLost",
+    "LeaseStore",
+    "lease_ttl",
+    "renewing",
+    "run_leased",
+]
 
 _log = logging.getLogger("lakeloom.jobs")
 MIN_TTL_SECONDS = 60.0
@@ -35,6 +50,102 @@ def _utcnow() -> datetime:
 def lease_ttl(interval: float) -> timedelta:
     """``max(3 * interval, 60 s)``."""
     return timedelta(seconds=max(3 * interval, MIN_TTL_SECONDS))
+
+
+Sleep = Callable[[float], Awaitable[None]]
+_MAX_RENEW_FAILURES = 2  # a third attempt would come at the TTL: too late
+
+
+class LeaseLost(Exception):
+    """The lease was lost while its work ran; the work was cancelled."""
+
+
+class LeaseBusy(Exception):
+    """Another holder has the lease."""
+
+
+class LeaseStore(Protocol):
+    """What a lease holder needs of :class:`~lakeloom.state.leases.LeaseRepository`."""
+
+    async def acquire(
+        self, name: str, holder: str, ttl: timedelta, *, now: datetime | None = None
+    ) -> bool: ...
+
+    async def release(self, name: str, holder: str) -> None: ...
+
+
+async def renewing[T](
+    leases: LeaseStore,
+    name: str,
+    holder: str,
+    ttl: timedelta,
+    work: Callable[[], Awaitable[T]],
+    *,
+    clock: Callable[[], datetime] = _utcnow,
+    sleep: Sleep = asyncio.sleep,
+) -> T:
+    """Run ``work`` (the lease ``name`` already held) while renewing the lease every TTL/3.
+
+    A refused renewal (another holder has it), or two failed ones in a row (the lease may
+    expire before the next), cancels ``work`` and raises :class:`LeaseLost`. Failures are
+    logged with the exception class only (NFR-SEC-11)."""
+    period = ttl.total_seconds() / 3
+    task: asyncio.Future[T] = asyncio.ensure_future(work())
+    lost = False
+
+    async def heartbeat() -> None:
+        nonlocal lost
+        failures = 0
+        while not task.done():
+            await sleep(period)
+            try:
+                held = await leases.acquire(name, holder, ttl, now=clock())
+            except Exception as exc:
+                failures += 1
+                _log.warning("job %s: lease renewal failed (%s)", name, type(exc).__name__)
+                held = failures < _MAX_RENEW_FAILURES
+            else:
+                failures = 0
+            if not held:
+                lost = True
+                task.cancel()
+                return
+
+    beat = asyncio.create_task(heartbeat(), name=f"lakeloom-lease:{name}")
+    try:
+        return await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if lost and (current is None or current.cancelling() == 0):
+            _log.error("job %s: lease lost while running; cancelled", name)
+            raise LeaseLost(name) from None
+        raise
+    finally:
+        beat.cancel()
+        await asyncio.gather(beat, return_exceptions=True)
+
+
+async def run_leased[T](
+    leases: LeaseStore,
+    name: str,
+    holder: str,
+    ttl: timedelta,
+    work: Callable[[], Awaitable[T]],
+    *,
+    clock: Callable[[], datetime] = _utcnow,
+    sleep: Sleep = asyncio.sleep,
+) -> T:
+    """Take the lease ``name`` (:class:`LeaseBusy` when another holder has it), run ``work``
+    under :func:`renewing`, then release the lease, however ``work`` ended."""
+    if not await leases.acquire(name, holder, ttl, now=clock()):
+        raise LeaseBusy(name)
+    try:
+        return await renewing(leases, name, holder, ttl, work, clock=clock, sleep=sleep)
+    finally:
+        try:
+            await leases.release(name, holder)
+        except Exception as exc:  # it expires by itself; class only (NFR-SEC-11)
+            _log.warning("lease %s: release failed (%s)", name, type(exc).__name__)
 
 
 @dataclass
@@ -60,12 +171,14 @@ class JobRunner:
         holder: str,
         *,
         clock: Callable[[], datetime] = _utcnow,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        sleep: Sleep = asyncio.sleep,
+        heartbeat_sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._leases = leases
         self.holder = holder
         self._clock = clock
         self._sleep = sleep
+        self._heartbeat_sleep = heartbeat_sleep
         self._jobs: dict[str, Job] = {}
         self._status: dict[str, JobStatus] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -129,15 +242,27 @@ class JobRunner:
                 held = False
             status.held = held
             if held:
-                await self._tick(job, status)
+                await self._tick(job, status, lease_ttl(interval))
                 if self._stopping:
                     return
             await self._sleep(interval)
 
-    async def _tick(self, job: Job, status: JobStatus) -> None:
+    async def _tick(self, job: Job, status: JobStatus, ttl: timedelta) -> None:
         self._in_tick.add(job.name)
         try:
-            await job.tick()
+            await renewing(
+                self._leases,
+                job.name,
+                self.holder,
+                ttl,
+                job.tick,
+                clock=self._clock,
+                sleep=self._heartbeat_sleep,
+            )
+        except LeaseLost:
+            # Another replica may run it now: this one stops until it gets the lease again.
+            status.held = False
+            status.last_error = LeaseLost.__name__
         except Exception as exc:
             _log.error("job %s failed (%s)", job.name, type(exc).__name__)
             status.last_error = type(exc).__name__

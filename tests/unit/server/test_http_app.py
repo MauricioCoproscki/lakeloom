@@ -191,6 +191,30 @@ async def test_build_deps_and_lifespan_close(tmp_path: Path) -> None:
     assert deps.validator is not None
 
 
+async def test_failing_jobs_stop_still_closes_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deps = build_deps(_settings(tmp_path))
+    closed: list[bool] = []
+    real_aclose = deps.om.aclose
+
+    async def aclose() -> None:
+        closed.append(True)
+        await real_aclose()
+
+    async def broken_stop(*, grace: float = 30.0) -> None:
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(deps.jobs, "stop", broken_stop)
+    monkeypatch.setattr(deps.om, "aclose", aclose)
+    app = create_app(deps, checks=[_check("openmetadata", True)])
+    with pytest.raises(RuntimeError, match="stop failed"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert closed == [True]  # the OM client, and the engine after it
+    assert deps.idp_http is not None and deps.idp_http.is_closed
+
+
 def test_fr_src_01_build_deps_loads_sources(tmp_path: Path) -> None:
     lake = Path(__file__).parents[2] / "fixtures" / "lake"
     config = tmp_path / "sources.yaml"
@@ -491,25 +515,57 @@ def test_reconcile_job_off_without_git(tmp_path: Path) -> None:
 
 
 async def test_reconcile_job_commit_flag(tmp_path: Path) -> None:
+    calls: list[tuple[bool, str | None]] = []
+    holders: list[str | None] = []
+
+    for flag in (False, True):
+        settings = _git_settings(
+            tmp_path,
+            git_mode="direct",
+            forge="none",
+            reconcile_interval_seconds=60,
+            reconcile_commit=flag,
+        )
+        deps = build_deps(settings)
+        await upgrade(deps.engine)
+
+        class FakeReconcile:
+            def __init__(self, leases: LeaseRepository) -> None:
+                self.leases = leases
+
+            async def run(self, *, commit: bool, models: Sequence[str] | None = None) -> None:
+                holders.append(await self.leases.holder_of("reconcile-commit"))
+                calls.append((commit, None))
+
+        deps.reconcile_service = FakeReconcile(deps.leases)  # pyright: ignore[reportAttributeAccessIssue]
+        await deps._reconcile_tick()  # pyright: ignore[reportPrivateUsage]
+        # Only a committing run takes the commit lease, and releases it after.
+        assert await deps.leases.holder_of("reconcile-commit") is None
+    assert calls == [(False, None), (True, None)]
+    assert holders == [None, deps.jobs.holder]
+
+
+async def test_reconcile_job_skips_commit_while_cli_commits(tmp_path: Path) -> None:
+    settings = _git_settings(
+        tmp_path,
+        git_mode="direct",
+        forge="none",
+        reconcile_interval_seconds=60,
+        reconcile_commit=True,
+    )
+    deps = build_deps(settings)
+    await upgrade(deps.engine)
+    assert await deps.leases.acquire("reconcile-commit", "cli", timedelta(minutes=15))
     calls: list[bool] = []
 
     class FakeReconcile:
-        async def run(self, *, commit: bool) -> None:
+        async def run(self, *, commit: bool, models: Sequence[str] | None = None) -> None:
             calls.append(commit)
 
-    for flag in (False, True):
-        deps = build_deps(
-            _git_settings(
-                tmp_path,
-                git_mode="direct",
-                forge="none",
-                reconcile_interval_seconds=60,
-                reconcile_commit=flag,
-            )
-        )
-        deps.reconcile_service = FakeReconcile()  # pyright: ignore[reportAttributeAccessIssue]
-        await deps._reconcile_tick()  # pyright: ignore[reportPrivateUsage]
-    assert calls == [False, True]
+    deps.reconcile_service = FakeReconcile()  # pyright: ignore[reportAttributeAccessIssue]
+    await deps._reconcile_tick()  # pyright: ignore[reportPrivateUsage]
+    assert calls == []
+    assert await deps.leases.holder_of("reconcile-commit") == "cli"
     assert deps._reconcile_interval() == 60  # pyright: ignore[reportPrivateUsage]
 
 

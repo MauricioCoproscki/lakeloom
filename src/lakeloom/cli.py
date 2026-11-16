@@ -32,7 +32,6 @@ import sys
 from collections.abc import AsyncGenerator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -1195,8 +1194,6 @@ def drift_cmd(
 
 # --- reconciliation (operator side, FR-GIT-08; the same service as the ``reconcile`` job) -----
 
-RECONCILE_LEASE = "reconcile"  # the server job's lease name
-_RECONCILE_LEASE_FLOOR = timedelta(minutes=15)
 _LISTED_TERMS = 50
 EXIT_DRIFT = 3
 
@@ -1263,32 +1260,36 @@ async def _open_reconcile(
 async def _reconcile_run(
     service: "ReconcileService",
     leases: "LeaseRepository",
-    settings: Settings,
     *,
     commit: bool,
     models: list[str] | None,
 ) -> "ReconcileRun":
-    """Run once; a committing run holds the ``reconcile`` lease, so it never races the server's
-    job into queueing a second publication of the same drift. A check-only run writes no Git
-    row and takes no lease."""
+    """Run once. A committing run holds the ``reconcile-commit`` lease, so it never races a
+    committing server job (or another ``--commit``) into queueing a second publication of the
+    same drift; the server's ``reconcile`` job lease is not needed. A check-only run writes no
+    Git row and takes no lease."""
     if not commit:
         return await service.run(commit=False, models=models)
-    from lakeloom.core.jobs import lease_ttl
+    from lakeloom.core.jobs import LeaseBusy, LeaseLost
+    from lakeloom.core.reconcile import run_committing
     from lakeloom.state.leases import instance_id
 
-    me = instance_id()
-    ttl = max(lease_ttl(settings.reconcile_interval_seconds), _RECONCILE_LEASE_FLOOR)
-    if not await leases.acquire(RECONCILE_LEASE, me, ttl):
+    try:
+        return await run_committing(service, leases, instance_id(), models=models)
+    except LeaseBusy:
         raise LakeloomError(
             "conflict",
-            "reconciliation is running in the server; try again later",
-            "the server's reconcile job holds its lease while it is on: let it commit "
-            "(LAKELOOM_RECONCILE_COMMIT=true), or run without --commit to only report",
-        )
-    try:
-        return await service.run(commit=True, models=models)
-    finally:
-        await leases.release(RECONCILE_LEASE, me)
+            "a committing reconciliation is already running; try again later",
+            "the server's reconcile job (LAKELOOM_RECONCILE_COMMIT=true) or another "
+            "`lakeloom reconcile --commit` holds the reconcile-commit lease; run without "
+            "--commit to only report",
+        ) from None
+    except LeaseLost:
+        raise LakeloomError(
+            "conflict",
+            "the reconcile-commit lease was lost during the run; it was stopped",
+            "check the state store, then run lakeloom reconcile --commit again",
+        ) from None
 
 
 def _terms_text(label: str, iris: list[str]) -> list[str]:
@@ -1355,11 +1356,17 @@ def reconcile_cmd(
             )
         models = [model] if model is not None else None
         async with _open_reconcile(settings) as (service, leases):
-            run = await _reconcile_run(service, leases, settings, commit=commit, models=models)
+            run = await _reconcile_run(service, leases, commit=commit, models=models)
         if as_json:
             typer.echo(run.model_dump_json(indent=2))
         else:
             typer.echo(_reconcile_text(run, commit=commit), nl=False)
+        if run.results and all(r.status == "skipped" for r in run.results):
+            # Exit 0 all the same (skips do not count), but nothing was compared at all.
+            typer.echo(
+                "warning: every model was skipped; OpenMetadata was not compared with Git",
+                err=True,
+            )
         code.append(_reconcile_exit(run.results))
 
     _run(_go())

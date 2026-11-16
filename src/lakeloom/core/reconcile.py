@@ -11,8 +11,15 @@ current OM export with ``ontology.ttl`` at the commit of its latest ``done`` pub
   checked after the OM read and again right before a commit is enqueued (``_in_flight``);
 - no done publication: ``skipped`` ("never published");
 - the baseline commit missing even after fetching the target branch and the publication's
-  branch (a squash-merged pull request): ``skipped`` ("baseline commit not found");
+  branch: the commit on the target branch carrying the publication's
+  ``Lakeloom-Publication`` trailer is the baseline (a squash-merged pull request keeps it, as
+  the publisher finds merged PRs); without one, ``skipped`` ("baseline commit not found");
+- the model deleted in OpenMetadata: ``skipped`` ("model not found in OpenMetadata");
 - OM unreachable: ``error``.
+
+In ``pull_request`` mode the baseline is the publication's commit: an unmerged or closed
+pull request (``prp_`` or ``rec_``) still counts as the baseline until the next publication
+of the model (ADR 0017).
 
 Both graphs go through :func:`~lakeloom.rdf.semantic.semantic_view` (bookkeeping, glossary
 id, prefixes and triple order never count) and :func:`~lakeloom.core.release_diff.diff_graphs`:
@@ -34,7 +41,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -44,6 +51,7 @@ from lakeloom import metrics
 from lakeloom.config import Settings
 from lakeloom.core.audit import AuditRecord, record
 from lakeloom.core.callers import Actor
+from lakeloom.core.jobs import LeaseStore, run_leased
 from lakeloom.core.model_create import validate_slug
 from lakeloom.core.model_policy import ModelPolicyEntry, git_mode_for
 from lakeloom.core.models import ModelInfo, ModelService
@@ -52,7 +60,7 @@ from lakeloom.core.release_diff import ReleaseDiff, diff_graphs
 from lakeloom.errors import LakeloomError
 from lakeloom.gitstore.git import GitError
 from lakeloom.gitstore.layout import RECONCILE_ORIGIN, Snapshot, build_reconcile_message
-from lakeloom.gitstore.publisher import repo_lock
+from lakeloom.gitstore.publisher import TRAILER_KEY, repo_lock
 from lakeloom.gitstore.snapshot import exports_or_base
 from lakeloom.om.client import OMError
 from lakeloom.rdf.canonical import parse_rdf
@@ -63,11 +71,14 @@ from lakeloom.state.proposals import PENDING_STATUSES, ProposalRepository
 from lakeloom.state.publications import Publication, PublicationRepository, new_publication_id
 
 __all__ = [
+    "COMMIT_LEASE",
+    "COMMIT_LEASE_TTL",
     "RECONCILE_ACTOR",
     "ReconcileResult",
     "ReconcileRun",
     "ReconcileService",
     "ReconcileStatus",
+    "run_committing",
 ]
 
 _log = logging.getLogger("lakeloom.reconcile")
@@ -81,6 +92,11 @@ NEVER_PUBLISHED: Final = "never published"
 NO_BASELINE: Final = "baseline commit not found"
 NOT_EXPORTED: Final = "not committed (export failed)"
 NOT_QUEUED: Final = "not committed (internal error)"
+# Held only around a committing run (the ``reconcile`` job with LAKELOOM_RECONCILE_COMMIT, or
+# ``lakeloom reconcile --commit``), so two runs never queue the same drift twice. The
+# ``reconcile`` lease only schedules the job; a check-only run takes no commit lease.
+COMMIT_LEASE: Final = "reconcile-commit"
+COMMIT_LEASE_TTL: Final = timedelta(minutes=15)  # renewed every 5 minutes while the run lasts
 _COMMIT_ERRORS: Final = {NOT_EXPORTED: "export_failed", NOT_QUEUED: "internal"}
 _NOT_CONFIGURED = LakeloomError(
     "validation_error",
@@ -128,6 +144,8 @@ class Baseline(Protocol):
 
     async def show(self, ref: str, path: str) -> bytes | None: ...
 
+    async def find_trailer(self, ref: str, key: str, value: str) -> str | None: ...
+
 
 class Publisher(Protocol):
     """What reconciliation needs of :class:`~lakeloom.gitstore.publisher.GitPublisher`."""
@@ -165,6 +183,25 @@ def _om_reason(exc: LakeloomError) -> str:
     if exc.code == "not_found":
         return "model not found in OpenMetadata"
     return f"OpenMetadata read failed ({exc.code})"
+
+
+class _Runs(Protocol):
+    async def run(self, *, commit: bool, models: Sequence[str] | None = None) -> "ReconcileRun": ...
+
+
+async def run_committing(
+    service: _Runs, leases: LeaseStore, holder: str, *, models: Sequence[str] | None = None
+) -> ReconcileRun:
+    """``service.run(commit=True)`` under the :data:`COMMIT_LEASE`, renewed while it runs and
+    released after. Raises :class:`~lakeloom.core.jobs.LeaseBusy` when another process holds
+    it (a committing run is going on there)."""
+    return await run_leased(
+        leases,
+        COMMIT_LEASE,
+        holder,
+        COMMIT_LEASE_TTL,
+        lambda: service.run(commit=True, models=models),
+    )
 
 
 class ReconcileService:
@@ -270,6 +307,8 @@ class ReconcileService:
             info = await self._models.get_model(slug)
             current = await self._models.graph(slug)
         except LakeloomError as exc:
+            if exc.code == "not_found":  # deleted in OM since its last publication
+                return result("skipped", _om_reason(exc))
             return result("error", _om_reason(exc))
         base_iri = info.base_iri or last.payload.base_iri
         if not base_iri:
@@ -335,9 +374,10 @@ class ReconcileService:
 
     async def _baseline(self, last: Publication) -> bytes | None:
         """``ontology.ttl`` at ``last``'s commit, fetching the target branch, then ``last``'s
-        branch, when the commit is not local. ``None`` when the commit cannot be found (or,
-        never for a publication commit, it has no ``ontology.ttl``: also "not found").
-        Any other Git failure raises."""
+        branch, when the commit is not local. Still missing (a squash merge, the PR branch
+        deleted): the commit of ``origin/<target>`` with ``last``'s ``Lakeloom-Publication``
+        trailer. ``None`` when no commit is found (or, never for a publication commit, it
+        has no ``ontology.ttl``: also "not found"). Any other Git failure raises."""
         wc = self._publisher.working_copy
         sha = last.commit_sha
         if wc is None or not sha:
@@ -358,7 +398,11 @@ class ReconcileService:
                         continue
                     found = await wc.has_commit(sha)
                 if not found:
-                    return None
+                    target = self._settings.git_branch
+                    merged = await wc.find_trailer(f"origin/{target}", TRAILER_KEY, last.id)
+                    if merged is None:
+                        return None
+                    sha = merged
                 return await wc.show(sha, f"ontologies/{last.model}/ontology.ttl")
         except ValueError:  # an unsafe stored sha or branch name is never used
             return None

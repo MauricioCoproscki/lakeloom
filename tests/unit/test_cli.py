@@ -934,6 +934,27 @@ def test_cli_reconcile_exit_codes(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert fake.calls[1] == {"commit": False, "models": ["retail"]}
 
 
+def test_cli_reconcile_warns_when_every_model_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from lakeloom.core.reconcile import ReconcileResult
+
+    _reconcile_env(monkeypatch, tmp_path)
+    fake = _patch_reconcile(monkeypatch)
+    runner = CliRunner()
+    skipped = ReconcileResult(model="shop", status="skipped", reason="baseline commit not found")
+    fake.results = [skipped, skipped.model_copy(update={"model": "new"})]
+    all_skipped = runner.invoke(app, ["reconcile"])
+    fake.results = [skipped, ReconcileResult(model="ok", status="in_sync")]
+    some_checked = runner.invoke(app, ["reconcile"])
+
+    warning = "warning: every model was skipped"
+    assert all_skipped.exit_code == 0, all_skipped.output  # unchanged
+    assert warning in all_skipped.stderr and warning not in all_skipped.stdout
+    assert some_checked.exit_code == 0
+    assert warning not in some_checked.stderr
+
+
 def test_cli_reconcile_without_git_is_validation_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -945,10 +966,11 @@ def test_cli_reconcile_without_git_is_validation_error(
     assert "error validation_error: Git publishing is not configured" in result.output
 
 
-def test_cli_reconcile_commit_refused_while_server_holds_lease(
+def test_cli_reconcile_commit_runs_beside_the_scheduled_job(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A manual --commit and the scheduled job never both enqueue: they share the lease."""
+    """The server's job lease (``reconcile``) only schedules: --commit takes the short
+    ``reconcile-commit`` lease, refused only while another committing run holds it."""
     import asyncio
     from datetime import timedelta
 
@@ -961,38 +983,45 @@ def test_cli_reconcile_commit_refused_while_server_holds_lease(
     fake.results = [ReconcileResult(model="shop", status="in_sync")]
     db = f"sqlite:///{tmp_path}/l.db"
 
-    async def lease(action: str) -> str | None:
+    async def lease(action: str, name: str) -> str | None:
         engine = create_engine(db)
         await upgrade(engine)
         repo = LeaseRepository(engine)
         try:
             if action == "take":
-                assert await repo.acquire("reconcile", "server-replica", timedelta(hours=1))
+                assert await repo.acquire(name, "server-replica", timedelta(hours=1))
             elif action == "free":
-                await repo.release("reconcile", "server-replica")
-            return await repo.holder_of("reconcile")
+                await repo.release(name, "server-replica")
+            return await repo.holder_of(name)
         finally:
             await engine.dispose()
 
-    asyncio.run(lease("take"))
     runner = CliRunner()
+    asyncio.run(lease("take", "reconcile"))  # the scheduled, non-committing job
+    beside_job = runner.invoke(app, ["reconcile", "--commit"])
+    assert beside_job.exit_code == 0, beside_job.output
+    assert fake.calls[-1] == {"commit": True, "models": None}
+    assert asyncio.run(lease("check", "reconcile")) == "server-replica"  # never touched
+    assert asyncio.run(lease("check", "reconcile-commit")) is None  # released after
 
+    asyncio.run(lease("take", "reconcile-commit"))  # a committing run elsewhere
     refused = runner.invoke(app, ["reconcile", "--commit"])
     check_only = runner.invoke(app, ["reconcile"])  # no commit: nothing to race for
-
     assert refused.exit_code == 1, refused.output
     assert (
-        "error conflict: reconciliation is running in the server; try again later" in refused.output
+        "error conflict: a committing reconciliation is already running; try again later"
+        in refused.output
     )
     assert check_only.exit_code == 0, check_only.output
-    assert fake.calls == [{"commit": False, "models": None}]
-    assert asyncio.run(lease("check")) == "server-replica"  # never released by the CLI
+    assert fake.calls[-1] == {"commit": False, "models": None}
+    assert len(fake.calls) == 2
+    assert asyncio.run(lease("check", "reconcile-commit")) == "server-replica"
 
-    asyncio.run(lease("free"))
+    asyncio.run(lease("free", "reconcile-commit"))
     done = runner.invoke(app, ["reconcile", "--commit"])
     assert done.exit_code == 0, done.output
     assert fake.calls[-1] == {"commit": True, "models": None}
-    assert asyncio.run(lease("check")) is None  # the CLI released its lease
+    assert asyncio.run(lease("check", "reconcile-commit")) is None
 
 
 def test_cli_reconcile_reads_baselines_from_its_own_clone(tmp_path: Path) -> None:

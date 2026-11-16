@@ -37,12 +37,12 @@ from lakeloom.core.confirm import (
 )
 from lakeloom.core.drift_service import DriftSchedule, DriftService
 from lakeloom.core.imports import ImportService
-from lakeloom.core.jobs import Job, JobRunner
+from lakeloom.core.jobs import Job, JobRunner, LeaseBusy
 from lakeloom.core.model_policy import ModelPolicyEntry
 from lakeloom.core.models import ModelService
 from lakeloom.core.obo import OnBehalfOf
 from lakeloom.core.proposals import ProposalService
-from lakeloom.core.reconcile import ReconcileService
+from lakeloom.core.reconcile import ReconcileService, run_committing
 from lakeloom.core.releases import ReleaseService
 from lakeloom.core.review import ReviewService
 from lakeloom.core.scans import ScanService
@@ -159,6 +159,7 @@ class AppDeps:
     # by the app lifespan. ``git-publisher:<repo>`` with Git publishing, ``triplestore-sink``
     # with the sink, ``reconcile`` with Git publishing, ``drift-schedule`` when set.
     jobs: JobRunner = field(init=False)
+    leases: LeaseRepository = field(init=False)
     # Per-principal rate limit (NFR-SEC-16), shared by the MCP tools and the /v1 API.
     limiter: RateLimiter = field(init=False)
 
@@ -285,7 +286,8 @@ class AppDeps:
             self.policies,
             publisher=self.publisher,
         )
-        self.jobs = JobRunner(LeaseRepository(self.engine), instance_id())
+        self.leases = LeaseRepository(self.engine)
+        self.jobs = JobRunner(self.leases, instance_id())
         if self.publisher.enabled:
             # The outbox drain; the inline publish after approve takes no lease (ADR 0013).
             name = f"git-publisher:{self.publisher.repo_key}"
@@ -311,8 +313,17 @@ class AppDeps:
         return float(self.settings.reconcile_interval_seconds)
 
     async def _reconcile_tick(self) -> None:
-        if self.reconcile_service is not None:
-            await self.reconcile_service.run(commit=self.settings.reconcile_commit)
+        service = self.reconcile_service
+        if service is None:
+            return
+        if not self.settings.reconcile_commit:
+            await service.run(commit=False)
+            return
+        try:
+            await run_committing(service, self.leases, self.jobs.holder)
+        except LeaseBusy:
+            # ``lakeloom reconcile --commit`` is running: it queues what this run would.
+            _log.info("reconcile: a committing reconciliation is already running; run skipped")
 
     def _drift_interval(self) -> float:
         return float(self.settings.drift_interval_seconds)
@@ -571,22 +582,24 @@ def create_app(
                     await stack.enter_async_context(factory())
                 yield
         finally:
-            await deps.jobs.stop(grace=settings.shutdown_timeout_seconds)
-            for task in (retry, *deps.sink_tasks):
-                if task is not None:
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-            await close_sources(deps.sources)
-            if deps.idp_http is not None:
-                await deps.idp_http.aclose()
-            if deps.git_http is not None:
-                await deps.git_http.aclose()
-            if deps.sink_http is not None:
-                await deps.sink_http.aclose()
-            await deps.om.aclose()
-            await deps.engine.dispose()
-            if owns_telemetry:
-                telemetry.shutdown()
+            try:
+                await deps.jobs.stop(grace=settings.shutdown_timeout_seconds)
+            finally:  # a failing stop never leaves the clients and the engine open
+                for task in (retry, *deps.sink_tasks):
+                    if task is not None:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                await close_sources(deps.sources)
+                if deps.idp_http is not None:
+                    await deps.idp_http.aclose()
+                if deps.git_http is not None:
+                    await deps.git_http.aclose()
+                if deps.sink_http is not None:
+                    await deps.sink_http.aclose()
+                await deps.om.aclose()
+                await deps.engine.dispose()
+                if owns_telemetry:
+                    telemetry.shutdown()
 
     # No web UI (spec §0.7): Swagger/ReDoc pages off; /openapi.json stays, behind auth.
     app = FastAPI(title="Lakeloom", lifespan=lifespan, docs_url=None, redoc_url=None)

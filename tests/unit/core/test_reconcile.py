@@ -127,6 +127,8 @@ class FakeWC:
         self.branches: dict[str, set[str]] = {}
         self.fetched: list[str] = []
         self.broken: GitError | None = None
+        self.trailers: dict[tuple[str, str, str], str] = {}  # (ref, key, value) -> sha
+        self.searched: list[tuple[str, str, str]] = []
 
     def add(self, sha: str, ttl: str, *, local: bool = True, branch: str | None = None) -> None:
         self.files[sha] = {"ontologies/shop/ontology.ttl": ttl.encode()}
@@ -147,6 +149,10 @@ class FakeWC:
             raise GitError("not_found", "couldn't find remote ref")
         self.local |= self.branches[branch]
         return next(iter(self.branches[branch]), "f" * 40)
+
+    async def find_trailer(self, ref: str, key: str, value: str) -> str | None:
+        self.searched.append((ref, key, value))
+        return self.trailers.get((ref, key, value))
 
     async def show(self, ref: str, path: str) -> bytes | None:
         if self.broken is not None:
@@ -393,6 +399,32 @@ async def test_baseline_missing_after_fetch_skips(engine: AsyncEngine) -> None:
     result = await kit.service.check("shop")
     assert (result.status, result.reason) == ("skipped", "baseline commit not found")
     assert kit.wc.fetched == ["main", "lakeloom/shop/prp_1"]
+
+
+async def test_squash_merged_baseline_found_by_trailer(engine: AsyncEngine) -> None:
+    """The PR head commit is gone (squash merge, branch deleted): the target branch's commit
+    with the publication's trailer is the baseline."""
+    kit = Kit(engine, OM_SAME)
+    squash = "c" * 40
+    kit.wc.add(squash, GIT_TTL, branch="main")
+    await kit.published(branch="lakeloom/shop/prp_1")  # SHA is on no branch any more
+    kit.wc.trailers[("origin/main", "Lakeloom-Publication", "pub_1")] = squash
+    assert (await kit.service.check("shop")).status == "in_sync"
+    assert kit.wc.searched == [("origin/main", "Lakeloom-Publication", "pub_1")]
+    kit.models.ttl = OM_EDITED
+    assert (await kit.service.check("shop")).status == "drifted"
+
+
+async def test_model_deleted_in_om_is_skipped(engine: AsyncEngine) -> None:
+    kit = await _kit(engine, OM_EDITED)
+
+    async def gone(slug: str) -> ModelInfo:
+        raise LakeloomError("not_found", "no such glossary", "check the slug")
+
+    kit.models.get_model = gone  # type: ignore[method-assign]
+    [result] = (await kit.service.run(commit=True)).results
+    assert (result.status, result.reason) == ("skipped", "model not found in OpenMetadata")
+    assert await kit.pubs.counts(REPO) == {"pending": 0, "done": 1, "blocked": 0}
 
 
 async def test_om_unreachable_is_error_without_commit(engine: AsyncEngine) -> None:

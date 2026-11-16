@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from kit import AuthKit, Clock, DepsFactory, mcp_session
+from mcp.shared.exceptions import MCPError
 from starlette.testclient import TestClient
 from test_tools_semantic import fake_deps
 
@@ -145,6 +146,47 @@ async def test_tools_list_not_limited(make_deps: DepsFactory, kit: AuthKit) -> N
 
     assert not ok.is_error
     assert limited_call.is_error
+
+
+async def test_mcp_resource_read_rate_limited(make_deps: DepsFactory, kit: AuthKit) -> None:
+    app = create_server_app(fake_deps(make_deps, rate_limit_burst=2, rate_limit_per_minute=60))
+    before = limited("mcp")
+    errors: list[MCPError] = []
+    async with mcp_session(app, kit.token()) as session:
+        for _ in range(2):
+            await session.read_resource("lakeloom://models")
+        try:
+            await session.read_resource("lakeloom://models")
+        except MCPError as exc:  # caught in the session: errors escaping it get group-wrapped
+            errors.append(exc)
+        tool = await session.call_tool("list_models", {})  # the same bucket as tools
+
+    assert len(errors) == 1
+    data = errors[0].data
+    assert isinstance(data, dict)
+    assert data["error"]["code"] == "rate_limited"
+    assert data["error"]["hint"].startswith("retry after ")
+    assert int(data["retry_after"]) >= 1
+    assert tool.is_error
+    assert limited("mcp") == before + 2
+
+
+async def test_initialize_and_lists_not_limited(make_deps: DepsFactory, kit: AuthKit) -> None:
+    app = create_server_app(fake_deps(make_deps, rate_limit_burst=1, rate_limit_per_minute=1))
+    # One token in the bucket: initialize and the lists below must not take it.
+    async with mcp_session(app, kit.token()) as session:
+        for _ in range(3):
+            await session.list_tools()
+            await session.list_resources()
+            await session.list_resource_templates()
+        await session.read_resource("lakeloom://models")  # the one token is still there
+        try:
+            await session.read_resource("lakeloom://models")
+        except MCPError as exc:
+            second = exc
+        else:
+            second = None
+    assert second is not None
 
 
 @pytest.fixture
