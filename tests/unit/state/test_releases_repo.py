@@ -149,6 +149,20 @@ async def test_publications_open_for_model_and_last_done(engine: AsyncEngine) ->
     assert await pubs.last_done(REPO, "other") is None
 
 
+async def test_publications_has_open_and_done_models(engine: AsyncEngine) -> None:
+    pubs = PublicationRepository(engine)
+    assert await pubs.done_models(REPO) == []
+    a = await pubs.add(_pub("p1", model="zeta"))
+    b = await pubs.add(_pub("p2"))
+    assert await pubs.has_open(REPO, "shop") and not await pubs.has_open(REPO, "none")
+    await pubs.update(a.model_copy(update={"status": "done"}))
+    await pubs.update(b.model_copy(update={"status": "done"}))
+    await pubs.add(_pub("p3"))  # pending: shop stays published and is open
+    assert await pubs.done_models(REPO) == ["shop", "zeta"]
+    assert await pubs.done_models("b" * 64) == []
+    assert await pubs.has_open(REPO, "shop") and not await pubs.has_open(REPO, "zeta")
+
+
 async def test_migration_0004_upgrade_downgrade(tmp_path: Path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'm.db'}")
     try:

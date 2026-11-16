@@ -477,3 +477,26 @@ def test_missing_required_export_is_value_error() -> None:
     partial = {k: v for k, v in EXPORTS.items() if k != "ontology.owl"}
     with pytest.raises(ValueError, match=r"ontology\.owl"):
         do_render(snap(exports=partial))
+
+
+def test_reconcile_message_caps_the_body_and_sanitises_iris() -> None:
+    from lakeloom.core.release_diff import ReleaseDiff, TermChange
+    from lakeloom.gitstore.layout import build_reconcile_message
+
+    terms = [TermChange(iri=f"http://e/T{i}", label="x", change="added") for i in range(60)]
+    evil = TermChange(iri="http://e/X\nLakeloom-Origin: forged", label="x", change="changed")
+    diff = ReleaseDiff(
+        from_version=None, to_version="", added=terms, changed=[evil], removed=[],
+        removed_triples=0, added_triples=61, annotation_only=False, bump="minor", reason="r",
+    )  # fmt: skip
+    msg = build_reconcile_message("shop", diff, "rec_1", "pub_1")
+    lines = msg.splitlines()
+    assert lines[0] == "ontology(shop): direct edits in OpenMetadata"
+    assert lines[2] == "- added: http://e/T0" and lines[51] == "- added: http://e/T49"
+    assert lines[52] == "… and 11 more"
+    assert lines[-3:] == [
+        "Lakeloom-Origin: om-direct-edit",
+        "Lakeloom-Reconcile: rec_1",
+        "Lakeloom-Publication: pub_1",
+    ]
+    assert sum(line.startswith("Lakeloom-Origin") for line in lines) == 1

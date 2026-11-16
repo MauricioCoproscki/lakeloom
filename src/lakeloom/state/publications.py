@@ -9,6 +9,7 @@ publisher clears them). A payload that no longer validates is read as ``blocked`
 so the queue stops visibly instead of failing on every tick.
 """
 
+import builtins
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -270,6 +271,21 @@ class PublicationRepository:
         )
         async with self._sessions() as session:
             return int((await session.execute(stmt)).scalar_one())
+
+    async def has_open(self, repo: str, model: str) -> bool:
+        """Whether ``model`` has a pending or blocked publication in ``repo``."""
+        return await self.open_for_model(repo, model) > 0
+
+    async def done_models(self, repo: str) -> builtins.list[str]:
+        """The models of ``repo`` with at least one done publication, sorted."""
+        stmt = (
+            select(PublicationRow.model)
+            .where(PublicationRow.repo == repo, PublicationRow.status == "done")
+            .distinct()
+            .order_by(PublicationRow.model)
+        )
+        async with self._sessions() as session:
+            return [str(m) for m in (await session.execute(stmt)).scalars()]
 
     async def last_done(self, repo: str, model: str) -> Publication | None:
         """``model``'s most recent done publication in ``repo`` (queue order), if any."""

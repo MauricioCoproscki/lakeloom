@@ -25,6 +25,7 @@ from lakeloom.core.proposals import (
     TableProvenance,
     provenance_block,
 )
+from lakeloom.core.release_diff import ReleaseDiff
 
 SUBJECT_MAX = 100
 BODY_MAX_OPS = 50
@@ -149,6 +150,32 @@ def build_message(p: Proposal, approval: ReviewRecord, publication_id: str) -> s
     )
     lines += _origin_trailers(p)
     lines.append(_trailer("Lakeloom-AI-Generated", "true" if prov.ai_generated else "false"))
+    lines.append(_trailer("Lakeloom-Publication", publication_id))
+    return "\n".join(lines) + "\n"
+
+
+RECONCILE_ORIGIN = "om-direct-edit"
+
+
+def build_reconcile_message(
+    slug: str, diff: ReleaseDiff, reconcile_id: str, publication_id: str
+) -> str:
+    """The message of a reconcile commit: direct edits found in OpenMetadata (FR-GIT-08).
+
+    The body lists up to 50 term keys (``added|changed|removed: <IRI>``), like
+    :func:`build_message`; ``Lakeloom-Publication`` is written here, as there.
+    """
+    subject = _clean(f"ontology({slug}): direct edits in OpenMetadata")
+    subject = subject if len(subject) <= SUBJECT_MAX else subject[: SUBJECT_MAX - 1] + "…"
+    lines = [subject, ""]
+    keys = [f"{t.change}: {t.iri}" for t in (*diff.added, *diff.changed, *diff.removed)]
+    if keys:
+        lines += [f"- {sanitize_trailer(k)}" for k in keys[:BODY_MAX_OPS]]
+        if len(keys) > BODY_MAX_OPS:
+            lines.append(f"… and {len(keys) - BODY_MAX_OPS} more")
+        lines.append("")
+    lines.append(_trailer("Lakeloom-Origin", RECONCILE_ORIGIN))
+    lines.append(_trailer("Lakeloom-Reconcile", reconcile_id))
     lines.append(_trailer("Lakeloom-Publication", publication_id))
     return "\n".join(lines) + "\n"
 

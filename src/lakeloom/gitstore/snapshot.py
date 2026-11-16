@@ -21,7 +21,7 @@ from lakeloom.gitstore.layout import (
 )
 from lakeloom.om.client import OMClient
 
-__all__ = ["base_snapshot", "fill_exports", "take_snapshot"]
+__all__ = ["base_snapshot", "exports_or_base", "fill_exports", "take_snapshot"]
 
 _log = logging.getLogger(__name__)
 
@@ -104,11 +104,24 @@ async def take_snapshot(
     ``info`` (the model as the approve saw it) fills the manifest fields when OM is gone.
     """
     base = base_snapshot(p, approval, publication_id, info=info)
+    return await exports_or_base(models, om, base, what=f"proposal {p.id}")
+
+
+async def exports_or_base(
+    models: ModelService, om: OMClient, base: Snapshot, *, what: str
+) -> Snapshot:
+    """``base`` with :func:`fill_exports`, or ``base`` itself when the export fails.
+
+    The one export step of every publication snapshot (an applied proposal, a reconcile
+    commit), so the same OM state always renders the same files (FR-GIT-03). A row without
+    exports stays valid: the publisher exports at publish time. ``what`` names the snapshot
+    in the warning (an id, never term text).
+    """
     try:
         return await fill_exports(models, om, base)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        what = exc.code if isinstance(exc, LakeloomError) else type(exc).__name__
-        _log.warning("proposal %s: export for Git failed at apply (%s)", p.id, what)
+        code = exc.code if isinstance(exc, LakeloomError) else type(exc).__name__
+        _log.warning("%s: export for Git failed (%s)", what, code)
         return base

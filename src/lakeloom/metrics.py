@@ -4,7 +4,7 @@ A dedicated registry avoids duplicate-registration errors when apps are built re
 (tests) and keeps default process collectors out of the exposition.
 """
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 REGISTRY = CollectorRegistry()
 
@@ -53,5 +53,16 @@ GIT_PUBLICATIONS = Counter(
 GIT_PUSH_FAILURES = Counter(
     "lakeloom_git_push_failures_total",
     "Failed git push invocations (NFR-OPS-02).",
+    registry=REGISTRY,
+)
+RECONCILE_RUNS = Counter(
+    "lakeloom_reconcile_runs_total",
+    "Reconciliation runs (FR-GIT-08) by outcome (in_sync, drifted, error).",
+    ["outcome"],
+    registry=REGISTRY,
+)
+RECONCILE_DRIFTED = Gauge(
+    "lakeloom_reconcile_drifted_models",
+    "Models whose OpenMetadata state differed from Git at the last reconciliation run.",
     registry=REGISTRY,
 )
