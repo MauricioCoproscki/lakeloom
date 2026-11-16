@@ -41,7 +41,10 @@ checked live on 2.1.0-rc1 (§ Research) and is pinned by
   (`LAKELOOM_IMPORT_TIMEOUT_SECONDS`, default `60`, 1–600; the thread is not killed); at most
   `LAKELOOM_IMPORT_MAX_TRIPLES` (default `200000`) triples.
 - JSON-LD: a string (remote) `@context` or any `@import` is refused before rdflib sees it.
-  RDF/XML: `<!DOCTYPE` / `<!ENTITY` (case-insensitive) is refused. No URL is ever dereferenced
+  RDF/XML must be strict UTF-8, with no NUL byte and no XML declaration naming another
+  encoding (else "RDF/XML must be UTF-8"; a UTF-16 document would hide its DTD from a byte
+  search); then `<!DOCTYPE` / `<!ENTITY` (case-insensitive) in the decoded text is refused (R12,
+  final review). No URL is ever dereferenced
   (NFR-SEC-13). Parse errors keep line/column (FR-IO-04).
 
 ### Namespace

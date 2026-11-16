@@ -1,12 +1,14 @@
 """Safe parsing of untrusted RDF (FR-IO-04, NFR-SEC-13).
 
 User-supplied files are parsed without network access: remote JSON-LD contexts and RDF/XML
-DTDs/entities are refused up front, the size is checked before parsing, and the triple count and
-parse time are capped. Syntax errors keep ``parse_rdf``'s line/column message.
+DTDs/entities are refused up front (RDF/XML must be UTF-8, so the DTD search sees the text),
+the size is checked before parsing, and the triple count and parse time are capped. Syntax
+errors keep ``parse_rdf``'s line/column message.
 """
 
 import asyncio
 import json
+import re
 from typing import Any, cast
 
 from rdflib import Graph, URIRef
@@ -66,9 +68,25 @@ def _check_jsonld(data: bytes) -> None:
         )
 
 
+_XML_ENCODING = re.compile(r"""^\ufeff?\s*<\?xml\b[^>]*?\bencoding\s*=\s*["']([^"']*)["']""")
+
+
 def _check_rdfxml(data: bytes) -> None:
-    lowered = data.lower()
-    if b"<!doctype" in lowered or b"<!entity" in lowered:
+    """RDF/XML must be strict UTF-8 without NULs or a non-UTF-8 encoding declaration (so no
+    other encoding can hide a DTD from the search), and must declare no DTD or entity."""
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        text = None
+    declared = _XML_ENCODING.match(text) if text is not None else None
+    if (
+        text is None
+        or "\x00" in text
+        or (declared is not None and declared.group(1).lower() not in {"utf-8", "utf8"})
+    ):
+        raise _refuse("RDF/XML must be UTF-8", "Re-encode the file as UTF-8 and retry.")
+    lowered = text.lower()
+    if "<!doctype" in lowered or "<!entity" in lowered:
         raise _refuse(
             "RDF/XML with a DTD or entity declaration is not allowed",
             "Remove the <!DOCTYPE>/<!ENTITY> declarations and write the IRIs in full.",

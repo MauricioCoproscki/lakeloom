@@ -55,7 +55,7 @@ New ADR: `docs/decisions/0016-import-drift-sparql.md`.
   - **Size.** Checked on the UTF-8 bytes *before* parsing: `LAKELOOM_IMPORT_MAX_BYTES` (default `20971520`), else `validation_error` "import is <n> bytes; the limit is <max> (LAKELOOM_IMPORT_MAX_BYTES)".
   - **Timeout.** Parse plus term extraction run in `asyncio.to_thread` under `asyncio.wait_for(LAKELOOM_IMPORT_TIMEOUT_SECONDS)` (default `60`, range 1–600), else `validation_error` "import parsing exceeded <n> s". The worker thread is not killed; this is documented.
   - **JSON-LD.** The document is loaded with `json.loads` first. Any `@context` value that is a string or holds a string (a remote context), and any `@import`, is refused: `validation_error` "remote JSON-LD contexts are not allowed; inline the context". Inline object contexts are fine.
-  - **RDF/XML.** Refused when the bytes contain `<!DOCTYPE` or `<!ENTITY`, compared case-insensitively (no DTDs, so no XXE or entity expansion).
+  - **RDF/XML.** Must be strict UTF-8, with no NUL byte and no XML declaration naming another encoding, else `validation_error` "RDF/XML must be UTF-8" (final review R12: UTF-16 hid a DTD from a byte search). Then refused when the decoded text contains `<!DOCTYPE` or `<!ENTITY`, compared case-insensitively (no DTDs, so no XXE or entity expansion).
   - **Errors.** Parse errors keep `parse_rdf`'s line/column message (FR-IO-04).
   - **Triple cap.** At most `LAKELOOM_IMPORT_MAX_TRIPLES` (default `200000`) triples, else `validation_error`.
 - **Namespace.**

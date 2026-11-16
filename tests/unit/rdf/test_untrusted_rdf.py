@@ -64,6 +64,51 @@ def test_rdfxml_doctype_refused(marker: str) -> None:
     assert "DTD" in err.message
 
 
+_ENTITY_DOC = '<!DOCTYPE r [<!ENTITY e "boom">]>\n<rdf:RDF/>'
+_RDFXML_OK = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" '
+    'xmlns:ex="https://e/"><rdf:Description rdf:about="https://e/a">'
+    "<ex:p>v</ex:p></rdf:Description></rdf:RDF>"
+)
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        _ENTITY_DOC.encode("utf-16-le"),  # no BOM: NULs hide the DOCTYPE from a byte search
+        _ENTITY_DOC.encode("utf-16"),  # with BOM
+        ('<?xml version="1.0" encoding="ISO-8859-1"?>\n<rdf:RDF/>').encode("latin-1"),
+        b"<?xml version='1.0' encoding='utf-16'?>\n<rdf:RDF/>",
+        b'<?xml version="1.0"?>\n<rdf:RDF\x00/>',
+        b'<?xml version="1.0"?>\n<rdf:RDF about="caf\xe9"/>',  # not UTF-8
+    ],
+    ids=["utf16le-no-bom", "utf16-bom", "iso-8859-1-decl", "utf16-decl", "nul", "invalid"],
+)
+def test_rdfxml_must_be_utf8(doc: bytes) -> None:
+    err = _refused(doc, "rdfxml")
+    assert err.message == "RDF/XML must be UTF-8"
+    assert "UTF-8" in (err.hint or "")
+
+
+def test_rdfxml_utf8_ok_and_doctype_checked_on_text() -> None:
+    ok = parse_untrusted(_RDFXML_OK.encode(), "rdfxml", max_bytes=BIG, max_triples=BIG)
+    assert len(ok) == 1
+    assert (
+        len(
+            parse_untrusted(
+                _RDFXML_OK.replace("UTF-8", "utf8").encode(),
+                "rdfxml",
+                max_bytes=BIG,
+                max_triples=BIG,
+            )
+        )
+        == 1
+    )
+    err = _refused(("\ufeff" + _ENTITY_DOC.replace("DOCTYPE", "DocType")).encode(), "rdfxml")
+    assert "DTD" in err.message
+
+
 def test_parse_error_keeps_line_and_column() -> None:
     err = _refused(
         b"<https://e/a> <https://e/b> <https://e/c> .\n<https://e/a> <https://e/b> .\n", "ntriples"
