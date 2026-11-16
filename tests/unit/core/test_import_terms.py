@@ -23,7 +23,7 @@ from lakeloom.om.native_rdf import build_graph
 from lakeloom.rdf.canonical import parse_rdf
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "publish"))
-from _graphs import B, cls, data, restriction
+from _graphs import B, cls, data, restriction  # pyright: ignore[reportMissingImports]
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "rdf" / "retail_m3b_1.1.0.ttl"
 M3B = "http://localhost:8000/ontology/retail_m3b/"
