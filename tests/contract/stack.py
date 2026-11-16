@@ -25,6 +25,11 @@ OM_URL = os.environ.get("OM_URL", "http://localhost:8585").rstrip("/")
 TOKEN_URL = f"{KEYCLOAK_URL}/realms/lakeloom/protocol/openid-connect/token"
 TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"  # noqa: S105 - grant URN
 ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token"  # noqa: S105 - type URN
+# The compose stack's Postgres state store (DEV ONLY role from lakeloom-db-init.sql). It holds a
+# password: never print it.
+STATE_DB_URL = os.environ.get(
+    "LAKELOOM_TEST_DB_URL", "postgresql://lakeloom:lakeloom@localhost:5432/lakeloom"
+)
 
 
 def exchange_for_om(subject_token: str) -> httpx.Response:

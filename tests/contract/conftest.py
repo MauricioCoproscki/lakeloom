@@ -10,12 +10,18 @@ from collections.abc import Callable
 
 import httpx
 import pytest
-from stack import COMPOSE, KEYCLOAK_URL, LAKELOOM_URL, OM_URL, TOKEN_URL, exchange_for_om
+from stack import (
+    COMPOSE,
+    KEYCLOAK_URL,
+    LAKELOOM_URL,
+    OM_URL,
+    STATE_DB_URL,
+    TOKEN_URL,
+    exchange_for_om,
+)
 
 # Lets the contract-marked Postgres ping in tests/unit/state run in `-m contract` too.
-os.environ.setdefault(
-    "LAKELOOM_TEST_DB_URL", "postgresql://lakeloom:lakeloom@localhost:5432/lakeloom"
-)
+os.environ.setdefault("LAKELOOM_TEST_DB_URL", STATE_DB_URL)
 
 
 @pytest.fixture(scope="session")

@@ -586,6 +586,15 @@ services:
       # Operator-managed lake sources (fixture_delta, fixture_uc, openmetadata_mcp,
       # fixture_scratch).
       LAKELOOM_CONFIG_FILE: /etc/lakeloom/sources.yaml
+      # M4a (ADR 0017): no scheduled reconciliation here. The M4a contract test runs
+      # `lakeloom reconcile --commit`, which the server's reconcile job would refuse (it
+      # holds the `reconcile` lease while it is on).
+      LAKELOOM_RECONCILE_INTERVAL_SECONDS: "0"
+      # The contract suite calls as one agent principal much faster than an agent would: a
+      # generous dev limit keeps the limiter on without throttling the tests (the M4a test
+      # checks the limit on an in-process app with a burst of 5).
+      LAKELOOM_RATE_LIMIT_PER_MINUTE: "6000"
+      LAKELOOM_RATE_LIMIT_BURST: "1000"
     volumes:
       - lakeloom-data:/data
       - om-secrets:/secrets:ro
