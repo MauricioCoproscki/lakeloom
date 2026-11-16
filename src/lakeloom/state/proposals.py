@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, DateTime, Index, String, select
+from sqlalchemy import JSON, DateTime, Index, String, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -189,6 +189,30 @@ class ProposalRepository:
         page = rows[:limit]
         more = len(rows) > limit
         return [_from_row(r) for r in page], encode_cursor(page[-1].id) if more else None
+
+    async def unpublished_candidates(
+        self, model: str, *, applied_since: datetime
+    ) -> "list[Proposal]":
+        """Proposals of ``model`` an approval may have taken into OM without a publication
+        yet (reconciliation, FR-GIT-08): pending ones (:data:`PENDING_STATUSES`) and applied
+        ones stored at or after ``applied_since``; oldest first."""
+        stmt = (
+            select(ProposalRow)
+            .where(
+                ProposalRow.model == model,
+                or_(
+                    ProposalRow.status.in_(PENDING_STATUSES),
+                    and_(
+                        ProposalRow.status == "applied",
+                        ProposalRow.updated_at >= _utc(applied_since),
+                    ),
+                ),
+            )
+            .order_by(ProposalRow.id)
+        )
+        async with self._sessions() as session:
+            rows = list((await session.execute(stmt)).scalars())
+        return [_from_row(r) for r in rows]
 
     async def applied_scan_ids(self, model: str) -> list[str]:
         """The distinct scan ids of ``applied`` proposals of ``model``, newest proposal first

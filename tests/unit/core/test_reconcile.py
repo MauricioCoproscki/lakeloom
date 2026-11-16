@@ -25,10 +25,11 @@ from lakeloom.gitstore.git import GitError
 from lakeloom.gitstore.layout import Snapshot, export_files, render
 from lakeloom.gitstore.publisher import GitPublisher
 from lakeloom.gitstore.snapshot import take_snapshot
-from lakeloom.om.models import OMCapabilities
+from lakeloom.om.models import OMCapabilities, OMChangeSet
 from lakeloom.rdf.canonical import parse_rdf, serialize
 from lakeloom.state.audit import AuditRepository
 from lakeloom.state.db import create_engine, upgrade
+from lakeloom.state.proposals import ProposalRepository
 from lakeloom.state.publications import Publication, PublicationRepository
 
 NOW = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
@@ -67,8 +68,14 @@ OM_ADDED = (
 
 
 class FakeOM:
+    def __init__(self) -> None:
+        self.states: dict[str, str] = {}  # change set id -> state; unknown: SUBMITTED
+
     async def get_capabilities(self) -> OMCapabilities:
         return OMCapabilities(reachable=True, version="1.12.0")
+
+    async def get_change_set(self, id: str) -> OMChangeSet | None:
+        return OMChangeSet(id=id, name=id, state=self.states.get(id, "SUBMITTED"))
 
 
 class FakeModels:
@@ -119,6 +126,7 @@ class FakeWC:
         self.local: set[str] = set()
         self.branches: dict[str, set[str]] = {}
         self.fetched: list[str] = []
+        self.broken: GitError | None = None
 
     def add(self, sha: str, ttl: str, *, local: bool = True, branch: str | None = None) -> None:
         self.files[sha] = {"ontologies/shop/ontology.ttl": ttl.encode()}
@@ -130,6 +138,9 @@ class FakeWC:
     async def ensure(self) -> None:
         return None
 
+    async def has_commit(self, sha: str) -> bool:
+        return sha in self.local
+
     async def fetch_branch(self, branch: str) -> str:
         self.fetched.append(branch)
         if branch not in self.branches:
@@ -138,6 +149,8 @@ class FakeWC:
         return next(iter(self.branches[branch]), "f" * 40)
 
     async def show(self, ref: str, path: str) -> bytes | None:
+        if self.broken is not None:
+            raise self.broken
         if ref not in self.local:
             raise GitError("failed", f"fatal: invalid object name '{ref}'")
         return self.files[ref].get(path)
@@ -166,6 +179,7 @@ async def engine_fixture(tmp_path: Path) -> AsyncGenerator[AsyncEngine]:
 class Kit:
     def __init__(self, engine: AsyncEngine, ttl: str = OM_SAME, *, mode: str = "direct") -> None:
         self.pubs = PublicationRepository(engine)
+        self.proposals = ProposalRepository(engine)
         self.audit = AuditRepository(engine)
         self.wc = FakeWC()
         self.models = FakeModels(ttl)
@@ -182,6 +196,7 @@ class Kit:
             models=self.models,  # pyright: ignore[reportArgumentType]
             publisher=self.publisher,
             publications=self.pubs,
+            proposals=self.proposals,
             audit=self.audit,
             policies=policies,
             clock=lambda: NOW,
@@ -283,6 +298,76 @@ async def test_approval_during_check_skips(engine: AsyncEngine) -> None:
     kit.models.graph = graph_then_approve  # type: ignore[method-assign]
     result = await kit.service.check("shop")
     assert (result.status, result.reason) == ("skipped", "publication in flight")
+
+
+async def test_applied_proposal_without_row_skips(engine: AsyncEngine) -> None:
+    """Applied in OM, its publication row not inserted yet (GitHook runs after apply)."""
+    kit = await _kit(engine, OM_EDITED)
+    await kit.proposals.add(_applied("shop")[0])
+    result = await kit.service.check("shop")
+    assert (result.status, result.reason) == ("skipped", "publication in flight")
+    assert (await kit.service.run(commit=True)).results[0].status == "skipped"
+    assert await kit.pubs.counts(REPO) == {"pending": 0, "done": 1, "blocked": 0}
+
+
+async def test_applied_proposal_with_done_row_is_not_in_flight(engine: AsyncEngine) -> None:
+    kit = await _kit(engine, OM_EDITED)
+    await kit.proposals.add(_applied("shop", pid="prp_1")[0])  # pub_1 (done) is its row
+    assert (await kit.service.check("shop")).status == "drifted"
+
+
+async def test_mid_apply_proposal_skips(engine: AsyncEngine) -> None:
+    """Still ``submitted`` in the store, but OM already applied one of its change sets."""
+    kit = await _kit(engine, OM_EDITED)
+    await kit.proposals.add(_applied("shop", "submitted", om_state="SUBMITTED")[0])
+    assert (await kit.service.check("shop")).status == "drifted"  # not applied in OM yet
+    kit.models.om.states["cs-g9"] = "APPLIED"
+    result = await kit.service.check("shop")
+    assert (result.status, result.reason) == ("skipped", "publication in flight")
+
+
+async def test_partly_applied_failed_proposal_skips(engine: AsyncEngine) -> None:
+    kit = await _kit(engine, OM_EDITED)
+    await kit.proposals.add(_applied("shop", "apply_failed", om_state="APPLIED")[0])
+    result = await kit.service.check("shop")
+    assert (result.status, result.reason) == ("skipped", "publication in flight")
+
+
+async def test_row_between_export_and_enqueue_enqueues_nothing(engine: AsyncEngine) -> None:
+    kit = await _kit(engine, OM_EDITED)
+    context = kit.models.jsonld_context_bytes  # the last export fill_exports reads
+
+    async def export_then_approve(slug: str) -> bytes:
+        await kit.published("pending", n=2)
+        return await context(slug)
+
+    kit.models.jsonld_context_bytes = export_then_approve  # type: ignore[method-assign]
+    [result] = (await kit.service.run(commit=True)).results
+    assert (result.status, result.reason) == ("skipped", "publication in flight")
+    assert [p.proposal_id for p in await kit.pubs.list("pending")] == ["prp_2"]
+    assert (await kit.audit.list(None, None, 50)).items == []
+
+
+async def test_export_failure_commits_nothing_and_audits_error(engine: AsyncEngine) -> None:
+    kit = await _kit(engine, OM_EDITED)
+
+    async def no_shapes(slug: str, media: str) -> bytes:
+        raise RuntimeError("shapes")
+
+    kit.models.shapes_bytes = no_shapes  # type: ignore[method-assign]
+    [result] = (await kit.service.run(commit=True)).results
+    assert (result.status, result.reason) == ("drifted", "not committed (export failed)")
+    assert result.publication_id is None
+    assert await kit.pubs.counts(REPO) == {"pending": 0, "done": 1, "blocked": 0}
+    [row] = (await kit.audit.list(None, None, 50)).items
+    assert (row.result, row.error_code) == ("error", "export_failed")
+
+
+async def test_git_failure_is_error_not_skip(engine: AsyncEngine) -> None:
+    kit = await _kit(engine, OM_EDITED)
+    kit.wc.broken = GitError("failed", "fatal: bad object store")
+    result = await kit.service.check("shop")
+    assert (result.status, result.reason) == ("error", "Git unavailable (failed)")
 
 
 async def test_never_published_skips(engine: AsyncEngine) -> None:
@@ -396,20 +481,22 @@ async def test_in_sync_commits_nothing(engine: AsyncEngine) -> None:
     assert kit.service.last_run == run and run.at == NOW
 
 
-def _applied(model: str) -> tuple[Proposal, ReviewRecord]:
+def _applied(
+    model: str, status: str = "applied", *, om_state: str = "APPLIED", pid: str = "prp_9"
+) -> tuple[Proposal, ReviewRecord]:
     review = ReviewRecord(
         decision="approve", reviewer_subject="sub-1", reviewer_username="alice", at=NOW
     )
     p = Proposal(
-        id="prp_9",
+        id=pid,
         model=model,
-        status="applied",
+        status=status,  # type: ignore[arg-type]
         parts=[
             ProposalPart(
                 n=1,
                 operations=[AddConcept(op="add_concept", name="Order")],
                 change_set_ids={"glossary": "cs-g9"},
-                om_state={"glossary": "APPLIED"},
+                om_state={"glossary": om_state},
             )
         ],
         provenance=Provenance(scan_id=None, principal_subject="a", principal_type="agent", at=NOW),
@@ -421,7 +508,11 @@ def _applied(model: str) -> tuple[Proposal, ReviewRecord]:
 
 
 async def test_reconcile_render_equals_apply_render(engine: AsyncEngine) -> None:
-    """Same OM state: the reconcile commit's files equal an applied proposal's (FR-GIT-03)."""
+    """Same OM state: the reconcile commit's files equal an applied proposal's (FR-GIT-03).
+
+    The exports (ontology x3, shapes, context) are byte-identical. ``manifest.yaml`` and the
+    provenance line differ by design: they name the ``rec_`` id instead of a ``prp_`` id.
+    """
     kit = await _kit(engine, OM_EDITED)
     await kit.service.run(commit=True)
     [rec] = await kit.pubs.list("pending")

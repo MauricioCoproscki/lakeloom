@@ -4,9 +4,11 @@ A *direct edit* is a change made in OpenMetadata outside Lakeloom (ADR 0017 § R
 term ``PATCH`` outside any change set). :meth:`ReconcileService.check` compares one model's
 current OM export with ``ontology.ttl`` at the commit of its latest ``done`` publication:
 
-- a pending or blocked publication: ``skipped`` ("publication in flight"), since OM is ahead
-  of Git by design until it is published; checked again after the compare, so an approval
-  that lands meanwhile is never reported as a direct edit;
+- an approval not in Git yet: ``skipped`` ("publication in flight"), since OM is ahead of
+  Git by design until it is published. That is a pending or blocked publication, an
+  ``applied`` proposal without a publication row (``GitHook`` inserts it after the apply), or
+  a pending proposal with a change set applied in OM (mid-apply, or stopped part-way). It is
+  checked after the OM read and again right before a commit is enqueued (``_in_flight``);
 - no done publication: ``skipped`` ("never published");
 - the baseline commit missing even after fetching the target branch and the publication's
   branch (a squash-merged pull request): ``skipped`` ("baseline commit not found");
@@ -44,16 +46,19 @@ from lakeloom.core.audit import AuditRecord, record
 from lakeloom.core.callers import Actor
 from lakeloom.core.model_policy import ModelPolicyEntry, git_mode_for
 from lakeloom.core.models import ModelInfo, ModelService
+from lakeloom.core.proposals import Proposal
 from lakeloom.core.release_diff import ReleaseDiff, diff_graphs
 from lakeloom.errors import LakeloomError
 from lakeloom.gitstore.git import GitError
 from lakeloom.gitstore.layout import RECONCILE_ORIGIN, Snapshot, build_reconcile_message
 from lakeloom.gitstore.publisher import repo_lock
 from lakeloom.gitstore.snapshot import exports_or_base
+from lakeloom.om.client import OMError
 from lakeloom.rdf.canonical import parse_rdf
 from lakeloom.rdf.semantic import semantic_view
 from lakeloom.state.audit import AuditRepository
 from lakeloom.state.ids import new_ulid_id
+from lakeloom.state.proposals import PENDING_STATUSES, ProposalRepository
 from lakeloom.state.publications import Publication, PublicationRepository, new_publication_id
 
 __all__ = [
@@ -73,13 +78,14 @@ TOOL: Final = "reconcile"
 IN_FLIGHT: Final = "publication in flight"
 NEVER_PUBLISHED: Final = "never published"
 NO_BASELINE: Final = "baseline commit not found"
+NOT_EXPORTED: Final = "not committed (export failed)"
+NOT_QUEUED: Final = "not committed (internal error)"
+_COMMIT_ERRORS: Final = {NOT_EXPORTED: "export_failed", NOT_QUEUED: "internal"}
 _NOT_CONFIGURED = LakeloomError(
     "validation_error",
     "Git publishing is not configured",
     "set LAKELOOM_GIT_REMOTE to reconcile OpenMetadata with Git",
 )
-# GitError kinds that mean "this commit or path is not here", not "Git is unreachable".
-_ABSENT_KINDS = frozenset({"not_found", "failed"})
 
 
 class ReconcileResult(BaseModel):
@@ -114,6 +120,8 @@ class Baseline(Protocol):
     """What reconciliation needs of :class:`~lakeloom.gitstore.repo.WorkingCopy`."""
 
     async def ensure(self) -> None: ...
+
+    async def has_commit(self, sha: str) -> bool: ...
 
     async def fetch_branch(self, branch: str) -> str: ...
 
@@ -166,6 +174,7 @@ class ReconcileService:
         models: ModelService,
         publisher: Publisher,
         publications: PublicationRepository,
+        proposals: ProposalRepository,
         audit: AuditRepository | None,
         policies: Sequence[ModelPolicyEntry],
         clock: Callable[[], datetime] = _utcnow,
@@ -174,6 +183,7 @@ class ReconcileService:
         self._models = models
         self._publisher = publisher
         self._pubs = publications
+        self._proposals = proposals
         self._audit = audit
         self._policies = list(policies)
         self._clock = clock
@@ -255,10 +265,12 @@ class ReconcileService:
             diff = await asyncio.to_thread(_compare, baseline, current, base_iri)
         except LakeloomError:
             return result("error", "the Git baseline is not readable Turtle")
-        # An approval applied meanwhile moved OM ahead of Git by design: not a direct edit.
-        latest = await self._pubs.last_done(repo, slug)
-        if await self._pubs.has_open(repo, slug) or latest is None or latest.id != last.id:
-            return result("skipped", IN_FLIGHT)
+        # An approval applying (or applied) meanwhile moves OM ahead of Git by design.
+        try:
+            if await self._in_flight(last):
+                return result("skipped", IN_FLIGHT)
+        except OMError:
+            return result("error", "OpenMetadata unavailable")
         if diff.bump is None:
             return _Checked(ReconcileResult(model=slug, status="in_sync"), last, info, diff)
         drifted = ReconcileResult(
@@ -270,41 +282,72 @@ class ReconcileService:
         )
         return _Checked(drifted, last, info, diff)
 
+    async def _in_flight(self, last: Publication) -> bool:
+        """Whether an approval of ``last.model`` may have changed OM without being in Git.
+
+        Called after the OM read. The checks follow an approval's own order (change sets
+        applied in OM while the proposal is still pending -> ``applied`` without a
+        publication row -> a pending or blocked row -> a new done row), so a proposal that
+        moves on between two checks is caught by a later one. Applied proposals are looked
+        at from the baseline publication's creation on (older ones have their row); a
+        pending proposal's change sets are read from OM (bot client, reads only).
+        """
+        slug, repo = last.model, self._publisher.repo_key
+        candidates = await self._proposals.unpublished_candidates(
+            slug, applied_since=last.created_at
+        )
+        for p in candidates:
+            if p.status in PENDING_STATUSES and await self._applied_in_om(p):
+                return True
+        for p in candidates:
+            if p.status == "applied" and await self._pubs.for_proposal(p.id) is None:
+                return True
+        if await self._pubs.has_open(repo, slug):
+            return True
+        latest = await self._pubs.last_done(repo, slug)
+        return latest is None or latest.id != last.id
+
+    async def _applied_in_om(self, p: Proposal) -> bool:
+        """Any of pending ``p``'s change sets applied (stored, or in OM now: mid-apply)."""
+        for part in p.parts:
+            for side, cs_id in part.change_set_ids.items():
+                if cs_id is None:
+                    continue
+                if part.om_state.get(side) == "APPLIED":  # an approval that stopped part-way
+                    return True
+                cs = await self._models.om.get_change_set(cs_id)
+                if cs is not None and cs.state == "APPLIED":
+                    return True
+        return False
+
     async def _baseline(self, last: Publication) -> bytes | None:
         """``ontology.ttl`` at ``last``'s commit, fetching the target branch, then ``last``'s
-        branch, when the commit is not local. ``None`` when it cannot be found."""
-        wc = self._require_git()
+        branch, when the commit is not local. ``None`` when the commit cannot be found (or,
+        never for a publication commit, it has no ``ontology.ttl``: also "not found").
+        Any other Git failure raises."""
+        wc = self._publisher.working_copy
         sha = last.commit_sha
-        if not sha:
+        if wc is None or not sha:
             return None
-        path = f"ontologies/{last.model}/ontology.ttl"
         branches = dict.fromkeys(b for b in (self._settings.git_branch, last.branch) if b)
-        async with repo_lock(self._publisher.repo_key):
-            await wc.ensure()
-            data = await self._show(wc, sha, path)
-            for branch in branches:
-                if data is not None:
-                    break
-                try:
-                    await wc.fetch_branch(branch)
-                except GitError as exc:
-                    if exc.kind != "not_found":
-                        raise
-                    continue
-                except ValueError:  # an unsafe stored branch name is never used
-                    continue
-                data = await self._show(wc, sha, path)
-        return data
-
-    @staticmethod
-    async def _show(wc: Baseline, sha: str, path: str) -> bytes | None:
         try:
-            return await wc.show(sha, path)
-        except GitError as exc:
-            if exc.kind in _ABSENT_KINDS:  # "invalid object name": the commit is not local
-                return None
-            raise
-        except ValueError:  # an unsafe stored sha
+            async with repo_lock(self._publisher.repo_key):
+                await wc.ensure()
+                found = await wc.has_commit(sha)
+                for branch in branches:
+                    if found:
+                        break
+                    try:
+                        await wc.fetch_branch(branch)
+                    except GitError as exc:
+                        if exc.kind != "not_found":  # a deleted (merged) PR branch
+                            raise
+                        continue
+                    found = await wc.has_commit(sha)
+                if not found:
+                    return None
+                return await wc.show(sha, f"ontologies/{last.model}/ontology.ttl")
+        except ValueError:  # an unsafe stored sha or branch name is never used
             return None
 
     # --- commit and report ----------------------------------------------------------------
@@ -339,6 +382,12 @@ class ReconcileService:
         )
         try:
             snap = await exports_or_base(self._models, self._models.om, base, what=rec_id)
+            if snap.exports is None:
+                # Exporting at publish time could take in an approval made since: not here.
+                return result.model_copy(update={"reason": NOT_EXPORTED}), None
+            # The exports were read after the check: an approval since then is in them.
+            if await self._in_flight(last):
+                return result.model_copy(update={"status": "skipped", "reason": IN_FLIGHT}), None
             stored = await self._publisher.enqueue(
                 Publication(
                     id=pub_id,
@@ -353,10 +402,11 @@ class ReconcileService:
             )
         except Exception as exc:
             _log.error("reconcile %s: publication not queued (%s)", slug, type(exc).__name__)
-            return result.model_copy(update={"reason": "not committed (internal error)"}), None
+            return result.model_copy(update={"reason": NOT_QUEUED}), None
         return result.model_copy(update={"publication_id": stored.id}), stored.proposal_id
 
     async def _report(self, result: ReconcileResult, reconcile_id: str | None) -> None:
+        failed = _COMMIT_ERRORS.get(result.reason or "")
         _log.info(
             "reconcile: direct edits in OpenMetadata",
             extra={
@@ -377,6 +427,7 @@ class ReconcileService:
                 model=result.model,
                 proposal_id=reconcile_id,  # the outbox row's proposal_id
                 change_set_id=result.publication_id,
-                result="ok",
+                result="error" if failed else "ok",
+                error_code=failed,
             ),
         )

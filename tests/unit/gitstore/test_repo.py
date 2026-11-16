@@ -288,3 +288,12 @@ async def test_git_args_reject_dash_and_bad_tags(wc: WorkingCopy) -> None:
         await wc.fetch_tags("--all")
     with pytest.raises(ValueError, match="unsafe"):
         await wc.tags("-x/")
+
+
+async def test_has_commit_is_local_only(wc: WorkingCopy) -> None:
+    await wc.ensure()
+    sha = await wc.init_branch("main", {"README.md": b"# new\n"}, "init")
+    assert await wc.has_commit(sha)
+    assert not await wc.has_commit("0" * 40)
+    with pytest.raises(ValueError, match="unsafe"):
+        await wc.has_commit("--all")

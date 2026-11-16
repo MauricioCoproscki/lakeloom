@@ -123,6 +123,17 @@ class WorkingCopy:
                 return sha
         return None
 
+    async def has_commit(self, sha: str) -> bool:
+        """Whether commit ``sha`` is in the local object store (no fetch)."""
+        _check_ref(sha)
+        try:
+            await self._git("rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+        except GitError as exc:
+            if exc.kind == "failed" and not exc.message:  # --quiet: absent, exit 1, no text
+                return False
+            raise
+        return True
+
     async def fetch_branch(self, branch: str) -> str:
         """Fetch ``origin/<branch>`` (forced, no checkout) and return the commit it points at."""
         _check_ref(branch)

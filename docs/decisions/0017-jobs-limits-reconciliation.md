@@ -142,8 +142,23 @@ hard-deleted in teardown, never sealed). An OM upgrade that changes any of this 
   (`ModelService.invalidate(slug)`) before it reads, so a cached export never hides an edit.
   Version-keyed caches elsewhere (HTTP ETags) can stay stale until the cache TTL expires; that is
   unchanged behaviour, noted here for M4b.
-- Reconciliation reads OM only through the existing export endpoints (`OMClient.export_ontology`
-  and the native export); it adds no OM endpoint.
+- **R4. Approvals in flight.** `GitHook` inserts an approval's publication row only after OM has
+  applied it, so "a pending or blocked publication" alone does not cover an apply. After its
+  OM read, and again right before it enqueues a commit, reconciliation also skips ("publication
+  in flight") when a proposal of the model is pending (`submitted`/`apply_failed`) with a change
+  set that is `APPLIED` (stored, or in OM now: read with `get_change_set`), or `applied` since
+  the baseline publication was created without a publication row. The checks follow an
+  approval's own order, so one that moves on between two checks is caught by a later one. A
+  commit is enqueued only with exports read after the check (a failed export enqueues
+  nothing), so it never takes in an approval made after the check. The per-model
+  `GitHook` lock is not used: it is per process and held only around the enqueue, not during
+  the apply. Residual windows: an `applied` proposal whose row could never be inserted
+  (`Git: not queued`, an operator must re-publish it) from before the baseline publication is
+  not seen; a proposal stopped part-way (`apply_failed`) keeps its model skipped until it is
+  approved again or rejected; changes of a rejected, partly applied proposal are reported as
+  direct edits.
+- Reconciliation reads OM only through endpoints Lakeloom already uses (the glossary and native
+  exports, `get_change_set`); it adds no OM endpoint.
 
 ## Consequences
 
