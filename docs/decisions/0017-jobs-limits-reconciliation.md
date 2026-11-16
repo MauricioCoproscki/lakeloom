@@ -121,8 +121,29 @@ section is the long form of the Decision below.
 
 ## Research
 
-To be filled in by M4a Task 4: the OM behaviour reconciliation relies on, checked live on the
-dev stack (export stability across bookkeeping changes, direct-edit detection).
+Checked live on the dev stack (OM 2.1.0-rc1) by `tests/contract/test_om_direct_edit_probe.py`
+(throwaway glossary `llm4a_probe_<hex>`, two terms created by a change set the bot applies,
+hard-deleted in teardown, never sealed). An OM upgrade that changes any of this fails there.
+
+- **R1. The export is stable.** Two glossary exports of an unchanged glossary have isomorphic
+  semantic views (`semantic_view` with the model's base IRI drops `om:fullyQualifiedName`,
+  `skos:inScheme`, `skos:topConceptOf` and every subject outside the base IRI, so the glossary
+  id, prefixes and triple order never matter); `diff_graphs` of the two reports `bump: None`.
+  An untouched model is therefore `in_sync`.
+- **R2. A direct edit is possible and visible.** A bot `PATCH /api/v1/glossaryTerms/{id}`
+  (`application/json-patch+json`, `replace /description`) outside any change set returns `200`.
+  The next export carries the new text as the term's `skos:definition` (the predicate ADR 0016
+  recorded for descriptions) and nothing else of substance: `diff_graphs` names exactly that term
+  in `changed`, with no added or removed term (`bump: patch`, annotation only). No change-set
+  fallback was needed.
+- **R3. A term `PATCH` does not move the glossary's `updatedAt`.** The model version
+  (`g<glossary updatedAt>-n<native revision>`) therefore does not change on a direct term edit:
+  only a fresh export shows it. Reconciliation drops the model's cached graph
+  (`ModelService.invalidate(slug)`) before it reads, so a cached export never hides an edit.
+  Version-keyed caches elsewhere (HTTP ETags) can stay stale until the cache TTL expires; that is
+  unchanged behaviour, noted here for M4b.
+- Reconciliation reads OM only through the existing export endpoints (`OMClient.export_ontology`
+  and the native export); it adds no OM endpoint.
 
 ## Consequences
 
