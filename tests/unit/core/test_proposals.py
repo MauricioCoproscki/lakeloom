@@ -1526,19 +1526,61 @@ async def test_context_refuses_tombstoned_definition(make) -> None:
     )
 
 
-async def test_scan_refuses_tombstoned_concept(make) -> None:
-    kit = make()
-    iri = "http://x/ontology/shop/Customer"
+def _tombstone(kit: Kit, concepts: list[str] = (), attrs: list[str] = ()) -> None:  # type: ignore[assignment]
+    base = "http://x/ontology/shop/"
     kit.om.native_deleted["shop"] = (
-        [{"id": "c-gone", "iri": iri, "name": "Customer", "version": 0.2, "deleted": True}],
-        [],
+        [{"id": f"c-{c}", "iri": base + c, "name": c, "deleted": True} for c in concepts],
+        [{"id": f"a-{a}", "iri": base + a, "name": a, "deleted": True} for a in attrs],
         [],
     )
-    with pytest.raises(LakeloomError) as info:
-        await _shop_proposal(kit)
-    assert info.value.message == (
-        "concept Customer was deleted in OpenMetadata and cannot be created again"
+
+
+async def test_scan_skips_tombstoned_concept_and_its_dependents(make) -> None:
+    """Like imports and drift: a scan never re-creates a deleted native definition; it and
+    the operations that depend on it are left out, with a warning (ADR 0016 R4)."""
+    kit = make()
+    _tombstone(kit, ["Customer"])
+    scan_id = await kit.scan(customers(), orders())
+
+    p = await kit.service.propose_from_scan(scan_id, "shop", principal=AGENT, client=None)
+
+    keys = [op_key(op) for op in p.operations()]
+    assert keys and "concept:Order" in keys
+    assert not any("Customer" in k for k in keys), keys
+    assert (
+        "1 definitions were deleted in OpenMetadata and cannot be created again: concept Customer"
+        in p.warnings
     )
+    assert any(w.endswith("operations that depend on them are left out") for w in p.warnings)
+
+
+async def test_scan_skips_tombstoned_attribute_and_its_axiom(make) -> None:
+    kit = make()
+    _tombstone(kit, attrs=["Customer.customer_id"])
+    scan_id = await kit.scan(customers())
+
+    p = await kit.service.propose_from_scan(scan_id, "shop", principal=AGENT, client=None)
+
+    keys = [op_key(op) for op in p.operations()]
+    assert "concept:Customer" in keys and "attr:Customer.name" in keys
+    assert "attr:Customer.customer_id" not in keys
+    assert not any(k.startswith("axiom:") for k in keys)  # the PK axiom names customer_id
+    assert (
+        "1 definitions were deleted in OpenMetadata and cannot be created again: "
+        "attribute Customer.customer_id" in p.warnings
+    )
+    assert "1 operations that depend on them are left out" in p.warnings
+
+
+async def test_scan_with_only_tombstoned_definitions_is_nothing_to_propose(make) -> None:
+    kit = make()
+    _tombstone(kit, ["Customer"])
+    scan_id = await kit.scan(customers())
+
+    with pytest.raises(NothingToPropose) as info:
+        await kit.service.propose_from_scan(scan_id, "shop", principal=AGENT, client=None)
+    assert any("concept Customer" in w for w in info.value.warnings)
+    assert kit.om.created() == []
 
 
 # --- one proposal path (Task 4, FR-PRO-03) ------------------------------------------------

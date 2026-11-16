@@ -114,7 +114,9 @@ For local name `L` in namespace `ns`:
   → `RemoveAxiom` by OM native name.
 - **Re-adding a tombstoned definition** — *added by R4*: a term, attribute or axiom whose native
   definition was deleted earlier (`include=deleted` lists it) cannot be created again through a
-  change set on rc1; it is skipped with a warning naming it.
+  change set on rc1; it is skipped with a warning naming it. Drift and `propose_from_scan` do
+  the same (final review: a scan no longer fails as a whole), with the operations that depend
+  on a skipped definition counted in a second warning; `to_om` still refuses one as a backstop.
 - **Axiom labels** — *added by the M3c acceptance*: the RDF carries no axiom label or
   description, but rc1 refuses a draft whose new axiom has none (400 `query param displayName
   must not be null`, `… description must not be null`). An imported axiom's `displayName` and

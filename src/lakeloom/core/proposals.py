@@ -8,10 +8,12 @@ named ``lakeloom-<proposal id>-<n>-native``. A part of realizations only has no 
 realizations are Lakeloom-side until approval (review_proposal). Nothing is ever applied here.
 
 ``propose_from_scan`` maps a scan (:mod:`lakeloom.core.mapper`), removes what already exists
-or is pending (:mod:`lakeloom.core.dedupe`), drops relations whose relationship type does not
-exist in OM (with a warning), splits by table (tables sorted by full name, operations in
-mapper order; whole tables are packed into a part, a table larger than the limit is split
-into consecutive parts with a warning) and creates the change sets part by part. Every change
+or is pending (:mod:`lakeloom.core.dedupe`), leaves out (with a warning) what would create a
+deleted native definition again and what depends on it (ADR 0016 R4), drops relations
+whose relationship type does not exist in OM (with a warning), splits by table (tables
+sorted by full name, operations in mapper order; whole tables are packed into a part, a
+table larger than the limit is split into consecutive parts with a warning) and creates the
+change sets part by part. Every change
 set description carries a Markdown summary of the part and a fenced ``lakeloom-provenance``
 JSON block (FR-PRO-03). ``propose_operations`` creates a proposal of operations computed
 elsewhere (import, Git restore, drift) through the same creation path; its provenance
@@ -116,6 +118,7 @@ from lakeloom.core.operations import (
     remove_concept_native,
     to_om,
     to_om_all,
+    tombstoned_definition,
 )
 from lakeloom.errors import LakeloomError
 from lakeloom.om.client import OMClient, OMConflict, OMError, OMUnavailable
@@ -492,6 +495,80 @@ def _updated_term(op: ProposalOperation) -> str | None:
 
 def _needs_native(ops: Iterable[ProposalOperation]) -> bool:
     return any(isinstance(op, _NATIVE_OPS) for op in ops)
+
+
+def _without_tombstones(
+    ops: Sequence[ProposalOperation], ctx: OMContext
+) -> tuple[list[ProposalOperation], list[str]]:
+    """``ops`` without those that would create a deleted native definition again (an rc1
+    tombstone, ADR 0016 R4) and those that depend on them, plus the warnings (worded as the
+    import diff's). Dependants: a child concept, the concept's attributes, relations (either
+    end), mappings, synonyms, realizations and axioms, and an axiom naming a left-out
+    attribute."""
+    gone: dict[int, str] = {}
+    for i, op in enumerate(ops):
+        what = tombstoned_definition(op, ctx)
+        if what is not None:
+            gone[i] = what
+    if not gone:
+        return list(ops), []
+    concepts = {
+        _bare(op.name) for i, op in enumerate(ops) if i in gone and isinstance(op, AddConcept)
+    }
+    attrs = {
+        (_bare(op.concept), op.name)
+        for i, op in enumerate(ops)
+        if i in gone and isinstance(op, AddAttribute)
+    }
+    dependent: set[int] = set()
+    changed = True
+    while changed:  # a dropped concept drops its children, their members, and so on
+        changed = False
+        for i, op in enumerate(ops):
+            if i in gone or i in dependent or not _depends(op, concepts, attrs):
+                continue
+            dependent.add(i)
+            changed = True
+            if isinstance(op, AddConcept):
+                concepts.add(_bare(op.name))
+            elif isinstance(op, AddAttribute):
+                attrs.add((_bare(op.concept), op.name))
+    kept = [op for i, op in enumerate(ops) if i not in gone and i not in dependent]
+    warnings = [
+        f"{len(gone)} definitions were deleted in OpenMetadata and cannot be created again: "
+        f"{', '.join(sorted(set(gone.values())))}"
+    ]
+    if dependent:
+        warnings.append(f"{len(dependent)} operations that depend on them are left out")
+    return kept, warnings
+
+
+def _depends(op: ProposalOperation, concepts: set[str], attrs: set[tuple[str, str]]) -> bool:
+    """Whether ``op`` needs one of the left-out ``concepts`` or attributes."""
+    match op:
+        case AddConcept():
+            return op.parent is not None and _bare(op.parent) in concepts
+        case AddAttribute() | AddMapping() | AddRealization():
+            return _bare(op.concept) in concepts
+        case AddRelation():
+            return bool({_bare(op.source), _bare(op.target)} & concepts)
+        case AddSynonym():
+            return _bare(op.concept_fqn) in concepts
+        case UpdateConcept():
+            return _bare(op.fqn) in concepts or (
+                op.parent is not None and _bare(op.parent) in concepts
+            )
+        case AddAxiom():
+            concept = _bare(op.concept)
+            expressions: list[Any] = list(op.axiom.get("expressions") or [])
+            named = {
+                str(cast(dict[str, Any], e).get("propertyName"))
+                for e in expressions
+                if isinstance(e, dict)
+            }
+            return concept in concepts or any((concept, n) in attrs for n in named)
+        case _:
+            return False
 
 
 def _rule_ids(ops: Iterable[ProposalOperation]) -> list[str]:
@@ -1427,6 +1504,12 @@ class ProposalService:
             for m in result.matches
         ]
         ops = result.operations
+        ctx: OMContext | None = None
+        if ops:
+            self._require_pair(target, ops)
+            ctx = await self._context(target, ops)  # also valid for any subset of ops
+            ops, skipped = _without_tombstones(ops, ctx)
+            warnings += skipped
         if not ops:
             raise NothingToPropose(matches, sorted(set(warnings)))
         names = [t.ref.full_name for t in rec.tables]
@@ -1454,6 +1537,7 @@ class ProposalService:
             warnings=warnings,
             tables=names,
             tool="propose_from_scan",
+            ctx=ctx,
         )
 
     async def _create(
@@ -1468,13 +1552,16 @@ class ProposalService:
         warnings: Sequence[str],
         tables: Sequence[str],
         tool: str,
+        ctx: OMContext | None = None,
     ) -> tuple[Proposal, str | None]:
         """Create a draft proposal of ``ops`` (the one creation path of scans, imports and
         drift): split into parts by ``tables``, build every OM payload (fail closed) before
-        the first write, then write and store part by part (see the module docstring)."""
+        the first write, then write and store part by part (see the module docstring).
+        ``ctx``: an OM context the caller already read for ``ops`` (or a superset of them)."""
         self._require_pair(target, ops)
         groups, split_warnings = split_parts(ops, tables, self.max_ops)
-        ctx = await self._context(target, ops)
+        if ctx is None:
+            ctx = await self._context(target, ops)
         planned = [(tbls, chunk, to_om_all(chunk, ctx)) for tbls, chunk in groups]  # fail closed
         notes = [*warnings, *self._relation_warnings(ops, ctx)]
         now = provenance.at

@@ -54,6 +54,7 @@ __all__ = [
     "remove_concept_native",
     "to_om",
     "to_om_all",
+    "tombstoned_definition",
 ]
 
 MAX_DESCRIPTION_CHARS = 4000
@@ -694,11 +695,12 @@ def to_om(op: ProposalOperation, ctx: OMContext) -> OMOps:
             return OMOps()
 
 
-def _refuse_tombstone(op: ProposalOperation, ctx: OMContext) -> None:
-    """Fail closed on creating a native definition whose name a deleted one still holds: rc1
-    keeps it as a tombstone and the change set would end ``APPLY_FAILED`` (ADR 0016 R4)."""
+def tombstoned_definition(op: ProposalOperation, ctx: OMContext) -> str | None:
+    """The label (``concept Customer``, ``attribute Order.id``, ...) of the native definition
+    ``op`` would create again although OpenMetadata keeps a deleted one under its name (an
+    rc1 tombstone, ADR 0016 R4), else ``None``. Keys are :func:`native_member_key`'s."""
     if not ctx.native_deleted:
-        return
+        return None
     match op:
         case AddConcept():
             key, what = f"concept:{_concept_iri(ctx, op.name)}", f"concept {op.name}"
@@ -712,8 +714,15 @@ def _refuse_tombstone(op: ProposalOperation, ctx: OMContext) -> None:
             key = f"attr:{_member_iri(ctx, op.source, op.relation_type)}"
             what = f"relation {_bare(op.source)}.{op.relation_type}"
         case _:
-            return
-    if key in ctx.native_deleted and key not in ctx.native_ids:
+            return None
+    return what if key in ctx.native_deleted and key not in ctx.native_ids else None
+
+
+def _refuse_tombstone(op: ProposalOperation, ctx: OMContext) -> None:
+    """Fail closed on creating a native definition whose name a deleted one still holds: rc1
+    keeps it as a tombstone and the change set would end ``APPLY_FAILED`` (ADR 0016 R4)."""
+    what = tombstoned_definition(op, ctx)
+    if what is not None:
         raise _fail(
             f"{what} was deleted in OpenMetadata and cannot be created again",
             "OpenMetadata keeps a deleted native definition as a tombstone whose name stays "
