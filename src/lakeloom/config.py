@@ -112,6 +112,8 @@ class Settings(BaseSettings):
     # Rate limit per principal and replica (NFR-SEC-16): a token bucket; 0 switches it off.
     rate_limit_per_minute: int = Field(300, ge=0)
     rate_limit_burst: int = Field(60, ge=1)
+    # Stateless MCP (NFR-DEP-07): no session ids, JSON responses; lets several replicas share /mcp.
+    mcp_stateless: bool = False
     forge_api_url: AnyHttpUrl | None = None
     # Web base of the repository for release links; derived from git_remote when unset.
     git_web_url: AnyHttpUrl | None = None

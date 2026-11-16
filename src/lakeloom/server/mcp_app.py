@@ -28,6 +28,7 @@ import lakeloom
 from lakeloom.config import Settings
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps, create_app
+from lakeloom.server.mcp_sessions import SessionBindingMiddleware
 from lakeloom.server.prompts import register_prompts
 from lakeloom.server.resources import LakeloomMCP
 from lakeloom.server.server_info import ServerInfo, build_server_info, summarize
@@ -146,15 +147,22 @@ def transport_security(settings: Settings) -> TransportSecuritySettings:
 def create_server_app(deps: AppDeps) -> FastAPI:
     """The complete Lakeloom HTTP app: health, metrics, auth and the MCP endpoint."""
     mcp = create_mcp(deps)
+    stateless = deps.settings.mcp_stateless
     # The Starlette app routes on the full path, so it is served as an exact-path
     # endpoint at /mcp (never /mcp/mcp). Its own lifespan is not used by a Route, so
     # the session manager runs in the FastAPI lifespan instead.
     mcp_http = mcp.streamable_http_app(
         streamable_http_path=MCP_PATH,
         transport_security=transport_security(deps.settings),
+        stateless_http=stateless,
+        json_response=stateless,
     )
 
     def session_manager() -> AbstractAsyncContextManager[None]:
         return mcp.session_manager.run()
 
-    return create_app(deps, endpoints=[(MCP_PATH, mcp_http)], lifespans=[session_manager])
+    return create_app(
+        deps,
+        endpoints=[(MCP_PATH, SessionBindingMiddleware(mcp_http, enabled=not stateless))],
+        lifespans=[session_manager],
+    )

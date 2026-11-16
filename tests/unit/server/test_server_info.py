@@ -44,6 +44,7 @@ async def test_fr_om_06_server_info_reports_om_version_and_rdf(make_deps: DepsFa
         "import": True,
         "drift": True,
         "sparql": True,
+        "mcp_stateless": False,
     }
     assert info.sources == []
     assert info.models == []

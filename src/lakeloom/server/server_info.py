@@ -102,6 +102,7 @@ async def build_server_info(deps: AppDeps, principal: Principal | None) -> Serve
             "import": True,
             "drift": True,
             "sparql": sparql,
+            "mcp_stateless": settings.mcp_stateless,
         },
         git=await _git_status(deps),
         triplestore=await deps.sink_worker.status() if deps.sink_worker is not None else None,
