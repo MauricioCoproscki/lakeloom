@@ -28,7 +28,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from lakeloom.core.sparql import FORMATS, MEDIA, ResultFormat
-from lakeloom.errors import ErrorCode, LakeloomError
+from lakeloom.errors import ErrorCode, LakeloomError, RateLimited
+from lakeloom.metrics import RATE_LIMITED
 from lakeloom.publish.artifacts import (
     Artifact,
     asset_context_artifact,
@@ -42,6 +43,7 @@ from lakeloom.publish.artifacts import (
 )
 from lakeloom.publish.negotiation import MediaType, choose
 from lakeloom.server.auth import Principal
+from lakeloom.server.ratelimit import principal_key
 
 if TYPE_CHECKING:
     from lakeloom.server.http_app import AppDeps
@@ -105,7 +107,10 @@ def error_response(code: ErrorCode, message: str, hint: str, status: int | None 
 
 async def lakeloom_error_handler(_: Request, exc: Exception) -> Response:
     err = cast(LakeloomError, exc)
-    return error_response(err.code, err.message, err.hint)
+    response = error_response(err.code, err.message, err.hint)
+    if isinstance(err, RateLimited):
+        response.headers["Retry-After"] = str(err.retry_after)
+    return response
 
 
 async def request_validation_handler(_: Request, exc: Exception) -> Response:
@@ -316,7 +321,23 @@ _SPARQL_REQUEST_BODY: Final[dict[str, Any]] = {
 
 def create_router(deps: "AppDeps") -> APIRouter:
     """The ``/v1`` router; dependencies are read per request (tests swap them)."""
-    router = APIRouter(prefix="/v1", tags=["publication"], dependencies=[Depends(_require_read)])
+
+    def rate_limit(request: Request) -> None:
+        """Per principal (NFR-SEC-16); after ``_require_read``, so only authorised callers count."""
+        state: dict[str, Any] = request.scope.get("state") or {}
+        principal = state.get("principal")
+        if not isinstance(principal, Principal):
+            return
+        retry_after = deps.limiter.check(principal_key(principal))
+        if retry_after is not None:
+            RATE_LIMITED.labels(surface="http").inc()
+            raise RateLimited(retry_after)
+
+    router = APIRouter(
+        prefix="/v1",
+        tags=["publication"],
+        dependencies=[Depends(_require_read), Depends(rate_limit)],
+    )
 
     async def serve(
         request: Request,

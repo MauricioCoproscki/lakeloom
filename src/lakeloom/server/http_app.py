@@ -78,6 +78,7 @@ from lakeloom.server.http_api import (
     lakeloom_error_handler,
     request_validation_handler,
 )
+from lakeloom.server.ratelimit import RateLimiter
 from lakeloom.sources.base import LakeSource
 from lakeloom.sources.config import SourcesConfig, load_sources_config
 from lakeloom.sources.registry import build_sources
@@ -151,9 +152,14 @@ class AppDeps:
     # by the app lifespan. ``git-publisher:<repo>`` with Git publishing, ``triplestore-sink``
     # with the sink.
     jobs: JobRunner = field(init=False)
+    # Per-principal rate limit (NFR-SEC-16), shared by the MCP tools and the /v1 API.
+    limiter: RateLimiter = field(init=False)
 
     def __post_init__(self) -> None:
         self.confirm = confirm_tokens_from_settings(self.settings)
+        self.limiter = RateLimiter(
+            self.settings.rate_limit_per_minute, self.settings.rate_limit_burst
+        )
         if self.idp_http is None:
             self.idp_http = httpx.AsyncClient(timeout=_IDP_TIMEOUT)  # closed by the lifespan
         self.obo = OnBehalfOf(self.settings, self.idp_http, self.om)

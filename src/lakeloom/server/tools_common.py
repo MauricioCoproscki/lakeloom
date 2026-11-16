@@ -19,9 +19,10 @@ from opentelemetry.trace import Status, StatusCode
 from starlette.requests import Request
 
 from lakeloom.core.audit import AuditContext, AuditRecord, audit_context, record
-from lakeloom.errors import ErrorCode, LakeloomError
-from lakeloom.metrics import TOOL_CALLS
+from lakeloom.errors import ErrorCode, LakeloomError, RateLimited
+from lakeloom.metrics import RATE_LIMITED, TOOL_CALLS
 from lakeloom.server.auth import Principal
+from lakeloom.server.ratelimit import RateLimiter, principal_key
 from lakeloom.state.audit import AuditRepository
 from lakeloom.telemetry import record_tool_call, start_span
 
@@ -121,7 +122,7 @@ async def guarded(
     ) as span:
         result, outcome = CallToolResult(content=[]), "error"
         try:
-            result, outcome = await _run(tool, scope, principal, body)
+            result, outcome = await _run(tool, scope, principal, body, _limiter(ctx))
         except BaseException:
             # Cancelled (or otherwise aborted) writes are audited too.
             if audited:
@@ -150,12 +151,19 @@ async def _run(
     scope: str,
     principal: Principal | None,
     body: Callable[[Principal], Awaitable[CallToolResult]],
+    limiter: RateLimiter | None = None,
 ) -> tuple[CallToolResult, str]:
     if principal is None or scope not in principal.scopes:
         return (
             tool_error("forbidden", f"{tool} requires the {scope} scope", f"token lacks {scope}"),
             "forbidden",
         )
+    # Right after the principal is known, before the body (NFR-SEC-16).
+    retry_after = None if limiter is None else limiter.check(principal_key(principal))
+    if retry_after is not None:
+        RATE_LIMITED.labels(surface="mcp").inc()
+        exc = RateLimited(retry_after)
+        return tool_error(exc.code, exc.message, exc.hint, exc.details()), "error"
     try:
         return await body(principal), "ok"
     except LakeloomError as exc:
@@ -171,6 +179,11 @@ async def _run(
             ),
             "error",
         )
+
+
+def _limiter(ctx: Context) -> RateLimiter | None:
+    limiter = getattr(getattr(ctx, "mcp_server", None), "rate_limiter", None)
+    return limiter if isinstance(limiter, RateLimiter) else None
 
 
 def _error_code(result: CallToolResult) -> str | None:

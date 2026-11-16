@@ -20,6 +20,12 @@ TOOL_CALLS = Counter(
     ["tool", "outcome"],
     registry=REGISTRY,
 )
+RATE_LIMITED = Counter(
+    "lakeloom_rate_limited_total",
+    "Requests refused by the per-principal rate limit (NFR-SEC-16), by surface (mcp, http).",
+    ["surface"],
+    registry=REGISTRY,
+)
 RESOURCE_READS = Counter(
     "lakeloom_resource_reads_total",
     "MCP resource reads.",

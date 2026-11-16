@@ -109,6 +109,9 @@ class Settings(BaseSettings):
     git_author_email: str = "lakeloom@localhost.invalid"
     git_publish_timeout_seconds: float = Field(20, ge=0, le=300)
     git_retry_interval_seconds: int = Field(60, ge=5, le=3600)
+    # Rate limit per principal and replica (NFR-SEC-16): a token bucket; 0 switches it off.
+    rate_limit_per_minute: int = Field(300, ge=0)
+    rate_limit_burst: int = Field(60, ge=1)
     forge_api_url: AnyHttpUrl | None = None
     # Web base of the repository for release links; derived from git_remote when unset.
     git_web_url: AnyHttpUrl | None = None

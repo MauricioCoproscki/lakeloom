@@ -56,6 +56,7 @@ from lakeloom.telemetry import record_resource_read, start_span
 
 if TYPE_CHECKING:
     from lakeloom.server.http_app import AppDeps
+    from lakeloom.server.ratelimit import RateLimiter
 
 __all__ = ["MAX_LISTED_MODELS", "LakeloomMCP"]
 
@@ -112,6 +113,11 @@ class LakeloomMCP(MCPServer[Any]):
     def __init__(self, deps: "AppDeps", **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._deps = deps
+
+    @property
+    def rate_limiter(self) -> "RateLimiter":
+        """The per-principal limiter ``guarded()`` checks before each tool body (NFR-SEC-16)."""
+        return self._deps.limiter
 
     def _require_read(self, context: Context[Any, Any] | None, what: str = "MCP resources") -> None:
         principal = None if context is None else current_principal(context)

@@ -46,6 +46,7 @@ __all__ = [
 ]
 
 _log = logging.getLogger(__name__)
+IDP_TRACE_INTERVAL: Final = 60.0  # seconds between IdP-unavailable tracebacks in the log
 
 PRM_PATH: Final = "/.well-known/oauth-protected-resource"
 PUBLIC_PATHS: Final = ("/healthz", "/readyz", "/metrics", PRM_PATH)
@@ -362,6 +363,7 @@ class BearerAuthMiddleware:
         self._validator = validator
         self._public = frozenset(public_paths)
         self._metadata_url = resource_metadata_url
+        self._last_trace: float | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket") or scope["path"] in self._public:
@@ -375,11 +377,19 @@ class BearerAuthMiddleware:
             await self._reject(scope, receive, send, exc.description, token_given=bool(values))
             return
         except IdPUnavailable:
-            _log.warning("identity provider unavailable", exc_info=True)
+            self._log_unavailable()
             await self._unavailable(scope, receive, send)
             return
         scope.setdefault("state", {})["principal"] = principal
         await self.app(scope, receive, send)
+
+    def _log_unavailable(self) -> None:
+        """One warning per failure; the traceback at most once per 60 s (it repeats)."""
+        now = time.monotonic()
+        with_trace = self._last_trace is None or now - self._last_trace >= IDP_TRACE_INTERVAL
+        if with_trace:
+            self._last_trace = now
+        _log.warning("identity provider unavailable", exc_info=with_trace)
 
     @staticmethod
     def _bearer_token(values: list[bytes]) -> str:
