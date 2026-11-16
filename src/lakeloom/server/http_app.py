@@ -35,6 +35,7 @@ from lakeloom.core.confirm import (
     confirm_tokens_from_settings,
     require_confirm_secret,
 )
+from lakeloom.core.drift_service import DriftService
 from lakeloom.core.imports import ImportService
 from lakeloom.core.model_policy import ModelPolicyEntry
 from lakeloom.core.models import ModelService
@@ -132,6 +133,8 @@ class AppDeps:
     git_links: GitLinks | None = field(init=False, default=None)
     # Imports (FR-IO-02, FR-GIT-07): always on; import_from_git needs Git publishing.
     import_service: ImportService = field(init=False)
+    # Drift detection (FR-PRO-07): always on.
+    drift_service: DriftService = field(init=False)
     # Optional triple-store sink (FR-TS): only with Git releases and LAKELOOM_TRIPLESTORE_ENABLED.
     sink_http: httpx.AsyncClient | None = field(init=False, default=None)
     sink_worker: SinkWorker | None = field(init=False, default=None)
@@ -223,6 +226,16 @@ class AppDeps:
             reader=self.reader,
             wc=self.publisher.working_copy,
             repo_key=self.publisher.repo_key if self.publisher.working_copy else None,
+        )
+        # detect_drift is audited by guarded() (audit=None here).
+        self.drift_service = DriftService(
+            self.scans,
+            scan_repo,
+            self.proposals,
+            proposal_repo,
+            self.models,
+            self.om,
+            self.policies,
         )
         # Same for reviews: review_proposal is audited by guarded() (audit=None here).
         self.review = ReviewService(

@@ -39,6 +39,7 @@ from lakeloom.logging import configure_logging
 from lakeloom.untrusted import single_line
 
 if TYPE_CHECKING:
+    from lakeloom.core.drift_service import DriftService
     from lakeloom.core.imports import ImportService
     from lakeloom.core.models import ModelService
     from lakeloom.core.proposals import Actor, ProposalService
@@ -902,10 +903,6 @@ def release_sink_retry_cmd() -> None:
     _run(_go())
 
 
-if __name__ == "__main__":
-    app()
-
-
 # --- imports (operator side, FR-IO-02, FR-GIT-07; the same operations as the MCP tools) ------
 
 _FORMATS: tuple["InputFormat", ...] = ("turtle", "rdfxml", "ntriples", "jsonld")
@@ -1099,3 +1096,89 @@ def import_git_cmd(
             typer.echo(imported_text(p, submit=_SUBMIT), nl=False)
 
     _run(_go())
+
+
+# --- drift (operator side, FR-PRO-07; the same operation as the MCP detect_drift tool) --------
+
+
+@asynccontextmanager
+async def _open_drift(settings: Settings) -> AsyncGenerator["DriftService"]:
+    """The drift service over the configured sources (CLI mode: it and its proposal service
+    write their own audit rows)."""
+    import secrets
+
+    from lakeloom.core.confirm import MIN_SECRET_BYTES, ConfirmTokens
+    from lakeloom.core.drift_service import DriftService
+    from lakeloom.core.proposals import ProposalService
+    from lakeloom.core.scans import ScanService
+    from lakeloom.server.http_app import load_config
+    from lakeloom.state.audit import AuditRepository
+    from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.proposals import ProposalRepository
+    from lakeloom.state.scans import ScanRepository
+
+    # drift never confirms a destructive call: an ephemeral key is enough without one
+    secret = settings.confirm_secret
+    key = (
+        secret.get_secret_value().encode("utf-8")
+        if secret is not None
+        else secrets.token_bytes(MIN_SECRET_BYTES)
+    )
+    config = load_config(settings)
+    engine = create_engine(settings.db_url)
+    try:
+        await upgrade(engine)
+        audit = AuditRepository(engine)
+        scan_repo = ScanRepository(engine)
+        proposal_repo = ProposalRepository(engine)
+        async with _open_semantic(settings, with_sources=True) as (om, models, sources):
+            proposals = ProposalService(
+                om,
+                models,
+                scan_repo,
+                proposal_repo,
+                audit,
+                settings,
+                confirm=ConfirmTokens(key, settings.confirm_ttl_seconds),
+                sources=sources,
+                policies=config.models,
+            )
+            yield DriftService(
+                ScanService(sources, scan_repo, om, settings),
+                scan_repo,
+                proposals,
+                proposal_repo,
+                models,
+                om,
+                config.models,
+                audit=audit,
+            )
+    finally:
+        await engine.dispose()
+
+
+@app.command("drift")
+def drift_cmd(
+    model: Annotated[str, typer.Argument(help="Model slug.")],
+    no_new_tables: Annotated[
+        bool,
+        typer.Option("--no-new-tables", help="Report tables new in the lake, do not propose them."),
+    ] = False,
+) -> None:
+    """Scan a model's tables again; print the drift and the draft proposal it created."""
+    settings = _cli_settings()
+
+    async def _go() -> None:
+        from lakeloom.core.drift_service import drift_text
+
+        async with _open_drift(settings) as service:
+            report = await service.detect(
+                _actor(), CLI_CLIENT, model, include_new_tables=not no_new_tables
+            )
+            typer.echo(drift_text(report, submit=_SUBMIT), nl=False)
+
+    _run(_go())
+
+
+if __name__ == "__main__":
+    app()

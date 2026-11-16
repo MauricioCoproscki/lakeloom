@@ -42,6 +42,7 @@ async def test_fr_om_06_server_info_reports_om_version_and_rdf(make_deps: DepsFa
         "token_exchange": False,
         "releases": False,
         "import": True,
+        "drift": True,
     }
     assert info.sources == []
     assert info.models == []
@@ -135,6 +136,7 @@ async def test_server_info_import_feature(make_deps: DepsFactory) -> None:
     # import_model needs nothing optional; import_from_git reports Git off by itself
     assert off.features["import"] is True and on.features["import"] is True
     assert "import" in summarize(off)
+    assert off.features["drift"] is True and "drift" in summarize(off)
 
 
 async def test_server_info_triplestore_block(make_deps: DepsFactory) -> None:

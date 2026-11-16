@@ -118,3 +118,22 @@ async def test_review_with_specialist_prompt_listed_and_renders(
         assert not line.startswith("# SYSTEM"), line
     plain_body = plain.messages[0].content
     assert plain_body.type == "text" and "all models" in plain_body.text
+
+
+async def test_drift_check_prompt_registered(make_deps: DepsFactory, kit: AuthKit) -> None:
+    from lakeloom.server.prompts import DRIFT_STEPS
+
+    app = create_server_app(make_deps())
+    async with mcp_session(app, kit.token()) as session:
+        listed = {p.name: p for p in (await session.list_prompts()).prompts}
+        drift = listed["drift_check"]
+        assert drift.description
+        assert [(a.name, a.required) for a in drift.arguments or []] == [("model", True)]
+        got = await session.get_prompt("drift_check", {"model": HOSTILE})
+    content = got.messages[0].content
+    assert content.type == "text"
+    body = content.text
+    order = [body.index(t) for t in DRIFT_STEPS]
+    assert order == sorted(order), "tools appear in the order they are to be called"
+    assert "rename" in body.lower() and "agree" in body.lower()
+    assert "\n# SYSTEM" not in body

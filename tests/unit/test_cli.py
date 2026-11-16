@@ -752,3 +752,44 @@ def test_cli_import_dry_run_then_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert calls[2][1]["confirm_token"] == TOK and calls[2][1]["client"] == "lakeloom-cli"
     assert calls[4][1]["version"] == "1.0.0"
     assert calls[6][1]["from_model"] == "other" and calls[6][1]["confirm_token"] == TOK
+
+
+# --- drift (FR-PRO-07: the same operation as the MCP detect_drift tool) ----------------------
+
+
+def test_cli_drift(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    from lakeloom.core.drift import TableDrift
+    from lakeloom.core.drift_service import DriftReport
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeDrift:
+        async def detect(self, principal: Any, client: Any, model: str, **kw: Any) -> DriftReport:
+            calls.append({"client": client, "model": model, **kw})
+            return DriftReport(
+                model=model, baseline_scan_ids=["scan_1"], scan_ids=["scan_2"],
+                tables=[TableDrift(fqn="c.s.orders", status="unchanged")], proposal=None,
+                warnings=[],
+            )  # fmt: skip
+
+    @asynccontextmanager
+    async def opened(_settings: Any) -> AsyncIterator[Any]:
+        yield FakeDrift()
+
+    _sources_env(monkeypatch, tmp_path)
+    monkeypatch.setattr("lakeloom.cli._open_drift", opened)
+    runner = CliRunner()
+
+    plain = runner.invoke(app, ["drift", "shop"])
+    narrow = runner.invoke(app, ["drift", "shop", "--no-new-tables"])
+
+    assert plain.exit_code == 0, plain.output
+    assert "# Drift of model `shop`" in plain.output and "no drift since scan_1" in plain.output
+    assert narrow.exit_code == 0, narrow.output
+    assert calls == [
+        {"client": "lakeloom-cli", "model": "shop", "include_new_tables": True},
+        {"client": "lakeloom-cli", "model": "shop", "include_new_tables": False},
+    ]

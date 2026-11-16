@@ -37,11 +37,11 @@ class ServerInfo(BaseModel):
     openmetadata: OMCapabilities = Field(description="OpenMetadata version and RDF status.")
     features: dict[str, bool] = Field(
         description=(
-            "Optional features (triplestore, stdio, token_exchange, releases, import) as "
+            "Optional features (triplestore, stdio, token_exchange, releases, import, drift) as "
             "configuration flags, not live capabilities: a flag can be on before the feature "
             "ships. `releases` is on with Git publishing (create_release, list_releases, "
             "?version= reads); `import` (import_model, and import_from_git with Git "
-            "publishing) is always on."
+            "publishing) and `drift` (detect_drift) are always on."
         )
     )
     git: dict[str, Any] | None = Field(
@@ -92,6 +92,7 @@ async def build_server_info(deps: AppDeps, principal: Principal | None) -> Serve
             "token_exchange": settings.oidc_token_exchange,
             "releases": deps.release_service is not None,
             "import": True,
+            "drift": True,
         },
         git=await _git_status(deps),
         triplestore=await deps.sink_worker.status() if deps.sink_worker is not None else None,

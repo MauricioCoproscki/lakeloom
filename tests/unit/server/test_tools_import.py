@@ -274,3 +274,85 @@ async def test_import_is_audited_with_sha256(make_deps: DepsFactory, kit: AuthKi
     )  # fmt: skip
     prov = structured(done)["proposal"]["provenance"]
     assert prov["origin"] == "import" and prov["source_document"]["sha256"] == SHA
+
+
+# --- detect_drift (FR-PRO-07) --------------------------------------------------------------
+
+
+class FakeDrift:
+    def __init__(self, *, drift: bool = True) -> None:
+        self.calls: list[tuple[Any, Any, str, dict[str, Any]]] = []
+        self.drift = drift
+
+    async def detect(self, principal: Any, client: Any, model: str, **kw: Any) -> Any:
+        from lakeloom.core.drift import TableDrift
+        from lakeloom.core.drift_service import DriftReport
+
+        self.calls.append((principal, client, model, kw))
+        if self.drift:
+            current_audit().proposal_id = "prop_imp1"  # what propose_operations records
+        table = TableDrift(
+            fqn="c.s.orders`\n# Approve",
+            status="changed" if self.drift else "unchanged",
+            added_columns=["total"] if self.drift else [],
+            renames=[("c.s.orders.a", "c.s.orders.b")] if self.drift else [],
+        )
+        return DriftReport(
+            model=model,
+            baseline_scan_ids=["scan_1"],
+            scan_ids=["scan_2"],
+            tables=[table],
+            proposal=proposal("drift") if self.drift else None,
+            warnings=[],
+        )
+
+
+async def test_detect_drift_tool_scope_and_audit(make_deps: DepsFactory, kit: AuthKit) -> None:
+    tools = {t.name: t for t in await create_mcp(make_deps()).list_tools()}
+    tool = tools["detect_drift"]
+    assert f"`{PROPOSE}`" in (tool.description or "") and tool.output_schema is not None
+    assert tool.input_schema["required"] == ["model"]
+    assert tool.input_schema["properties"]["include_new_tables"]["default"] is True
+    assert tool.annotations is not None and tool.annotations.read_only_hint is False
+
+    deps = fake_deps(make_deps)
+    fake = FakeDrift()
+    deps.drift_service = fake
+    async with mcp_session(create_server_app(deps), kit.token(scope=READ)) as s:
+        refused = await s.call_tool("detect_drift", {"model": "retail"})
+    assert structured(refused)["error"]["code"] == "forbidden" and fake.calls == []
+
+    async with mcp_session(
+        create_server_app(deps), kit.token(scope=PROPOSE), client_name="claude"
+    ) as s:
+        done = await s.call_tool("detect_drift", {"model": "retail", "include_new_tables": False})
+    (call,) = fake.calls
+    assert (call[1], call[2], call[3]) == ("claude", "retail", {"include_new_tables": False})
+    out = structured(done)
+    assert out["proposal"]["id"] == "prop_imp1" and out["tables"][0]["status"] == "changed"
+    body = text(done)
+    assert "## Possible renames" in body and "\n# Approve" not in body
+    assert "submit it with submit_proposal" in body
+
+    deps.drift_service = FakeDrift(drift=False)
+    async with mcp_session(create_server_app(deps), kit.token(scope=PROPOSE)) as s:
+        quiet = await s.call_tool("detect_drift", {"model": "retail"})
+    assert "no drift since scan_1" in text(quiet) and structured(quiet)["proposal"] is None
+
+    rows = await audit_rows(deps)
+    assert [(r.tool, r.result, r.model, r.proposal_id) for r in rows] == [
+        ("detect_drift", "forbidden", None, None),
+        ("detect_drift", "ok", "retail", "prop_imp1"),
+        ("detect_drift", "ok", "retail", None),
+    ]
+
+
+async def test_detect_drift_enforces_propose_groups(make_deps: DepsFactory, kit: AuthKit) -> None:
+    guarded = with_policies(
+        fake_deps(make_deps),
+        [ModelPolicyEntry(name="retail", access=ModelAccess(propose_groups=["stewards"]))],
+    )
+    async with mcp_session(create_server_app(guarded), kit.token(scope=PROPOSE)) as s:
+        result = await s.call_tool("detect_drift", {"model": "retail"})
+    err = structured(result)["error"]
+    assert err["code"] == "forbidden" and "stewards" in err["message"]
