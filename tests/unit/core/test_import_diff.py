@@ -126,6 +126,8 @@ def test_import_into_empty_model_adds_everything_in_order() -> None:
     assert isinstance(axiom, AddAxiom)
     assert axiom.axiom == {
         "name": "ChildPrimaryKey",
+        "displayName": "ChildPrimaryKey",
+        "description": "ChildPrimaryKey",
         "axiomType": "SUBCLASS_OF",
         "expressions": [
             {

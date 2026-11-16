@@ -417,9 +417,15 @@ def _mapping_key(m: MappingTerm) -> tuple[str, str, str]:
 
 
 def _axiom_body(name: str, term: AxiomTerm) -> dict[str, Any]:
-    """The ``OntologyAxiom`` body of a concept's restrictions (the mapper's PK shape)."""
+    """The ``OntologyAxiom`` body of a concept's restrictions (the mapper's PK shape).
+
+    The RDF carries no axiom label or description, but OpenMetadata 2.1.0-rc1 refuses a draft
+    whose new axiom lacks them (400 ``query param displayName must not be null``), so both
+    are the axiom's name, as when Lakeloom validates an axiom (``ProposalService``)."""
     return {
         "name": name,
+        "displayName": name,
+        "description": name,
         "axiomType": "SUBCLASS_OF",
         "expressions": [
             {
