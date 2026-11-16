@@ -19,6 +19,7 @@ updates, as defence in depth only. Each query is logged as its sha256 and length
 text.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -133,9 +134,14 @@ def _refuse_unparsed(text: str, exc: Exception) -> NoReturn:
     if isinstance(update, CompValue) and "request" in update:  # at least one operation
         raise LakeloomError("forbidden", "SPARQL updates are not allowed", _READ_ONLY_HINT)
     if isinstance(exc, RecursionError):
-        message = "invalid SPARQL query: too deeply nested for the guard"
-    else:
-        message = _one_line("invalid SPARQL query: ", str(exc) or type(exc).__name__)
+        # rdflib's grammar recurses per triple pattern and per brace: in the guard's worker
+        # thread about 84 '.'-separated patterns in one group, or 36 nested groups, pass.
+        raise LakeloomError(
+            "validation_error",
+            "query too long or too deeply nested for the SPARQL guard",
+            "split long triple blocks with `;` or into `{ }` groups, and nest less",
+        ) from None
+    message = _one_line("invalid SPARQL query: ", str(exc) or type(exc).__name__)
     raise LakeloomError("validation_error", message, "fix the syntax; " + _READ_ONLY_HINT) from None
 
 
@@ -249,8 +255,24 @@ class SparqlService:
         self.endpoint_missing = False
 
     async def query(self, model: str, text: str, fmt: ResultFormat | None) -> SparqlResult:
+        """Guard ``text`` (:meth:`guard`), then run it (:meth:`run`)."""
+        form = await self.guard(text)
+        return await self.run(model, text, form, fmt)
+
+    async def guard(self, text: str) -> QueryForm:
+        """Log the query (sha256 and length) and run :func:`check_query` once, in a worker
+        thread: the pure-Python parse of a long query takes up to seconds, which must not
+        block the event loop, and the thread's fixed shallow stack makes the parser's
+        recursion limit the same for every caller (CLI, MCP, HTTP)."""
         _log.info("sparql query sha256=%s chars=%d", query_digest(text), len(text))
-        form = check_query(text, max_chars=self._settings.sparql_max_query_chars)
+        return await asyncio.to_thread(
+            check_query, text, max_chars=self._settings.sparql_max_query_chars
+        )
+
+    async def run(
+        self, model: str, text: str, form: QueryForm, fmt: ResultFormat | None
+    ) -> SparqlResult:
+        """Run a query :meth:`guard` accepted as ``form`` over ``model``'s glossary."""
         chosen = pick_format(form, fmt)
         info = await self._models.get_model(model)
         try:

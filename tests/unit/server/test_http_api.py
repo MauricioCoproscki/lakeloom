@@ -639,3 +639,32 @@ def test_openapi_lists_sparql_route(client: TestClient, auth: dict[str, str]) ->
     }  # fmt: skip
     assert "text/turtle" in post["responses"]["200"]["content"]
     assert "406" in post["responses"]
+
+
+def test_http_sparql_guards_once_and_logs_rejections(
+    deps: Any,
+    client: TestClient,
+    auth: dict[str, str],
+    sparql_calls: list[Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import hashlib
+    import logging
+
+    svc = deps.sparql_service
+    guarded: list[str] = []
+    real_guard = svc.guard
+
+    async def counting(text: str) -> Any:
+        guarded.append(text)
+        return await real_guard(text)
+
+    svc.guard = counting
+    caplog.set_level(logging.INFO, logger="lakeloom.sparql")
+    ok = client.post("/v1/models/retail/sparql", json={"query": SELECT}, headers=auth)
+    bad = client.post("/v1/models/retail/sparql", json={"query": "DROP ALL"}, headers=auth)
+
+    assert ok.status_code == 200 and bad.status_code == 403
+    assert guarded == [SELECT, "DROP ALL"]
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert hashlib.sha256(b"DROP ALL").hexdigest() in logged

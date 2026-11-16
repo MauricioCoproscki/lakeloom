@@ -301,3 +301,42 @@ async def test_query_text_never_logged(caplog: pytest.LogCaptureFixture) -> None
     assert hashlib.sha256(query_text.encode()).hexdigest() in logged
     assert f"chars={len(query_text)}" in logged
     assert "top-query_text-literal" not in logged and "?s ?p" not in logged
+
+
+async def test_guard_runs_once_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from lakeloom.core import sparql
+
+    threads: list[threading.Thread] = []
+    real = sparql.check_query
+
+    def spy(text: str, *, max_chars: int) -> Any:
+        threads.append(threading.current_thread())
+        return real(text, max_chars=max_chars)
+
+    monkeypatch.setattr(sparql, "check_query", spy)
+    om = FakeOM()
+
+    await service(om).query("retail", "ASK { ?s ?p ?o }", None)
+
+    assert len(threads) == 1 and threads[0] is not threading.main_thread()
+    assert len(om.calls) == 1
+
+
+def _bgp(n: int) -> str:
+    return "SELECT * WHERE { " + " . ".join(f"?s{i} <http://p> ?o{i}" for i in range(n)) + " }"
+
+
+async def test_guard_recursion_limit_is_pinned() -> None:
+    svc = service(FakeOM())
+
+    assert await svc.guard(_bgp(50)) == "select"
+    assert await svc.guard("SELECT * WHERE " + "{" * 30 + "?s ?p ?o" + "}" * 30) == "select"
+    groups = " ".join(f"{{ ?s{i} <http://p> ?o{i} }}" for i in range(300))
+    assert await svc.guard(f"SELECT * WHERE {{ {groups} }}") == "select"
+    with pytest.raises(LakeloomError) as info:
+        await svc.guard(_bgp(300))
+
+    assert info.value.code == "validation_error"
+    assert "`;`" in info.value.hint and "`{ }` groups" in info.value.hint

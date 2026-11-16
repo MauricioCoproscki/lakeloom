@@ -163,6 +163,14 @@ For local name `L` in namespace `ns`:
   `parseQuery`, with `parseUpdate` telling updates (`forbidden`) from syntax errors
   (`validation_error`); only SELECT/ASK/CONSTRUCT/DESCRIBE; any `SERVICE` is `forbidden`.
   OM's own parser also rejects updates (R3), as defence in depth only.
+  The guard runs once per request, in a worker thread (`asyncio.to_thread`): rdflib's
+  pure-Python parse of a near-cap query takes up to ~2 s and must not block the event loop.
+  rdflib 7.6's grammar recurses per triple pattern and per brace; in that thread (a fixed,
+  shallow stack, the same for CLI, MCP and HTTP) about 84 `.`-separated patterns in one
+  group or 36 nested groups pass (50 patterns and 30 groups are pinned by tests), beyond
+  that `RecursionError` is a `validation_error` hinting to split the block with `;` or into
+  `{ }` groups (unbounded). The recursion limit is not raised. rdflib also fails to parse
+  `SERVICE` after a `PREFIX`; such a query is refused as a `validation_error`.
 - Formats: SELECT/ASK `json` (default), `xml`, `csv`, `tsv`; CONSTRUCT/DESCRIBE `turtle`
   (default), `jsonld`, `ntriples`, `rdfxml` (the content types OM returns match the HTTP
   `Accept` list, R3). HTTP bodies: `application/sparql-query`, form `query=`, or JSON.

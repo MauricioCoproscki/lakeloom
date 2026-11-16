@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from lakeloom.core.sparql import FORMATS, MEDIA, ResultFormat, check_query
+from lakeloom.core.sparql import FORMATS, MEDIA, ResultFormat
 from lakeloom.errors import ErrorCode, LakeloomError
 from lakeloom.publish.artifacts import (
     Artifact,
@@ -496,12 +496,13 @@ def create_router(deps: "AppDeps") -> APIRouter:
                     "supported: " + ", ".join(SPARQL_BODIES),
                     status=415,
                 )
-            form = check_query(text, max_chars=settings.sparql_max_query_chars)
+            form = await deps.sparql_service.guard(text)  # once, off the event loop
             offered = tuple(MEDIA[f] for f in FORMATS[form])
             media = choose(accept, offered)
             if media is None:
                 return _not_acceptable(offered)
-            result = await deps.sparql_service.query(slug, text, _FORMAT_BY_SPARQL_MEDIA[media])
+            fmt = _FORMAT_BY_SPARQL_MEDIA[media]
+            result = await deps.sparql_service.run(slug, text, form, fmt)
         except LakeloomError as exc:
             return error_response(exc.code, exc.message, exc.hint)
         except Exception as exc:
