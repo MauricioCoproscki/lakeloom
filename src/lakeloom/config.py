@@ -140,6 +140,9 @@ class Settings(BaseSettings):
     sparql_max_result_bytes: int = Field(5242880, ge=1024)
     sparql_max_query_chars: int = Field(20000, ge=100)
     model_cache_ttl_seconds: int = Field(60, ge=0, le=3600)
+    # M4a graceful shutdown (NFR-OPS-04, ADR 0017): uvicorn's timeout_graceful_shutdown, and the
+    # time a running background job tick may take to finish on shutdown.
+    shutdown_timeout_seconds: int = Field(30, ge=1, le=600)
     # None means "auto": False in production, True in development (resolved after validation).
     stdio_enabled: bool | None = None
     otel_exporter_otlp_endpoint: str | None = None

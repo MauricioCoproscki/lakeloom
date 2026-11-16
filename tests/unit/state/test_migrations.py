@@ -82,7 +82,7 @@ async def test_upgrade_postgres() -> None:
     try:
         await upgrade(engine)
         await upgrade(engine)
-        assert {"scan_records", "proposals", "audit_log", "publications"} <= set(
+        assert {"scan_records", "proposals", "audit_log", "publications", "job_leases"} <= set(
             await _tables(engine)
         )
     finally:
@@ -102,6 +102,7 @@ async def test_concurrent_upgrades_postgres() -> None:
             await conn.execute(text("DROP TABLE IF EXISTS audit_log"))
             await conn.execute(text("DROP TABLE IF EXISTS publications"))
             await conn.execute(text("DROP TABLE IF EXISTS releases"))
+            await conn.execute(text("DROP TABLE IF EXISTS job_leases"))
             await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await asyncio.gather(*(upgrade(e) for e in engines))
         assert "scan_records" in await _tables(engines[0])
@@ -150,5 +151,53 @@ async def test_postgres_audit_oversized_client_is_stored() -> None:
             ).one()
         assert row.client == "c" * 255  # the inserted record itself, NUL gone, cut to width
         assert len(row.tool) == 128 and len(row.principal_subject) == 255
+    finally:
+        await engine.dispose()
+
+
+def _migrate(conn: Connection, target: str, *, down: bool) -> None:
+    with as_file(files("lakeloom.state") / "migrations") as script_dir:
+        cfg = Config()
+        cfg.set_main_option("script_location", str(script_dir))
+        cfg.attributes["connection"] = conn
+        (command.downgrade if down else command.upgrade)(cfg, target)
+
+
+async def _check_0005_up_and_down(engine: AsyncEngine) -> None:
+    await upgrade(engine)
+    assert "job_leases" in await _tables(engine)
+    async with engine.connect() as conn:
+        cols = await conn.run_sync(
+            lambda c: {col["name"]: col for col in inspect(c).get_columns("job_leases")}
+        )
+        pk = await conn.run_sync(lambda c: inspect(c).get_pk_constraint("job_leases"))
+    assert set(cols) == {"name", "holder", "acquired_at", "expires_at"}
+    assert pk["constrained_columns"] == ["name"]
+    assert not any(c["nullable"] for c in cols.values())
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda c: _migrate(c, "0004", down=True))
+    tables = set(await _tables(engine))
+    assert "job_leases" not in tables
+    assert "releases" in tables
+    await upgrade(engine)
+    assert "job_leases" in await _tables(engine)
+
+
+async def test_migration_0005_up_and_down(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'state.db'}")
+    try:
+        await _check_0005_up_and_down(engine)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.contract
+async def test_migration_0005_up_and_down_postgres() -> None:
+    url = os.environ.get("LAKELOOM_TEST_DB_URL")
+    if not url:
+        pytest.skip("LAKELOOM_TEST_DB_URL not set")
+    engine = create_engine(url)
+    try:
+        await _check_0005_up_and_down(engine)
     finally:
         await engine.dispose()

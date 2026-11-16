@@ -64,6 +64,7 @@ def test_fr_agt_07_cli_serve_defaults_from_settings(
     assert result.exit_code == 0, result.output
     assert calls[0]["host"] == "0.0.0.0"  # noqa: S104
     assert calls[0]["port"] == 8111
+    assert calls[0]["timeout_graceful_shutdown"] == 30  # NFR-OPS-04
 
 
 def test_cli_serve_config_error_exits_2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

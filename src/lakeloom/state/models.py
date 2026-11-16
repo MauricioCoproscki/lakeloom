@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import JSON, DateTime, Index, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-__all__ = ["AuditLogRow", "Base", "ScanRecordRow"]
+__all__ = ["AuditLogRow", "Base", "JobLeaseRow", "ScanRecordRow"]
 
 
 class Base(DeclarativeBase):
@@ -44,3 +44,14 @@ class AuditLogRow(Base):
     change_set_id: Mapped[str | None] = mapped_column(String(255))
     result: Mapped[str] = mapped_column(String(16))
     error_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class JobLeaseRow(Base):
+    """The lease of one background job (NFR-DEP-07). ``holder`` is an instance id, never a token."""
+
+    __tablename__ = "job_leases"
+
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    holder: Mapped[str] = mapped_column(String(128))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

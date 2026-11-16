@@ -107,6 +107,8 @@ def serve(
         log_config=None,
         # RequestContextMiddleware writes the access log; uvicorn's would duplicate it.
         access_log=False,
+        # NFR-OPS-04: in-flight requests get this long; the lifespan then stops the jobs.
+        timeout_graceful_shutdown=settings.shutdown_timeout_seconds,
     )
 
 

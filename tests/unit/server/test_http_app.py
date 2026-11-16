@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -16,7 +18,8 @@ from lakeloom.om.client import OMClient
 from lakeloom.server.auth import TokenValidator
 from lakeloom.server.health import Check, CheckResult
 from lakeloom.server.http_app import AppDeps, build_deps, create_app
-from lakeloom.state.db import create_engine
+from lakeloom.state.db import create_engine, upgrade
+from lakeloom.state.leases import LeaseRepository
 
 BOT_TOKEN = "super-secret-bot-token-xyz"  # noqa: S105
 
@@ -361,31 +364,106 @@ def test_git_settings_that_need_no_forge_are_accepted(tmp_path: Path) -> None:
 class _CountingPublisher:
     enabled = True
 
-    def __init__(self) -> None:
+    def __init__(self, check: Callable[[], Awaitable[None]] | None = None) -> None:
         self.calls = 0
         self.started = asyncio.Event()
+        self.check = check
 
     async def process(self) -> list[object]:
+        if self.check is not None:
+            await self.check()
         self.calls += 1
         self.started.set()
         return []
 
 
+def _job_tasks() -> list["asyncio.Task[object]"]:
+    return [t for t in asyncio.all_tasks() if t.get_name().startswith("lakeloom-job:")]
+
+
 async def test_lifespan_worker_cancelled_cleanly(tmp_path: Path) -> None:
     deps = build_deps(_git_settings(tmp_path, git_mode="direct", forge="none"))
     fake = _CountingPublisher()
+    key = deps.publisher.repo_key
     deps.publisher = fake  # pyright: ignore[reportAttributeAccessIssue]
     app = create_app(deps, checks=[_check("openmetadata", True)])
     async with app.router.lifespan_context(app):
         await asyncio.wait_for(fake.started.wait(), 2)
-        workers = [t for t in asyncio.all_tasks() if t.get_name() == "lakeloom-git-worker"]
-        assert len(workers) == 1
-    assert workers[0].done() and workers[0].cancelled()
+        workers = _job_tasks()
+        assert [t.get_name() for t in workers] == [f"lakeloom-job:git-publisher:{key}"]
+        assert deps.jobs.status()[f"git-publisher:{key}"].held
+    assert workers[0].done()
     assert fake.calls == 1  # sleeping between runs when shut down
     assert deps.git_http is not None and deps.git_http.is_closed
+
+
+async def test_git_worker_runs_under_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _git_settings(tmp_path, git_mode="direct", forge="none")
+    deps = build_deps(settings)
+    name = f"git-publisher:{deps.publisher.repo_key}"
+    engine = create_engine(settings.db_url)
+    await upgrade(engine)
+    other = LeaseRepository(engine)
+    assert await other.acquire(name, "other-replica", timedelta(hours=1))
+
+    attempted = asyncio.Event()
+    real_acquire = LeaseRepository.acquire
+
+    async def spy(self: LeaseRepository, *args: Any, **kw: Any) -> bool:
+        try:
+            return await real_acquire(self, *args, **kw)
+        finally:
+            attempted.set()
+
+    monkeypatch.setattr(LeaseRepository, "acquire", spy)
+
+    # Held by another replica: this one never runs the outbox.
+    blocked = _CountingPublisher()
+    deps.publisher = blocked  # pyright: ignore[reportAttributeAccessIssue]
+    app = create_app(deps, checks=[_check("openmetadata", True)])
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(attempted.wait(), 2)
+        await asyncio.sleep(0.05)
+        assert blocked.calls == 0
+        assert not deps.jobs.status()[name].held
+    assert await other.holder_of(name) == "other-replica"  # stop never releases a foreign lease
+
+    # Free: process runs, and only while this replica holds the lease.
+    await other.release(name, "other-replica")
+    deps = build_deps(settings)
+
+    async def holds() -> None:
+        assert await other.holder_of(name) == deps.jobs.holder
+
+    running = _CountingPublisher(holds)
+    deps.publisher = running  # pyright: ignore[reportAttributeAccessIssue]
+    app = create_app(deps, checks=[_check("openmetadata", True)])
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(running.started.wait(), 2)
+    assert running.calls == 1
+    assert await other.holder_of(name) is None  # released on shutdown
+    await engine.dispose()
+
+
+def test_triplestore_sink_is_its_own_job(tmp_path: Path) -> None:
+    deps = build_deps(
+        _git_settings(
+            tmp_path,
+            git_mode="direct",
+            forge="none",
+            triplestore_enabled=True,
+            triplestore_url="http://fuseki.test:3030/l/data",
+        )
+    )
+    assert deps.sink_worker is not None
+    assert set(deps.jobs.status()) == {
+        f"git-publisher:{deps.publisher.repo_key}",
+        "triplestore-sink",
+    }
 
 
 async def test_lifespan_without_git_starts_no_worker(deps: AppDeps) -> None:
     app = create_app(deps, checks=[_check("openmetadata", True)])
     async with app.router.lifespan_context(app):
-        assert not [t for t in asyncio.all_tasks() if t.get_name() == "lakeloom-git-worker"]
+        assert not _job_tasks()
+        assert deps.jobs.status() == {}

@@ -392,3 +392,14 @@ def test_fr_io_04_m3c_settings_are_bounded(
             monkeypatch.setenv(env, str(bad))
             with pytest.raises(ValidationError):
                 Settings()
+
+
+def test_nfr_ops_04_shutdown_timeout_default_and_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert Settings().shutdown_timeout_seconds == 30
+    for ok in (1, 600):
+        monkeypatch.setenv("LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS", str(ok))
+        assert Settings().shutdown_timeout_seconds == ok
+    for bad in (0, 601):
+        monkeypatch.setenv("LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS", str(bad))
+        with pytest.raises(ValidationError):
+            Settings()

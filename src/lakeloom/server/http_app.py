@@ -37,6 +37,7 @@ from lakeloom.core.confirm import (
 )
 from lakeloom.core.drift_service import DriftService
 from lakeloom.core.imports import ImportService
+from lakeloom.core.jobs import Job, JobRunner
 from lakeloom.core.model_policy import ModelPolicyEntry
 from lakeloom.core.models import ModelService
 from lakeloom.core.obo import OnBehalfOf
@@ -82,6 +83,7 @@ from lakeloom.sources.config import SourcesConfig, load_sources_config
 from lakeloom.sources.registry import build_sources
 from lakeloom.state.audit import AuditRepository
 from lakeloom.state.db import create_engine, upgrade
+from lakeloom.state.leases import LeaseRepository, instance_id
 from lakeloom.state.proposals import ProposalRepository
 from lakeloom.state.publications import PublicationRepository
 from lakeloom.state.releases import Release, ReleaseRepository
@@ -145,6 +147,10 @@ class AppDeps:
     sink_tasks: set["asyncio.Task[Any]"] = field(
         init=False, default_factory=set["asyncio.Task[Any]"]
     )
+    # Background jobs, each under a lease in the state store (NFR-DEP-07); started and stopped
+    # by the app lifespan. ``git-publisher:<repo>`` with Git publishing, ``triplestore-sink``
+    # with the sink.
+    jobs: JobRunner = field(init=False)
 
     def __post_init__(self) -> None:
         self.confirm = confirm_tokens_from_settings(self.settings)
@@ -254,6 +260,23 @@ class AppDeps:
             self.policies,
             publisher=self.publisher,
         )
+        self.jobs = JobRunner(LeaseRepository(self.engine), instance_id())
+        if self.publisher.enabled:
+            # The outbox drain; the inline publish after approve takes no lease (ADR 0013).
+            name = f"git-publisher:{self.publisher.repo_key}"
+            self.jobs.add(Job(name, self._git_interval, self._publish_tick))
+        if self.sink_worker is not None:
+            self.jobs.add(Job("triplestore-sink", self._git_interval, self._sink_tick))
+
+    def _git_interval(self) -> float:
+        return float(self.settings.git_retry_interval_seconds)
+
+    async def _publish_tick(self) -> None:
+        await self.publisher.process()  # never raises; the runner logs it if it does
+
+    async def _sink_tick(self) -> None:
+        if self.sink_worker is not None:
+            await self.sink_worker.process()  # never raises; the runner logs it if it does
 
     async def _sink_inline(self, release: Release) -> None:
         """One attempt right after a release, in the background: the tool never waits for it."""
@@ -475,25 +498,10 @@ def create_app(
                 _log.info("state store schema upgraded")
                 return
 
-    async def git_worker() -> None:
-        """Drain the Git outbox; queued rows stay in the store on shutdown (NFR-OPS-04)."""
-        while True:
-            try:
-                await deps.publisher.process()
-            except Exception as exc:  # process() never raises; belt and braces
-                _log.error("git publication worker failed (%s)", type(exc).__name__)
-            if deps.sink_worker is not None:
-                try:
-                    await deps.sink_worker.process()
-                except Exception as exc:  # process() never raises; belt and braces
-                    _log.error("triple store worker failed (%s)", type(exc).__name__)
-            await asyncio.sleep(settings.git_retry_interval_seconds)
-
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         nonlocal upgrade_pending
         retry: asyncio.Task[None] | None = None
-        worker: asyncio.Task[None] | None = None
         # Off unless an OTLP endpoint is set; an already-active setup is not ours to stop.
         owns_telemetry = not is_active()
         telemetry = configure_telemetry(settings)
@@ -514,14 +522,15 @@ def create_app(
                 raise RuntimeError(f"state store migration failed ({type(exc).__name__})") from None
             # Upstream MCP sources connect here, bounded; an unavailable one never fails startup.
             await start_sources(deps.sources)
-            if deps.publisher.enabled:
-                worker = asyncio.create_task(git_worker(), name="lakeloom-git-worker")
+            # Queued rows stay in the store on shutdown (NFR-OPS-04).
+            await deps.jobs.start()
             async with AsyncExitStack() as stack:
                 for factory in lifespans:
                     await stack.enter_async_context(factory())
                 yield
         finally:
-            for task in (worker, retry, *deps.sink_tasks):
+            await deps.jobs.stop(grace=settings.shutdown_timeout_seconds)
+            for task in (retry, *deps.sink_tasks):
                 if task is not None:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
