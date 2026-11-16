@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -87,6 +88,30 @@ def test_retry_after_is_whole_seconds_at_least_one() -> None:
     assert isinstance(slow_wait, int)
 
 
+def test_idle_bucket_kept_until_full() -> None:
+    clock = Clock()
+    limiter = RateLimiter(1, 60, clock=clock)  # one token a minute
+    for _ in range(60):
+        limiter.check(KEY)
+
+    clock.advance(IDLE_SECONDS + 61)  # idle, but only ~11 tokens back
+    limiter.check(("agent", "other"))
+
+    assert limiter.bucket_count == 2
+    assert limiter.check(KEY) is None  # ~11 tokens, not a fresh 60
+    drained = sum(limiter.check(KEY) is None for _ in range(60))
+    assert drained < 20
+
+
+def test_concurrent_checks_admit_exactly_burst() -> None:
+    limiter = RateLimiter(60, 100, clock=lambda: 0.0)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: limiter.check(KEY), range(400)))
+
+    assert sum(r is None for r in results) == 100
+
+
 def limited(surface: str) -> float:
     return REGISTRY.get_sample_value("lakeloom_rate_limited_total", {"surface": surface}) or 0.0
 
@@ -155,8 +180,8 @@ def test_http_v1_rate_limited(client: TestClient, kit: AuthKit) -> None:
 
 def test_health_and_metrics_not_limited(client: TestClient, kit: AuthKit) -> None:
     auth = {"Authorization": f"Bearer {kit.token()}"}
-    for _ in range(3):
-        client.get("/v1/models", headers=auth)
+    statuses = [client.get("/v1/models", headers=auth).status_code for _ in range(3)]
+    assert statuses == [200, 200, 429]  # the principal's bucket is exhausted
 
     codes = [client.get(path).status_code for path in ("/healthz", "/metrics") * 5]
     prm = client.get("/.well-known/oauth-protected-resource")

@@ -322,7 +322,7 @@ _SPARQL_REQUEST_BODY: Final[dict[str, Any]] = {
 def create_router(deps: "AppDeps") -> APIRouter:
     """The ``/v1`` router; dependencies are read per request (tests swap them)."""
 
-    def rate_limit(request: Request) -> None:
+    async def rate_limit(request: Request) -> None:
         """Per principal (NFR-SEC-16); after ``_require_read``, so only authorised callers count."""
         state: dict[str, Any] = request.scope.get("state") or {}
         principal = state.get("principal")

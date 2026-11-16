@@ -6,6 +6,7 @@ per minute. Per replica, in memory. Keys never hold tokens (NFR-SEC-11). A bucke
 """
 
 import math
+import threading
 import time
 from collections.abc import Callable
 
@@ -33,15 +34,22 @@ class RateLimiter:
         self.enabled = per_minute > 0
         self._buckets: dict[tuple[str, str], tuple[float, float]] = {}  # key -> (tokens, at)
         self._swept = clock()
+        # check() is called from the event loop (MCP) and from threads: guard the buckets.
+        self._lock = threading.Lock()
 
     @property
     def bucket_count(self) -> int:
-        return len(self._buckets)
+        with self._lock:
+            return len(self._buckets)
 
     def check(self, key: tuple[str, str]) -> int | None:
         """``None`` when allowed (one token taken); else whole seconds (>= 1) to wait."""
         if not self.enabled:
             return None
+        with self._lock:
+            return self._check(key)
+
+    def _check(self, key: tuple[str, str]) -> int | None:
         now = self._clock()
         self._sweep(now)
         tokens, at = self._buckets.get(key, (self._burst, now))
@@ -56,6 +64,11 @@ class RateLimiter:
         if now - self._swept < _SWEEP_EVERY:
             return
         self._swept = now
-        stale = [k for k, (_, at) in self._buckets.items() if now - at >= IDLE_SECONDS]
+        # Only a bucket that would be full again anyway: eviction never grants an early burst.
+        stale = [
+            k
+            for k, (tokens, at) in self._buckets.items()
+            if now - at >= IDLE_SECONDS and tokens + (now - at) * self._rate >= self._burst
+        ]
         for k in stale:
             del self._buckets[k]
