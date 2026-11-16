@@ -652,7 +652,13 @@ An edit made directly in OpenMetadata, outside a Lakeloom proposal, is found by
   changed and removed terms), `skipped` or `error`.
 - **Skips.** A model with a publication in flight (an approval not yet in Git, including one
   stuck in `apply_failed`) is `skipped` "publication in flight", never `drifted`. So is a model
-  never published.
+  never published, a model deleted in OpenMetadata ("model not found in OpenMetadata"), and one
+  whose baseline commit cannot be found ("baseline commit not found").
+- **Pull request mode.** The baseline is the commit of the model's latest `done` publication,
+  merged or not: an unmerged or closed pull request (`prp_…` or `rec_…`) still counts as the
+  baseline until the model's next publication. When that commit is gone (a squash merge that
+  deleted the branch), the commit on the target branch with the publication's
+  `Lakeloom-Publication` trailer is used, as the publisher does for merged pull requests.
 - **The job.** The server runs it once at start and then every
   `LAKELOOM_RECONCILE_INTERVAL_SECONDS` (default `3600`, `0` = off), as `system:reconcile`. It
   only reports (audit row, `lakeloom_reconcile_drifted_models`, `jobs.reconcile` in
@@ -663,9 +669,12 @@ An edit made directly in OpenMetadata, outside a Lakeloom proposal, is found by
   `Lakeloom-Origin: om-direct-edit` and `Lakeloom-Reconcile: rec_…`. Reconciliation never writes
   OpenMetadata and never reverts an edit.
 - **CLI.** `lakeloom reconcile [--model SLUG] [--commit] [--json]`: exit `0` in sync (skips
-  included), `3` drift found, `1` an error. `--commit` takes the job's lease, so it is refused
-  (`conflict`) while the server's reconcile job is on: let the job commit, or set the interval
-  to `0` for manual runs. A run without `--commit` always works.
+  included), `3` drift found, `1` an error; when every model was skipped, a warning goes to
+  stderr (the exit code stays `0`). `--commit` works while the server's reconcile job is on. A
+  committing run, the CLI's or the job's with `LAKELOOM_RECONCILE_COMMIT=true`, holds the
+  short `reconcile-commit` lease (15 minutes, renewed while it runs, released after). So
+  `--commit` is refused (`conflict` "a committing reconciliation is already running; try again
+  later") only while another committing run holds it. A run without `--commit` takes no lease.
 - **Caches.** A direct term edit does not change the glossary's version in OpenMetadata rc1, so
   version-keyed caches (HTTP `ETag`) can show the old state until their TTL
   (`LAKELOOM_MODEL_CACHE_TTL_SECONDS`).
@@ -677,22 +686,29 @@ An edit made directly in OpenMetadata, outside a Lakeloom proposal, is found by
 
 ### Rate limits
 
-Every MCP `tools/call` and every `/v1` request takes a token from the caller's bucket
+Every MCP `tools/call` and `resources/read` and every `/v1` request takes a token from the caller's bucket
 (NFR-SEC-16). One bucket per principal (type and subject), shared by MCP and HTTP:
 `LAKELOOM_RATE_LIMIT_BURST` (default `60`) is its size and `LAKELOOM_RATE_LIMIT_PER_MINUTE`
 (default `300`, `0` = off) its refill. Over the limit, a tool returns the error `rate_limited`
-with a "retry after <n> s" hint and HTTP returns `429` with `Retry-After`. Health, metrics,
+with a "retry after <n> s" hint (a resource read, an MCP error with the same `rate_limited`
+data and `retry_after`) and HTTP returns `429` with `Retry-After`. Health, metrics,
 the protected-resource metadata, MCP `initialize` and the `*/list` calls are not limited.
 The count is `lakeloom_rate_limited_total{surface}`.
 
 ### Running more than one replica
 
 Background jobs (the Git outbox `git-publisher`, `triplestore-sink`, `reconcile`,
-`drift-schedule`) take a lease in the state store, so each runs on one replica at a time; a
-replica that stops loses its jobs after at most one lease TTL (`max(3 × interval, 60 s)`).
+`drift-schedule`) take a lease in the state store, so each runs on one replica at a time. The
+lease is renewed while a run lasts; a replica that loses it cancels its run. When a replica dies,
+another one picks up its jobs after at most one lease TTL (`max(3 × interval, 60 s)`) plus one
+job interval. A graceful shutdown releases the leases, but the next replica still waits up to one
+interval before its next attempt.
 `get_server_info` shows the jobs of the replica that answers (`jobs`).
 
 - Use the **PostgreSQL** state store: SQLite is single-replica only.
+- **Never share `LAKELOOM_DATA_DIR`** between replicas. The Git working copy at
+  `<data_dir>/git/repo` is guarded in-process only, so each replica needs its own data
+  directory (its own volume).
 - Set **`LAKELOOM_MCP_STATELESS=true`** or route each client to one replica (sticky
   sessions). An MCP session is bound to the principal that opened it and lives in one
   replica's memory; another principal, or another replica, answers `404` "unknown MCP session".

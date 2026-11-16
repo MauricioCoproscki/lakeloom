@@ -18,16 +18,17 @@ limits: [ADR 0017](../decisions/0017-jobs-limits-reconciliation.md).
   replicas need `LAKELOOM_MCP_STATELESS=true` or sticky sessions.
 
 ## Jobs and leases
-- `lakeloom reconcile --commit` takes a lease whose TTL scales with the interval
-  (`max(3 × interval, floor)`, 72 h at the 86400 s maximum). A crashed CLI run blocks the
-  server's job, or the next CLI run, until it expires.
-- The `--commit` conflict message assumes the server holds the lease. Another CLI run can hold
-  it too.
+- A crashed `lakeloom reconcile --commit` blocks other committing runs until its
+  `reconcile-commit` lease expires (15 minutes).
 - `JobRunner.stop()` can take the runner's grace on top of uvicorn's
   `timeout_graceful_shutdown` (both `LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS`): documented, not
   bounded as one budget.
 
 ## Reconciliation
+- Reconciliation assumes OpenMetadata never exposes a half-applied change set in an export
+  (ADR 0017 R4). Not verified; listed for the M4b probe.
+- A reconcile commit's body lists the check-time diff, but its exports are re-read at commit
+  time, so the body can lag an edit made between the check and the commit.
 - A proposal stuck in `apply_failed` is reported as "publication in flight". A distinct reason
   ("apply failed, approve again or reject") would tell the operator what to do.
 - `_in_flight` reads every pending proposal's change sets from OpenMetadata with no bound on

@@ -43,7 +43,9 @@ section is the long form of the Decision below.
 ### Job runner (`core/jobs.py`)
 
 - A `Job` is a name, an interval and a tick. `JobRunner` loops per job: renew, tick if held,
-  sleep. A tick that raises is logged with its exception class only and the loop goes on;
+  sleep. While a tick runs, a heartbeat renews the lease every TTL/3; a refused renewal (or two
+  failed ones in a row) cancels the tick (`last_error` `LeaseLost`, `held` false), so a tick
+  longer than the TTL never runs on two replicas at once. A tick that raises is logged with its exception class only and the loop goes on;
   `status()` reports `held`, `last_run_at` and `last_error` (a class name) per job.
 - Jobs under a lease:
   - `git-publisher:<repo_key>`: the outbox, every `LAKELOOM_GIT_RETRY_INTERVAL_SECONDS`;
@@ -67,8 +69,9 @@ section is the long form of the Decision below.
 
 - A token bucket per `(principal.type, principal.subject)`: `LAKELOOM_RATE_LIMIT_PER_MINUTE`
   (default `300`, `0` = off) refills, `LAKELOOM_RATE_LIMIT_BURST` (default `60`) is its size.
-- Checked on every MCP `tools/call` (in `guarded()`) and every `/v1` request; health, metrics,
-  PRM, MCP `initialize` and `*/list` are not limited.
+- Checked on every MCP `tools/call` (in `guarded()`), every `resources/read` (the same bucket)
+  and every `/v1` request; health, metrics, PRM, MCP `initialize` and `*/list` are not
+  limited.
 - Over the limit: MCP tool error `rate_limited` with a "retry after <n> s" hint; HTTP `429` with
   `Retry-After` (whole seconds, ≥ 1). Metric `lakeloom_rate_limited_total{surface}`. Idle buckets
   are dropped after 10 minutes. The limit is per replica.
@@ -89,7 +92,21 @@ section is the long form of the Decision below.
   baseline are compared with `semantic_view` + `diff_graphs`: no bump is `in_sync`, anything
   else `drifted` with the added, changed and removed terms.
 - Skips: a pending or blocked publication ("publication in flight"), no done publication
-  ("never published"), a baseline commit that cannot be fetched; OM unreachable is `error`.
+  ("never published"), the model deleted in OM ("model not found in OpenMetadata"), a baseline
+  commit that cannot be found; OM unreachable is `error`.
+- Pull request mode: the baseline is the publication's commit, merged or not, so an unmerged
+  or closed pull request (`prp_` or `rec_`) still counts as the baseline until the model's next
+  publication. When that commit is missing after fetching the target and the publication's
+  branch (a squash merge deleted it), the commit of `origin/<target>` with the publication's
+  `Lakeloom-Publication` trailer is the baseline (squash merges keep trailers; the publisher
+  finds merged pull requests the same way); only then is it `skipped` "baseline commit not
+  found".
+- Leases: `reconcile` only schedules the job. A committing run (the job with
+  `LAKELOOM_RECONCILE_COMMIT=true`, or `lakeloom reconcile --commit`) also holds
+  `reconcile-commit` (TTL 15 minutes, renewed while it runs, released after), so two committing
+  runs never queue the same drift twice. The CLI does not take `reconcile`; `--commit` is refused
+  (`conflict`) only while another process holds `reconcile-commit`, and the job skips a
+  committing tick while the CLI holds it.
 - A run writes one audit row per drifted model (principal `system:reconcile`, type `system`), the
   gauge `lakeloom_reconcile_drifted_models`, the counter `lakeloom_reconcile_runs_total{outcome}`,
   a JSON log line per drifted model (counts, never term text) and `jobs.reconcile` in
@@ -156,14 +173,19 @@ hard-deleted in teardown, never sealed). An OM upgrade that changes any of this 
   (`Git: not queued`, an operator must re-publish it) from before the baseline publication is
   not seen; a proposal stopped part-way (`apply_failed`) keeps its model skipped until it is
   approved again or rejected; changes of a rejected, partly applied proposal are reported as
-  direct edits.
+  direct edits. Reconciliation also assumes OM never exposes a half-applied change set in an
+  export; that is not verified and is listed for the M4b probe.
 - Reconciliation reads OM only through endpoints Lakeloom already uses (the glossary and native
   exports, `get_change_set`); it adds no OM endpoint.
 
 ## Consequences
 
-- Two or more replicas can share one PostgreSQL state store: each job runs on one of them, and a
-  replica that dies loses its jobs after at most one TTL. The lease table is tested on SQLite and
+- Two or more replicas can share one PostgreSQL state store: each job runs on one of them, and
+  another replica picks up a dead replica's jobs after at most one TTL plus one job interval
+  (after a graceful release, up to one interval). A running tick keeps its lease by renewal and
+  is cancelled if it loses it.
+- **Replicas never share `LAKELOOM_DATA_DIR`.** The Git working copy at `<data_dir>/git/repo` is
+  guarded by an in-process lock only, so each replica needs its own data directory. The lease table is tested on SQLite and
   PostgreSQL.
 - Clock skew between replicas larger than the TTL could let two replicas hold one job; the
   outbox stays safe even then (row lock and trailer search, ADR 0013).
@@ -178,10 +200,11 @@ hard-deleted in teardown, never sealed). An OM upgrade that changes any of this 
   only; several replicas need the shared PostgreSQL state store.
 - **Manual reconciliation.** Reconciliation runs once at every server start (the job's first
   tick) and then every interval; it only reports unless `LAKELOOM_RECONCILE_COMMIT=true`. A
-  manual `lakeloom reconcile --commit` takes the `reconcile` lease and is refused (`conflict`)
-  while the server's job holds it: let the job commit (`LAKELOOM_RECONCILE_COMMIT=true`) or set
-  `LAKELOOM_RECONCILE_INTERVAL_SECONDS=0` for manual runs. A run without `--commit` takes no
-  lease and always works. A CLI run is not shown in the server's `jobs.reconcile` (that block
+  manual `lakeloom reconcile --commit` works while the server's job runs: it takes only the
+  `reconcile-commit` lease and is refused (`conflict` "a committing reconciliation is already
+  running; try again later") only while a committing run elsewhere holds it. A run without
+  `--commit` takes no lease and always works; when it skips every model, the CLI warns on
+  stderr (exit code unchanged). A CLI run is not shown in the server's `jobs.reconcile` (that block
   is the server's own last run); its audit row is in the shared state store.
 - **Scheduled drift** writes fresh scan records every interval (subject to their retention)
   and no audit row; it never writes a proposal.
