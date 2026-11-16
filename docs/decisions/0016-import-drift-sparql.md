@@ -1,6 +1,6 @@
 # 0016. Import, restore from Git, drift and the SPARQL proxy
 
-- Status: proposed (M3c Task 1: decisions plus live OM research; later M3c tasks extend it)
+- Status: accepted (M3c, 2026-11-16; live research in § Research, acceptance in § Consequences)
 - Date: 2026-11-15
 - Requirements: FR-IO-02, FR-IO-03, FR-IO-04, FR-IO-05, FR-GIT-07, FR-PRO-03, FR-PRO-07, FR-PUB-03, FR-OM-02, FR-OM-06, FR-AGT-03, FR-AGT-04, FR-CTX-06, NFR-SEC-07, NFR-SEC-12, NFR-SEC-13, NFR-SEC-14
 
@@ -112,6 +112,10 @@ For local name `L` in namespace `ns`:
 - **Re-adding a tombstoned definition** — *added by R4*: a term, attribute or axiom whose native
   definition was deleted earlier (`include=deleted` lists it) cannot be created again through a
   change set on rc1; it is skipped with a warning naming it.
+- **Axiom labels** — *added by the M3c acceptance*: the RDF carries no axiom label or
+  description, but rc1 refuses a draft whose new axiom has none (400 `query param displayName
+  must not be null`, `… description must not be null`). An imported axiom's `displayName` and
+  `description` are its name (as `ProposalService` already does when it validates an axiom).
 - Order: concepts (parents first), attributes, relations, mappings, axioms; removals reversed.
 - Rule ids `R-IMPORT` / `R-GIT-RESTORE`; each operation has `Evidence(kind="import", ref=<IRI>)`.
 - Operations already pending in an open proposal (`pending_op_keys`) are dropped with a warning;
@@ -303,13 +307,42 @@ expression, provenance `Imported`); SKOS concepts become `SKOS_CONCEPT` with `di
 ## Consequences
 
 - Import, restore and drift reuse `ProposalService`; FR-OM-02 holds (no `importRdf`, no
-  `/restore`, no preview).
-- **Follow-up outside the M3c task text (controller):** `to_om` must (a) send `enumValues` as
-  `OntologyLiteral` objects, with `native_rdf` reading them back (R1b; this also breaks today's
-  `R-ENUM` scan proposals at draft creation), and (b) put `targetId`/`baseVersion` on the
-  `UPSERT_PROPERTY` / `UPSERT_AXIOM` of a definition that already exists (R2), from
-  `OMContext.native_ids`/`native_versions`.
-- Attribute description edits, re-adding deleted names, and typed glossary links are rc1 limits
-  that import and drift report as warnings instead of proposing operations that would fail.
-- The SPARQL tool answers questions about the vocabulary only; attributes are read with
-  `explain_concept` or the exports.
+  `/restore`, no preview). Every writer only creates a **draft**; a human approves it as for
+  scans.
+- The controller follow-up of Task 1 was done in M3c (Task 2b): `to_om` sends `enumValues` as
+  `OntologyLiteral` objects and `native_rdf` reads them back (R1b); the `UPSERT_PROPERTY` /
+  `UPSERT_AXIOM` of a definition that already exists carry its `targetId`/`baseVersion` (R2).
+  A targeted upsert replaces the definition in full, so fields it omits are cleared in OM.
+- Attribute description edits, re-adding deleted names (tombstones) and typed glossary links are
+  rc1 limits that import and drift report as warnings instead of proposing operations that would
+  fail.
+- The SPARQL tool answers questions about the vocabulary only (the glossary dataset); attributes,
+  relations and axioms are read with `explain_concept` or the exports.
+- The guard's parse limits above were measured on macOS's worker-thread stack. The image runs on
+  Debian (glibc), whose default thread stack differs; the pinned 50 patterns / 30 groups are
+  well inside both, the upper bounds may differ.
+- **Live acceptance** (`tests/contract/test_m3c_acceptance.py`, dev stack, Git mode `direct`):
+  - `retail_m3c` is built from `fixture_delta`, approved by alice and released as `1.0.0`. Its
+    glossary and ontology are then hard-deleted and `create_model` makes them again with the
+    same name and base IRI: OM gives a new glossary id with no terms, and the name is free
+    again (the tombstones of R4 live inside the deleted ontology).
+  - `import_from_git(retail_m3c, version="1.0.0")` plans exactly the terms `extract_terms` reads
+    from the tagged `ontology.ttl` (4 concepts, 20 attributes, 2 relations, 4 axioms, no
+    warnings). Approved by alice, its publication commit carries `Lakeloom-Origin: git` and
+    `Lakeloom-Import: retail_m3c/v1.0.0@<12-char sha>`, and the export has **no semantic
+    diff** from the tagged file (`semantic_view` of both: 156 triples each, `bump is None`).
+  - The first live run found the axiom label rule above: without it the import's native change
+    set was refused at creation.
+  - `import_model` of the same Turtle is `validation_error` "the model already matches"; a
+    JSON-LD with a remote `@context` is refused before parsing.
+  - Drift: `fixture_scratch` reads a copy of the fixture `orders` table in `.scratch-lake/`
+    (git-ignored, mounted read-only at `/scratch-lake`); the copy drops the table's declared
+    foreign key to `sales.customers`, since the mapper would otherwise propose a relation to a
+    `Customer` concept the model lacks. After one row with a new `channel` column is appended
+    (delta-rs, schema merge), `detect_drift` reports the table `changed` with
+    `added_columns == ["channel"]` and drafts exactly one `add_attribute` `channel` on the bound
+    concept, `origin="drift"`, provenance table version baseline + 1.
+  - SPARQL: `POST /v1/models/retail_m3c/sparql` with a SELECT over `skos:Concept` is 200
+    `application/sparql-results+json` with the export's four concepts, the MCP tool returns the
+    same rows, and `INSERT DATA` is 403 from Lakeloom (`forbidden`, before any OM call).
+- Deferred follow-ups: [M3c backlog](../backlog/m3c-deferred.md).

@@ -170,9 +170,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `released_at` (null until a release). A Git snapshot reads its exports and the model
     version from one graph state.
   - The M3b acceptance test releases a throwaway model twice against the dev stack's Gitea.
+- M3c import, restore from Git, drift and the SPARQL proxy (ADR 0016):
+  - MCP tool `import_model` and CLI `lakeloom import`. They import a Turtle, RDF/XML (OWL),
+    N-Triples or JSON-LD document, SKOS or OWL, as a draft proposal behind a dry run and a
+    confirm token. Terms are mapped by local name onto the model's base IRI; `merge` or
+    `replace` (FR-IO-02, FR-AGT-03).
+  - Safe parsing: a size limit checked before parsing, a parse timeout and a triple cap
+    (`LAKELOOM_IMPORT_MAX_BYTES`, `LAKELOOM_IMPORT_TIMEOUT_SECONDS`,
+    `LAKELOOM_IMPORT_MAX_TRIPLES`). Remote JSON-LD contexts and RDF/XML DTDs are refused, and
+    syntax errors give line and column (FR-IO-04, FR-IO-05, NFR-SEC-13).
+  - MCP tool `import_from_git` and CLI `lakeloom import-git` restore a model from a release
+    tag or the branch tip, optionally from another model (FR-GIT-07).
+  - MCP tool `detect_drift`, prompt `drift_check` and CLI `lakeloom drift` rescan a model's
+    baseline tables and draft the drift: added, removed and type-changed columns, added and
+    removed tables, possible renames as a remove plus an add, and moved tables (FR-PRO-07,
+    FR-AGT-04).
+  - Proposal provenance has `origin` (`scan`, `import`, `git`, `drift`) and the source
+    document. Publication commits of import, Git and drift proposals add the
+    `Lakeloom-Origin` and `Lakeloom-Import` trailers (FR-PRO-03).
+  - MCP tool `sparql_query`, `POST /v1/models/{slug}/sparql` and CLI `lakeloom sparql` run
+    read-only SPARQL over the model's glossary through OpenMetadata. Updates and `SERVICE`
+    are refused before OpenMetadata is called. Limits: `LAKELOOM_SPARQL_TIMEOUT_SECONDS`,
+    `LAKELOOM_SPARQL_MAX_RESULT_BYTES`, `LAKELOOM_SPARQL_MAX_QUERY_CHARS` (FR-PUB-03,
+    FR-OM-01).
+  - `get_server_info` `features` gains `import`, `drift` and `sparql`.
+  - Native upserts of an existing attribute or axiom target it (`targetId`, `baseVersion`).
+    Allowed values are sent as OpenMetadata literal objects and read back into the exports.
+  - Dev stack: the source `fixture_scratch` reads `.scratch-lake/` (git-ignored, mounted
+    read-only). Create it with `mkdir -p .scratch-lake` before `docker compose up`.
+  - The M3c acceptance test restores a released throwaway model into a fresh OpenMetadata
+    model without a semantic diff, and drafts drift after a column is added.
 
 ### Fixed
 
+- An imported axiom gets its name as display name and description: OpenMetadata 2.1.0-rc1
+  refuses a draft whose new axiom has neither.
 - An attribute whose xsd datatype is not in the OWL 2 datatype map (such as `xsd:date` from a
   Spark `date` column) gets the native range `rdfs:Literal`, so OpenMetadata applies it; the
   proposal keeps the precise datatype.

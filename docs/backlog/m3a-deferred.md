@@ -8,7 +8,8 @@ is still open. Decisions and known limits:
 ## Out of scope for M3a
 - ~~Releases, tags, the repository `CHANGELOG.md`, `?version=` beyond `latest`, Git `Link`
   headers and the triple-store sink (M3b).~~ Done in M3b (ADR 0015).
-- Import, `import_from_git`, drift detection and the SPARQL proxy (M3c).
+- ~~Import, `import_from_git`, drift detection and the SPARQL proxy (M3c).~~ Done in M3c
+  (ADR 0016).
 - Validating lake data from Lakeloom itself (a `validate_data` tool): shapes are published for
   consumers to run.
 - Units as SHACL constraints, and closed shapes.

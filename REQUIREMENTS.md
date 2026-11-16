@@ -451,6 +451,12 @@ Scopes are OAuth scopes (section 8.2). "OM write" means the tool creates or chan
 | `LAKELOOM_PROFILE_SAMPLES` | `false` | Allow sample values in profiles. |
 | `LAKELOOM_SENSITIVE_TAGS` | `PII.*` | Tags whose columns never yield sample values. |
 | `LAKELOOM_MAX_PROPOSAL_OPS` | `50` | Proposal size limit. |
+| `LAKELOOM_IMPORT_MAX_BYTES` | `20971520` | Largest import document (`import_model`, `import_from_git`), checked on its UTF-8 bytes before parsing (FR-IO-05). |
+| `LAKELOOM_IMPORT_TIMEOUT_SECONDS` | `60` | Time limit for parsing an import and reading its terms (1 to 600; FR-IO-05). |
+| `LAKELOOM_IMPORT_MAX_TRIPLES` | `200000` | Most triples an import document may hold. |
+| `LAKELOOM_SPARQL_TIMEOUT_SECONDS` | `30` | SPARQL query timeout, passed to OpenMetadata in milliseconds (1 to 30; FR-PUB-03). |
+| `LAKELOOM_SPARQL_MAX_RESULT_BYTES` | `5242880` | Largest SPARQL result Lakeloom returns; a larger one fails (add `LIMIT`). |
+| `LAKELOOM_SPARQL_MAX_QUERY_CHARS` | `20000` | Longest SPARQL query accepted. |
 | `LAKELOOM_TRIPLESTORE_ENABLED` | `false` | Enable FR-TS module. |
 | `LAKELOOM_STDIO_ENABLED` | `false` in production | Allow stdio transport. |
 | `LAKELOOM_OTEL_EXPORTER_OTLP_ENDPOINT` | — | Telemetry endpoint. |

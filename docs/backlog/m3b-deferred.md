@@ -1,11 +1,13 @@
 # M3b deferred follow-ups
 
 Findings from the M3b work on releases, versioned reads and the triple-store sink,
-deliberately deferred. Triage when planning M3c. Decisions, live research and known limits:
-[ADR 0015](../decisions/0015-releases.md).
+deliberately deferred. Triaged in M3c (items done there are struck through, items M3c
+makes more pressing say so); the rest is still open. Decisions, live research and known
+limits: [ADR 0015](../decisions/0015-releases.md).
 
 ## Out of scope for M3b
-- `import_model`, `import_from_git`, drift detection and the SPARQL proxy (M3c).
+- ~~`import_model`, `import_from_git`, drift detection and the SPARQL proxy (M3c).~~ Done in
+  M3c (ADR 0016).
 - Pre-release and build-metadata versions (`1.0.0-rc.1`, `1.0.0+build`). Only strict
   `MAJOR.MINOR.PATCH` is accepted today.
 - Signed tags (and signed release commits).
@@ -38,7 +40,9 @@ deliberately deferred. Triage when planning M3c. Decisions, live research and kn
 ## Releases and CHANGELOG
 - A first release reuses the `CHANGELOG.md` at the branch tip. When a model's tags were
   deleted by hand (or a slug was deleted and re-created), the old sections stay below the
-  new one. Decide whether a first release starts a fresh file.
+  new one. Decide whether a first release starts a fresh file. *M3c makes this more likely:*
+  restoring a model from Git after it was deleted (`create_model`, then `import_from_git`)
+  re-creates a slug whose tags may later be released again.
 - The audit row of `create_release` stores the tag in `change_set_id`. Give it its own
   column, or a generic `subject` column.
 - The `already_done` path does not compare the arguments bound in the token with those of the

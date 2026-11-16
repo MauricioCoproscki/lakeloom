@@ -581,6 +581,66 @@ Lakeloom never creates or seals OpenMetadata releases. Releases need Git publish
   its tags through the Gitea API afterwards, but the release commits stay in the dev
   repository's history.
 
+### Import, restore and drift
+
+All three only create a **draft** proposal (FR-OM-02). OpenMetadata's own importers are
+never called. Submit the draft with `submit_proposal`; a human reviewer approves it as for
+scans. They need the scope `lakeloom:propose` and the model's `propose_groups`, and they are
+audited. Decisions and OpenMetadata 2.1.0-rc1 limits: ADR 0016.
+
+- **Import a file.** `import_model(model, content, format, mode="merge", base_iri=None)`, or
+  `lakeloom import <model> <file> [--format] [--mode] [--base-iri] [--yes]`.
+  - Formats: `turtle`, `rdfxml` (OWL), `ntriples` or `jsonld`. A SKOS vocabulary is read the
+    same way in any of them.
+  - Lakeloom reads concepts, attributes, relations, mappings and cardinality axioms from the
+    namespace (`base_iri`, or the one most concepts share) and maps them onto the model by
+    local name.
+  - It proposes the difference. `merge` adds and updates; `replace` also removes what the
+    file lacks.
+  - The first call is a dry run: counts, operations, warnings and a `confirm_token`. The
+    second call, with the token (`--yes` in the CLI), creates the draft.
+  - Limits: 20 MB (`LAKELOOM_IMPORT_MAX_BYTES`, checked before parsing), 200000 triples, 60 s
+    of parsing.
+  - Refused: remote JSON-LD contexts and RDF/XML DTDs. Nothing is ever downloaded.
+- **Restore from Git.** `import_from_git(model, version="latest", from_model=None)`, or
+  `lakeloom import-git <model> [--version] [--from-model] [--yes]`. It reads
+  `ontologies/<from_model>/ontology.ttl` from a release tag, or from the tip of the branch,
+  and imports it in the same two steps.
+  - Create the target model first with `create_model`.
+  - The publication commit carries `Lakeloom-Origin: git` and
+    `Lakeloom-Import: <tag>@<commit>`.
+- **Drift.** `detect_drift(model)`, `lakeloom drift <model> [--no-new-tables]`, or the prompt
+  `drift_check`.
+  - It scans the model's baseline tables again: those of the newest applied scan-based
+    proposal.
+  - It drafts the difference: added columns as `add_attribute`, removed columns and tables
+    as removals, new tables through the scan mapper.
+  - Possible renames are proposed as a remove plus an add.
+  - Comment changes are only reported, because rc1 cannot edit attribute descriptions.
+  - No drift is a report, not an error.
+
+### SPARQL
+
+`sparql_query(model, query, format=None)`, `POST /v1/models/{slug}/sparql` or
+`lakeloom sparql <model> <query-file|->` runs a **read-only** query over the model's glossary,
+answered by OpenMetadata. It needs the scope `lakeloom:read`.
+
+- **What you can query.** Only the glossary is in the dataset: concepts, labels, definitions,
+  `broader`/`narrower`, mappings and links. Attributes, relations and axioms are not; read
+  them with `explain_concept` or the exports.
+- **Allowed forms.** SELECT, ASK, CONSTRUCT and DESCRIBE. Updates and `SERVICE` are 403
+  `forbidden` before anything reaches OpenMetadata.
+- **HTTP.** Send the query as `application/sparql-query`, form `query=` or JSON
+  `{"query": …}`. Pick the result format with `Accept`: SPARQL results JSON/XML, CSV and TSV
+  for SELECT and ASK; Turtle, JSON-LD, N-Triples and RDF/XML for CONSTRUCT and DESCRIBE.
+- **Limits.** 20000 characters (`LAKELOOM_SPARQL_MAX_QUERY_CHARS`), 30 s
+  (`LAKELOOM_SPARQL_TIMEOUT_SECONDS`, at most 30), and a 5 MiB result
+  (`LAKELOOM_SPARQL_MAX_RESULT_BYTES`; add `LIMIT`).
+- **Dev stack.** The M3c contract test restores the throwaway model `retail_m3c` from its
+  `1.0.0` tag and checks drift on `retail_m3c_drift`. Drift uses the source `fixture_scratch`,
+  a Delta table the test writes under `.scratch-lake/`. Run `mkdir -p .scratch-lake` before
+  `docker compose up`.
+
 ### Surfaces overview
 
 | Capability | MCP tool | MCP resource | HTTP route |
@@ -589,6 +649,9 @@ Lakeloom never creates or seals OpenMetadata releases. Releases need Git publish
 | Model summary | `get_model` | | none (`GET /v1/models` lists summaries) |
 | Versions | `list_releases`, `diff_releases`, `export_model(version=)` | `?version=` on ontology, shapes, context | `GET /v1/models/{slug}/versions`, `GET /v1/models/{slug}/versions/{version}`, `?version=` |
 | Release | `create_release` | | none (CLI `lakeloom release create`) |
+| Import and restore | `import_model`, `import_from_git` | | none (CLI `lakeloom import`, `lakeloom import-git`) |
+| Drift | `detect_drift`, prompt `drift_check` | | none (CLI `lakeloom drift`) |
+| SPARQL | `sparql_query` | | `POST /v1/models/{slug}/sparql` |
 | Ontology export | `export_model` | `lakeloom://models/{slug}/ontology.{ttl,jsonld,owl,nt}` | `GET /v1/models/{slug}` (`Accept`) |
 | JSON-LD context | | `lakeloom://models/{slug}/context.jsonld` | `GET /v1/models/{slug}/context.jsonld` |
 | SHACL shapes | | `lakeloom://models/{slug}/shapes.ttl` | `GET /v1/models/{slug}/shapes` (`Accept`) |
@@ -598,7 +661,7 @@ Lakeloom never creates or seals OpenMetadata releases. Releases need Git publish
 
 ### HTTP API
 
-A read-only HTTP API serves the same artefacts to non-MCP clients. Every route is a `GET`, needs a
+A read-only HTTP API serves the same artefacts to non-MCP clients. Every route is a `GET` (but the SPARQL `POST`), needs a
 bearer token with `lakeloom:read` (`401` without a token, `403` without the scope) and is described
 in [`docs/api/openapi.json`](docs/api/openapi.json) (also served, behind auth, at `/openapi.json`;
 regenerate with `uv run python scripts/gen_openapi.py`).
@@ -612,6 +675,7 @@ regenerate with `uv run python scripts/gen_openapi.py`).
 | `/v1/models/{slug}/context.jsonld` | `application/ld+json` (the full context) |
 | `/v1/concepts/{iri-or-fqn-or-id-or-name}` | `text/markdown`, `application/json` |
 | `/v1/assets/{fqn}/context` (`max_tokens`) | `text/markdown`, `application/json`, `application/ld+json` |
+| `POST /v1/models/{slug}/sparql` | SELECT/ASK: `application/sparql-results+json`, `application/sparql-results+xml`, `text/csv`, `text/tab-separated-values`; CONSTRUCT/DESCRIBE: `text/turtle`, `application/ld+json`, `application/n-triples`, `application/rdf+xml` |
 
 Pick the representation with `Accept` (q-values are honoured; no `Accept` or `*/*` gives the
 default; an unsupported type gives `406` listing the supported ones). IRIs and FQNs in paths may be
