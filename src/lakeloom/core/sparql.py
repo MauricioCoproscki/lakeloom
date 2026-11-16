@@ -12,11 +12,12 @@ The guard runs before any OpenMetadata call, in this order:
    on failure ``parseUpdate`` tells an update (``forbidden``) from a syntax error
    (``validation_error`` with rdflib's message on one line, at most 300 characters);
 3. the form: SELECT, ASK, CONSTRUCT or DESCRIBE;
-4. any ``ServiceGraphPattern`` anywhere in the tree is ``forbidden`` (OM would call out).
+4. in the same tree walk, any ``ServiceGraphPattern`` (OM would call out) and any
+   ``DatasetClause`` (``FROM`` / ``FROM NAMED``, in every form: the dataset is the model's
+   glossary, never one the query names) is ``forbidden``.
 
-``FROM`` / ``FROM NAMED`` pass through (OM scopes the dataset). OM's own parser also refuses
-updates, as defence in depth only. Each query is logged as its sha256 and length, never its
-text.
+OM's own parser also refuses updates, as defence in depth only. Each query is logged as its
+sha256 and length, never its text.
 """
 
 import asyncio
@@ -116,11 +117,18 @@ def check_query(text: str, *, max_chars: int) -> QueryForm:
     except Exception as exc:  # pyparsing errors, and RecursionError on deep nesting
         _refuse_unparsed(text, exc)
     form = _form(tree)
-    if _has_service(tree):
+    found = _forbidden_nodes(tree)
+    if "ServiceGraphPattern" in found:
         raise LakeloomError(
             "forbidden",
             "SERVICE is not allowed",
             "remove the SERVICE clause; only the model's own glossary can be queried",
+        )
+    if "DatasetClause" in found:
+        raise LakeloomError(
+            "forbidden",
+            "FROM and FROM NAMED are not allowed; the dataset is the model's glossary",
+            "remove the FROM / FROM NAMED clauses; the query runs over the model's glossary",
         )
     return form
 
@@ -164,19 +172,24 @@ def _children(node: object) -> Iterable[object]:
     return ()
 
 
-def _has_service(tree: ParseResults) -> bool:
-    """Whether any ``ServiceGraphPattern`` occurs, at any depth (iterative: no recursion)."""
+_FORBIDDEN_NODES: Final = frozenset({"ServiceGraphPattern", "DatasetClause"})
+
+
+def _forbidden_nodes(tree: ParseResults) -> set[str]:
+    """The forbidden node names (``SERVICE``, ``FROM`` / ``FROM NAMED``) that occur at any
+    depth of the tree (iterative: no recursion)."""
     stack: list[object] = [tree]
     seen: set[int] = set()
+    found: set[str] = set()
     while stack:
         node = stack.pop()
         if id(node) in seen:
             continue
         seen.add(id(node))
-        if isinstance(node, CompValue) and node.name == "ServiceGraphPattern":
-            return True
+        if isinstance(node, CompValue) and node.name in _FORBIDDEN_NODES:
+            found.add(node.name)
         stack.extend(_children(node))
-    return False
+    return found
 
 
 def pick_format(form: QueryForm, requested: ResultFormat | None) -> ResultFormat:

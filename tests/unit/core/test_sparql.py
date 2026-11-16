@@ -39,7 +39,6 @@ def refused(text: str, *, max_chars: int = MAX) -> LakeloomError:
         ("BASE <http://x/>\nCONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", "construct"),
         ("BASE <http://x/> PREFIX ex: <http://y#> DESCRIBE ex:Customer", "describe"),
         ("select * { ?s ?p ?o }", "select"),
-        ("SELECT * FROM <http://g> FROM NAMED <http://h> WHERE { ?s ?p ?o }", "select"),
     ],
 )
 def test_forms_detected(text: str, form: str) -> None:
@@ -81,6 +80,30 @@ def test_nested_service_forbidden(text: str) -> None:
 
     assert err.code == "forbidden"
     assert err.message == "SERVICE is not allowed"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "SELECT * FROM <http://g> WHERE { ?s ?p ?o }",
+        "SELECT * FROM NAMED <http://h> WHERE { GRAPH ?g { ?s ?p ?o } }",
+        "SELECT * FROM <http://g> FROM NAMED <http://h> WHERE { ?s ?p ?o }",
+        "select * from <http://g> where { ?s ?p ?o }",
+        "select * from named <http://h> { ?s ?p ?o }",
+        "PREFIX ex: <http://y#> SELECT * FROM ex:g WHERE { ?s ?p ?o }",
+        "CONSTRUCT { ?s ?p ?o } FROM <http://g> WHERE { ?s ?p ?o }",
+        "ASK FROM <http://g> { ?s ?p ?o }",
+        "ask from named <http://h> { ?s ?p ?o }",
+        "DESCRIBE <http://x/C> FROM <http://g>",
+        "describe ?s from named <http://h> where { ?s ?p ?o }",
+    ],
+)
+def test_dataset_clause_forbidden(text: str) -> None:
+    err = refused(text)
+
+    assert err.code == "forbidden"
+    assert err.message == "FROM and FROM NAMED are not allowed; the dataset is the model's glossary"
+    assert err.hint
 
 
 def test_service_after_prefix_is_still_refused() -> None:

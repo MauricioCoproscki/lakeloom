@@ -2145,7 +2145,7 @@
     },
     "/v1/models/{slug}/sparql": {
       "post": {
-        "description": "Only the glossary is in the dataset (concepts, labels, definitions, broader/narrower, mappings, links): the model's attributes, object properties and axioms are not. Updates and SERVICE are refused (403). `Accept` chooses the result format among those of the query's form; `*/*` or none gives the form's default.",
+        "description": "Only the glossary is in the dataset (concepts, labels, definitions, broader/narrower, mappings, links): the model's attributes, object properties and axioms are not. Updates, SERVICE and FROM / FROM NAMED are refused (403). `Accept` chooses the result format among those of the query's form; `*/*` or none gives the form's default.",
         "operationId": "sparql_v1_models__slug__sparql_post",
         "parameters": [
           {
@@ -2192,7 +2192,7 @@
               }
             }
           },
-          "description": "A read-only SPARQL query (SELECT, ASK, CONSTRUCT or DESCRIBE; no updates, no SERVICE).",
+          "description": "A read-only SPARQL query (SELECT, ASK, CONSTRUCT or DESCRIBE; no updates, no SERVICE, no FROM / FROM NAMED).",
           "required": true
         },
         "responses": {

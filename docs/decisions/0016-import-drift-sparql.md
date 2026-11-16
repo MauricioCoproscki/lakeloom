@@ -168,7 +168,10 @@ For local name `L` in namespace `ns`:
   dataset; the tool description says so.
 - Guard before any OM call: length cap (`LAKELOOM_SPARQL_MAX_QUERY_CHARS`, default `20000`);
   `parseQuery`, with `parseUpdate` telling updates (`forbidden`) from syntax errors
-  (`validation_error`); only SELECT/ASK/CONSTRUCT/DESCRIBE; any `SERVICE` is `forbidden`.
+  (`validation_error`); only SELECT/ASK/CONSTRUCT/DESCRIBE; any `SERVICE` is `forbidden`, and
+  so is any `FROM` / `FROM NAMED` (the `DatasetClause` node, found in the same tree walk, in
+  every form): "FROM and FROM NAMED are not allowed; the dataset is the model's glossary"
+  (R11, final review: a query must not name its own dataset).
   OM's own parser also rejects updates (R3), as defence in depth only.
   The guard runs once per request, in a worker thread (`asyncio.to_thread`): rdflib's
   pure-Python parse of a near-cap query takes up to ~2 s and must not block the event loop.

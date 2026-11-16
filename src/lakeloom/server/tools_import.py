@@ -173,7 +173,8 @@ are NOT in the dataset (use explain_concept or export_model for them), and no ot
 is visible.
 
 Only SELECT, ASK, CONSTRUCT and DESCRIBE: an update (INSERT, DELETE, LOAD, CLEAR, DROP, \
-CREATE, ...) or any SERVICE clause → `forbidden`; a syntax error → `validation_error` with \
+CREATE, ...), any SERVICE clause or any FROM / FROM NAMED (the dataset is fixed) → \
+`forbidden`; a syntax error → `validation_error` with \
 the parser's message. At most 20000 characters by default \
 (LAKELOOM_SPARQL_MAX_QUERY_CHARS). `format`: SELECT/ASK `json` (default), `xml`, `csv`, \
 `tsv`; CONSTRUCT/DESCRIBE `turtle` (default), `jsonld`, `ntriples`, `rdfxml`; a format that \

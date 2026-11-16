@@ -293,7 +293,7 @@ def _sparql_responses() -> dict[int | str, Any]:
 _SPARQL_REQUEST_BODY: Final[dict[str, Any]] = {
     "required": True,
     "description": "A read-only SPARQL query (SELECT, ASK, CONSTRUCT or DESCRIBE; no "
-    "updates, no SERVICE).",
+    "updates, no SERVICE, no FROM / FROM NAMED).",
     "content": {
         "application/sparql-query": {"schema": {"type": "string"}},
         "application/x-www-form-urlencoded": {
@@ -471,8 +471,9 @@ def create_router(deps: "AppDeps") -> APIRouter:
         summary="Read-only SPARQL over the model's glossary (proxied to OpenMetadata)",
         description="Only the glossary is in the dataset (concepts, labels, definitions, "
         "broader/narrower, mappings, links): the model's attributes, object properties and "
-        "axioms are not. Updates and SERVICE are refused (403). `Accept` chooses the result "
-        "format among those of the query's form; `*/*` or none gives the form's default.",
+        "axioms are not. Updates, SERVICE and FROM / FROM NAMED are refused (403). `Accept` "
+        "chooses the result format among those of the query's form; `*/*` or none gives the "
+        "form's default.",
         response_class=Response,
         responses=_sparql_responses(),
         openapi_extra={"requestBody": _SPARQL_REQUEST_BODY},

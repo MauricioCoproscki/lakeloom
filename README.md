@@ -628,8 +628,8 @@ answered by OpenMetadata. It needs the scope `lakeloom:read`.
 - **What you can query.** Only the glossary is in the dataset: concepts, labels, definitions,
   `broader`/`narrower`, mappings and links. Attributes, relations and axioms are not; read
   them with `explain_concept` or the exports.
-- **Allowed forms.** SELECT, ASK, CONSTRUCT and DESCRIBE. Updates and `SERVICE` are 403
-  `forbidden` before anything reaches OpenMetadata.
+- **Allowed forms.** SELECT, ASK, CONSTRUCT and DESCRIBE. Updates, `SERVICE` and
+  `FROM` / `FROM NAMED` are 403 `forbidden` before anything reaches OpenMetadata.
 - **HTTP.** Send the query as `application/sparql-query`, form `query=` or JSON
   `{"query": …}`. Pick the result format with `Accept`: SPARQL results JSON/XML, CSV and TSV
   for SELECT and ASK; Turtle, JSON-LD, N-Triples and RDF/XML for CONSTRUCT and DESCRIBE.

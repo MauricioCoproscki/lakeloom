@@ -166,7 +166,7 @@ New ADR: `docs/decisions/0016-import-drift-sparql.md`.
     - parsed with `rdflib.plugins.sparql.parser.parseQuery`. A parse failure is checked with `parseUpdate`: when that succeeds it is `forbidden` "SPARQL updates are not allowed", otherwise `validation_error` with rdflib's message (one line, 300 chars);
     - the form is `SelectQuery|AskQuery|ConstructQuery|DescribeQuery`;
     - any `ServiceGraphPattern` in the tree is `forbidden` "SERVICE is not allowed" (NFR-SEC-13);
-    - `FROM` / `FROM NAMED` are passed through (OM scopes the dataset).
+    - `FROM` / `FROM NAMED` (the `DatasetClause` node, same tree walk, every form) are `forbidden` "FROM and FROM NAMED are not allowed; the dataset is the model's glossary" (final review R11; first planned as passed through).
   - **Formats.** SELECT/ASK: `json` (default), `xml`, `csv`, `tsv`. CONSTRUCT/DESCRIBE: `turtle` (default), `jsonld`, `ntriples`, `rdfxml`. A format that does not fit the form is `validation_error`.
     - **HTTP** negotiates with `Accept`: `application/sparql-results+json`, `application/sparql-results+xml`, `text/csv`, `text/tab-separated-values`, `text/turtle`, `application/ld+json`, `application/n-triples`, `application/rdf+xml`. Otherwise 406.
     - **HTTP body:** `application/sparql-query` (raw), `application/x-www-form-urlencoded` (`query=`) or JSON `{"query": …}`.
