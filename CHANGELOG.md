@@ -177,8 +177,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `replace` (FR-IO-02, FR-AGT-03).
   - Safe parsing: a size limit checked before parsing, a parse timeout and a triple cap
     (`LAKELOOM_IMPORT_MAX_BYTES`, `LAKELOOM_IMPORT_TIMEOUT_SECONDS`,
-    `LAKELOOM_IMPORT_MAX_TRIPLES`). Remote JSON-LD contexts and RDF/XML DTDs are refused, and
-    syntax errors give line and column (FR-IO-04, FR-IO-05, NFR-SEC-13).
+    `LAKELOOM_IMPORT_MAX_TRIPLES`). Remote JSON-LD contexts and RDF/XML DTDs are refused,
+    RDF/XML must be UTF-8, and syntax errors give line and column (FR-IO-04, FR-IO-05,
+    NFR-SEC-13).
   - MCP tool `import_from_git` and CLI `lakeloom import-git` restore a model from a release
     tag or the branch tip, optionally from another model (FR-GIT-07).
   - MCP tool `detect_drift`, prompt `drift_check` and CLI `lakeloom drift` rescan a model's
@@ -189,8 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     document. Publication commits of import, Git and drift proposals add the
     `Lakeloom-Origin` and `Lakeloom-Import` trailers (FR-PRO-03).
   - MCP tool `sparql_query`, `POST /v1/models/{slug}/sparql` and CLI `lakeloom sparql` run
-    read-only SPARQL over the model's glossary through OpenMetadata. Updates and `SERVICE`
-    are refused before OpenMetadata is called. Limits: `LAKELOOM_SPARQL_TIMEOUT_SECONDS`,
+    read-only SPARQL over the model's glossary through OpenMetadata. Updates, `SERVICE` and
+    `FROM` / `FROM NAMED` are refused before OpenMetadata is called. Limits: `LAKELOOM_SPARQL_TIMEOUT_SECONDS`,
     `LAKELOOM_SPARQL_MAX_RESULT_BYTES`, `LAKELOOM_SPARQL_MAX_QUERY_CHARS` (FR-PUB-03,
     FR-OM-01).
   - `get_server_info` `features` gains `import`, `drift` and `sparql`.
@@ -198,6 +199,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Allowed values are sent as OpenMetadata literal objects and read back into the exports.
   - Dev stack: the source `fixture_scratch` reads `.scratch-lake/` (git-ignored, mounted
     read-only). Create it with `mkdir -p .scratch-lake` before `docker compose up`.
+  - Imports, drift and scans leave out definitions OpenMetadata keeps deleted (tombstones),
+    with a warning; a concurrent duplicate import confirm or drift run is a `conflict`.
   - The M3c acceptance test restores a released throwaway model into a fresh OpenMetadata
     model without a semantic diff, and drafts drift after a column is added.
 

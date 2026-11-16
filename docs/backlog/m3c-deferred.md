@@ -24,11 +24,6 @@ deliberately deferred. Triage when planning M4. Decisions, live research and kno
 - The reconciliation job (FR-GIT-08) and drift on a schedule (M4).
 
 ## Import
-- `skos:*Match` targets are not normalised the way `AnyUrl` normalises them. So a merge
-  import proposes the same mapping again on every run, and replace mode removes it.
-  (Final review should weigh this.)
-- An `UpdateConcept` is dropped entirely when its new parent was dropped, not just the parent
-  change. (Final review should weigh this.)
 - Replace mode can strand the children of a removed concept.
 - Replace mode queues axiom removals before it checks for dependent drops.
 - Imported axioms get their name as display name and description: rc1 refuses a new axiom
@@ -53,10 +48,6 @@ deliberately deferred. Triage when planning M4. Decisions, live research and kno
 ## Drift
 - A proposal that spans several sources records a single scan id in its provenance.
   (Final review should weigh this.)
-- An added column has no "the graph already has it" guard. A drift run after the attribute
-  exists proposes a no-op upsert again. (Final review should weigh this.)
-- Deduplication and the pending-operations filter run outside the model lock, for drift and
-  for import. (Final review should weigh this.)
 - `applied_scan_ids` orders scans by proposal id, not by scan age.
 - A table dropped from a one-table schema is reported as removed on every run.
 - A schema filter that matches nothing turns every baseline table into a removal, without a
@@ -87,8 +78,6 @@ deliberately deferred. Triage when planning M4. Decisions, live research and kno
 - Probe tests depend on file order. The t4 lock omits `leaseSeconds`.
 - The probe's tombstone re-create check uses the output of `to_om_all` instead of a
   hand-built payload.
-- No UTF-16 RDF/XML test shows that the UTF-8 decode in `parse_rdf` closes the encoding gap
-  of the DOCTYPE search.
 - The non-JSON-LD wording of "RDF nesting is too deep" is untested.
 - The parent round trip is untested against a fixture: the fixture has no `skos:broader`.
 - The token-binding tests miss the `base_iri`, `version` and `from_model` cases.
