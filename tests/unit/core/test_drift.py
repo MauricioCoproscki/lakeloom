@@ -539,3 +539,70 @@ def test_type_change_of_unbound_column_is_added() -> None:
     _, rewritten, _, _ = ops_for(by_fqn(old), by_fqn(new), BOUND, terms(["PurchaseOrder"]))
 
     assert [op_key(op) for op in rewritten] == ["attr:PurchaseOrder.qty"]
+
+
+def test_removed_table_keeps_concept_another_live_table_realises() -> None:
+    """orders_2024 removed, orders_2025 unchanged, both bound to Order (dedupe folds them):
+    only the attributes bound to orders_2024 alone go; the concept, its axiom and its
+    relations stay, with a warning."""
+    o24 = table("orders_2024", [("id", "bigint"), ("legacy", "string")])
+    o25 = table("orders_2025", [("id", "bigint"), ("total", "int")])
+    binding = {
+        "c.s.orders_2024": TableBinding(
+            concept="Order", attributes={"id": "id", "legacy": "legacy"}
+        ),
+        "c.s.orders_2025": TableBinding(concept="Order", attributes={"id": "id", "total": "total"}),
+    }
+    model = terms(
+        ["Order", "Customer"],
+        [
+            ("Order", "id", "xsd:long"),
+            ("Order", "legacy", "xsd:string"),
+            ("Order", "total", "xsd:int"),
+        ],
+        [("Order", "hasCustomer", "Customer")],
+        {"Order": "OrderPrimaryKey"},
+    )
+    drifts, rewritten, added, warnings = ops_for(
+        by_fqn(o24, o25), by_fqn(o25), binding, model, versions={"Order": 0.3}
+    )
+
+    assert [(d.fqn, d.status) for d in drifts] == [
+        ("c.s.orders_2024", "removed"),
+        ("c.s.orders_2025", "unchanged"),
+    ]
+    assert added == []
+    assert [op_key(op) for op in rewritten] == ["remove-attr:Order.legacy"]
+    assert any("c.s.orders_2024" in w and "c.s.orders_2025" in w and "Order" in w for w in warnings)
+
+
+def test_added_column_already_in_model_is_not_proposed() -> None:
+    """The attribute exists (added by hand or by another proposal): no upsert that would
+    replace its unit and allowed values with the mapper's defaults."""
+    old = table("orders", [("id", "bigint")])
+    new = table("orders", [("id", "bigint"), ("total", "int")])
+    model = terms(
+        ["PurchaseOrder"],
+        [("PurchaseOrder", "orderId", "xsd:long"), ("PurchaseOrder", "total", "xsd:int")],
+        unit={("PurchaseOrder", "total"): "unit:EUR"},
+    )
+    _, rewritten, _, warnings = ops_for(by_fqn(old), by_fqn(new), BOUND, model)
+
+    assert rewritten == []
+    assert any(f"{ORDERS}.total" in w and "already matches" in w for w in warnings)
+
+
+def test_added_column_in_model_with_other_datatype_is_a_type_change() -> None:
+    old = table("orders", [("id", "bigint")])
+    new = table("orders", [("id", "bigint"), ("total", "bigint")])
+    model = terms(
+        ["PurchaseOrder"],
+        [("PurchaseOrder", "orderId", "xsd:long"), ("PurchaseOrder", "total", "xsd:int")],
+        unit={("PurchaseOrder", "total"): "unit:EUR"},
+    )
+    _, rewritten, _, _ = ops_for(by_fqn(old), by_fqn(new), BOUND, model)
+
+    (op,) = rewritten
+    assert isinstance(op, AddAttribute)
+    assert (op.concept, op.name, op.datatype) == ("PurchaseOrder", "total", "xsd:long")
+    assert op.unit == "unit:EUR"  # the model's unit is kept, as for a type change

@@ -9,8 +9,10 @@ added / type-changed      the mapper's ``AddAttribute`` for the column (fresh sc
 column                    rewritten to the bound one; for a type change the name is the bound
                           attribute's and the model's ``unit`` / ``is_identifier`` /
                           ``allowed_values`` are kept when the mapper has none (the upsert
-                          replaces every field in OpenMetadata, ADR 0016 R2). FK relations
-                          whose columns are new are kept the same way.
+                          replaces every field in OpenMetadata, ADR 0016 R2). An added column
+                          whose attribute the model already has is skipped (same datatype) or
+                          is a type change. FK relations whose columns are new are kept the
+                          same way.
 moved table               an added table whose mapper concept is the bound concept of a
                           removed table, 1:1 (:func:`resolve_moves`): ``changed``, diffed
                           against the removed table's baseline on its binding; the removed
@@ -20,7 +22,9 @@ comment change            reported only (:func:`comment_changes`): rc1 ignores d
 removed column            ``RemoveAttribute`` on the bound name, only when the model has it
 added table               the mapper's operations (the caller runs them through ``dedupe``)
 removed table             its relations (either end), axiom, attributes, then
-                          ``RemoveConcept``, only for terms the model has
+                          ``RemoveConcept``, only for terms the model has; when another live
+                          table is bound to the same concept, only the attributes bound to the
+                          removed table alone, with a warning
 renames                   remove plus add, both with ``possible rename of <old> to <new>``
                           evidence; a column candidate has the same raw type and position
                           (index in the column list), a table candidate the same
@@ -37,7 +41,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from lakeloom.core.import_terms import TermSet
+from lakeloom.core.import_terms import AttributeTerm, TermSet
 from lakeloom.core.mapper import map_scan
 from lakeloom.core.model_policy import MappingPolicy
 from lakeloom.core.operations import (
@@ -391,6 +395,8 @@ class _Builder:
         self.table_renames = {
             old: new for d in drifts for old, new in d.renames if d.status == "added"
         }
+        # tables still in the lake (or not known to be gone): their bound concepts stay
+        self.live = {d.fqn for d in drifts if d.status != "removed"}
         # removed tables that moved (resolve_moves): the changed table carries (old, new)
         self.moved = {
             old for d in drifts if d.status == "changed" for old, new in d.renames if new == d.fqn
@@ -463,6 +469,18 @@ class _Builder:
         if op is None:
             self.warnings.append(f"column {tbl}.{col} could not be mapped; not proposed")
             return
+        term = self.terms.attributes.get((concept, op.name))
+        if term is not None:  # the model has it already: a type change at most, never a reset
+            if op.datatype == term.datatype:
+                self.warnings.append(
+                    f"column {tbl}.{col} added but attribute {concept}.{op.name} already matches it"
+                )
+                return
+            new = self.upsert(tbl, col, op, concept, op.name, term)
+            if new is not None:
+                ev = Evidence(kind="column", ref=f"{tbl}.{col}", detail=detail)
+                self.rewritten.append(_plus_evidence(new, ev) if detail else new)
+            return
         if detail is None:
             self.rewritten.append(_with(op, concept=concept))
         else:
@@ -495,6 +513,22 @@ class _Builder:
                 "model (removed since the scan); not proposed"
             )
             return
+        new = self.upsert(tbl, col, op, concept, name, term)
+        if new is not None:
+            self.rewritten.append(new)
+
+    def upsert(
+        self,
+        tbl: str,
+        col: str,
+        op: AddAttribute,
+        concept: str,
+        name: str,
+        term: AttributeTerm | None,
+    ) -> AddAttribute | None:
+        """The mapper's ``op`` on the bound names, keeping the model's ``unit`` /
+        ``is_identifier`` / ``allowed_values`` where the mapper has none (the upsert replaces
+        every field, ADR 0016 R2); ``None`` (with a warning) when the model already matches."""
         update: dict[str, Any] = {"concept": concept, "name": name}
         if term is not None:
             update["is_identifier"] = op.is_identifier or term.is_identifier
@@ -510,8 +544,8 @@ class _Builder:
             self.warnings.append(
                 f"column {tbl}.{col} changed but attribute {concept}.{name} already matches it"
             )
-            return
-        self.rewritten.append(new)
+            return None
+        return new
 
     # -- removed and added tables ------------------------------------------------------------
 
@@ -531,6 +565,14 @@ class _Builder:
             "rule_ids": [RENAME_RULE if detail else REMOVE_RULE],
             "evidence": [Evidence(kind="table", ref=d.fqn, detail=detail)],
         }
+        others = sorted(
+            t
+            for t in self.live
+            if t != d.fqn and t in self.bindings and self.bindings[t].concept == c
+        )
+        if others:
+            self.shared(d.fqn, c, bound, others, common)
+            return
         for s, r, t in sorted(k for k in self.terms.relations if c in (k[0], k[2])):
             self.rewritten.append(
                 RemoveRelation(op="remove_relation", source=s, relation_type=r, target=t, **common)
@@ -557,6 +599,23 @@ class _Builder:
             return
         self.rewritten.append(
             RemoveConcept(op="remove_concept", fqn=c, base_version=f"{version}", **common)
+        )
+
+    def shared(
+        self, tbl: str, c: str, bound: TableBinding, others: list[str], common: dict[str, Any]
+    ) -> None:
+        """A removed table whose concept another live table still realises: only the
+        attributes bound to the removed table alone go; the concept, its axiom and its
+        relations stay."""
+        kept = {name for t in others for name in self.bindings[t].attributes.values()}
+        for name in sorted(set(bound.attributes.values()) - kept):
+            if (c, name) in self.terms.attributes:
+                self.rewritten.append(
+                    RemoveAttribute(op="remove_attribute", concept=c, name=name, **common)
+                )
+        self.warnings.append(
+            f"concept {c} of removed table {tbl} is still realised by "
+            f"{', '.join(others[:_MAX_LISTED])}; only the attributes of {tbl} alone are removed"
         )
 
     def added(self, d: TableDrift) -> None:
