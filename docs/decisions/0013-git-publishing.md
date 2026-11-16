@@ -81,7 +81,9 @@ listed under "Deviations from the plan".
   `lakeloom git retry` moves blocked rows back to `pending`; `last_error` is redacted and
   capped at 500 characters.
 - **Job lease (NFR-DEP-07).** An in-process `asyncio.Lock` per repository, single replica;
-  multi-replica leases stay deferred (m2a backlog).
+  multi-replica leases stay deferred (m2a backlog). *Superseded in M4a:* the outbox drain runs
+  as the leased job `git-publisher:<repo_key>` (ADR 0017); the lock still serialises one
+  process's Git work.
 - **Inline attempt.** After `applied` is stored, approve awaits the publish for at most
   `LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS` (default 20) via `asyncio.wait_for(asyncio.shield(task))`;
   on timeout the task continues and the tool says "queued".

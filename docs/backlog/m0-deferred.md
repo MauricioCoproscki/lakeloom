@@ -4,7 +4,7 @@ Minor findings from the M0 task and whole-branch reviews that were deliberately 
 
 ## Suggested for M1
 
-- Auth production hardening: token-type check (`typ` at+jwt / Keycloak typ=Bearer), discovery `issuer` and `crit` header checks, https-only jwks_uri outside development, no `error=invalid_token` for non-Bearer schemes (RFC 6750 §3.1), rate-limit the 503 traceback log.
+- Auth production hardening: token-type check (`typ` at+jwt / Keycloak typ=Bearer), discovery `issuer` and `crit` header checks, https-only jwks_uri outside development, no `error=invalid_token` for non-Bearer schemes (RFC 6750 §3.1), ~~rate-limit the 503 traceback log~~ (done in M4a: at most once a minute).
 - Extra allowed-hosts setting for MCP behind proxies (Host allow-list returns 421 today).
 - Config hardening: empty `*_FILE` / empty secret file handling, raw JSONDecodeError for malformed lists, validate log_level/port/clock skew.
 - OM client: wrap pydantic ValidationError and 3xx in OMError; trailing-slash and malformed-body tests.
@@ -19,7 +19,7 @@ Minor findings from the M0 task and whole-branch reviews that were deliberately 
 - Pin all GitHub Actions by commit SHA; attach SBOM/provenance on push; buildx GHA cache; setup-uv cache/version pin.
 - Exclude the 4.5 MB OpenAPI spec from the wheel/image.
 - Loosen dependency lower bounds (currently equal to the resolved versions).
-- Stateful MCP sessions are not bound to a principal: multi-replica needs sticky sessions or stateless mode.
+- ~~Stateful MCP sessions are not bound to a principal: multi-replica needs sticky sessions or stateless mode.~~ Done in M4a (ADR 0017): sessions are bound to their principal, and `LAKELOOM_MCP_STATELESS` runs MCP without sessions.
 
 ## Cosmetic / docs
 

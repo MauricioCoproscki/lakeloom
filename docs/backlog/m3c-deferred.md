@@ -21,7 +21,9 @@ deliberately deferred. Triage when planning M4. Decisions, live research and kno
   thread runs on to the end.
 - SPARQL over released versions, and a local SPARQL engine. Today the proxy queries the live
   glossary only.
-- The reconciliation job (FR-GIT-08) and drift on a schedule (M4).
+- ~~The reconciliation job (FR-GIT-08) and drift on a schedule (M4).~~ Done in M4a
+  (ADR 0017); reverting direct edits and drift that drafts proposals stay deferred
+  ([M4a backlog](m4a-deferred.md)).
 
 ## Import
 - Replace mode can strand the children of a removed concept.

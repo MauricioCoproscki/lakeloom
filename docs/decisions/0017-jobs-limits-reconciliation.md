@@ -1,6 +1,6 @@
 # 0017. Job leases, rate limiting, MCP sessions and reconciliation
 
-- Status: proposed (M4a, 2026-11-16; § Research is filled in by M4a Task 4)
+- Status: accepted (M4a, 2026-11-16; live research in § Research, acceptance in § Consequences)
 - Date: 2026-11-16
 - Requirements: NFR-DEP-07, NFR-OPS-04, NFR-SEC-07, NFR-SEC-11, NFR-SEC-16, FR-GIT-03, FR-GIT-08, FR-GIT-09, FR-OM-02, FR-PRO-07
 
@@ -167,5 +167,50 @@ hard-deleted in teardown, never sealed). An OM upgrade that changes any of this 
   PostgreSQL.
 - Clock skew between replicas larger than the TTL could let two replicas hold one job; the
   outbox stays safe even then (row lock and trailer search, ADR 0013).
-- The rate limit and MCP session bindings are per replica: a load balancer without sticky
-  sessions needs `LAKELOOM_MCP_STATELESS=true`.
+- **Shutdown** can take up to `timeout_graceful_shutdown` (in-flight requests) plus the
+  runner's grace for a running tick: both are `LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS`, so up to twice
+  that value. Orchestrator grace periods (Kubernetes `terminationGracePeriodSeconds`) should
+  allow for it.
+- **The rate limit is per replica**, and MCP and HTTP share one bucket per principal: N
+  replicas behind a load balancer admit up to N times the configured rate.
+- **More than one replica** needs `LAKELOOM_MCP_STATELESS=true` or sticky sessions: MCP session
+  bindings (and the SDK's sessions) live in one replica's memory. SQLite is single-replica
+  only; several replicas need the shared PostgreSQL state store.
+- **Manual reconciliation.** Reconciliation runs once at every server start (the job's first
+  tick) and then every interval; it only reports unless `LAKELOOM_RECONCILE_COMMIT=true`. A
+  manual `lakeloom reconcile --commit` takes the `reconcile` lease and is refused (`conflict`)
+  while the server's job holds it: let the job commit (`LAKELOOM_RECONCILE_COMMIT=true`) or set
+  `LAKELOOM_RECONCILE_INTERVAL_SECONDS=0` for manual runs. A run without `--commit` takes no
+  lease and always works. A CLI run is not shown in the server's `jobs.reconcile` (that block
+  is the server's own last run); its audit row is in the shared state store.
+- **Scheduled drift** writes fresh scan records every interval (subject to their retention)
+  and no audit row; it never writes a proposal.
+- **A direct OM edit does not bump the glossary version** (R3), so version-keyed caches (HTTP
+  ETags) can serve the old state until their TTL.
+- **Approvals not yet in Git skip their model** (R4), including one stuck in `apply_failed`
+  (reported as "publication in flight"); the residual windows are those listed in R4.
+- **Live acceptance** (`tests/contract/test_m4a_acceptance.py`, dev stack, Git mode `direct`,
+  PostgreSQL state store, `LAKELOOM_RECONCILE_INTERVAL_SECONDS=0` in compose). The compose
+  stack also sets a generous rate limit (6000 per minute, burst 1000): with the defaults the
+  contract suite, which calls as one agent principal, was throttled (`rate_limited`) in the
+  M1b, M2a and M2b acceptance tests.
+  - `retail_m4a` is built from `fixture_delta`, approved by alice and published. `lakeloom
+    reconcile --model retail_m4a --json` (run in the Lakeloom container) is `in_sync`, exit 0.
+  - The bot `PATCH`es the description of `Customer` outside any change set (R2). The next run
+    is `drifted` with exactly `Customer` in `changed`, exit 3, nothing queued, and one audit row
+    (`system:reconcile`, type `system`).
+  - `--commit` queues a `rec_…` publication, which the server's `git-publisher` job publishes
+    (`done`); the commit's subject is `ontology(retail_m4a): direct edits in OpenMetadata`, its
+    trailers `Lakeloom-Origin: om-direct-edit`, `Lakeloom-Reconcile: rec_…` and
+    `Lakeloom-Publication: <id>`, and its `ontology.ttl` holds the new `skos:definition`. The
+    next run is `in_sync` again.
+  - Leases on the stack's PostgreSQL: two holders racing for one lease give exactly one winner,
+    and the loser can neither take nor release it; the running server's `git-publisher:<key>`
+    row names the server's instance id (its container hostname), unexpired, and
+    `get_server_info` shows the job `held`.
+  - Rate limit: an in-process app on the live OM and Keycloak with a burst of 5 answers the
+    sixth `GET /v1/models` of the agent with `429`, `Retry-After` and the typed
+    `rate_limited` body, while alice's call still succeeds.
+  - An MCP session opened by the agent and replayed with alice's token is `404` "unknown MCP
+    session", the same body as a never-issued id; the agent's own session keeps working.
+- Deferred follow-ups: [M4a backlog](../backlog/m4a-deferred.md).

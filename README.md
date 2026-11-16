@@ -641,6 +641,69 @@ answered by OpenMetadata. It needs the scope `lakeloom:read`.
   a Delta table the test writes under `.scratch-lake/`. Run `mkdir -p .scratch-lake` before
   `docker compose up`.
 
+### Reconciliation and scheduled drift
+
+An edit made directly in OpenMetadata, outside a Lakeloom proposal, is found by
+**reconciliation** (FR-GIT-08; ADR 0017). It needs Git publishing.
+
+- **What it compares.** For each model with a `done` Git publication, the OpenMetadata export
+  against `ontology.ttl` at that publication's commit (the semantic view, so ids, prefixes and
+  triple order never count). The result per model is `in_sync`, `drifted` (with the added,
+  changed and removed terms), `skipped` or `error`.
+- **Skips.** A model with a publication in flight (an approval not yet in Git, including one
+  stuck in `apply_failed`) is `skipped` "publication in flight", never `drifted`. So is a model
+  never published.
+- **The job.** The server runs it once at start and then every
+  `LAKELOOM_RECONCILE_INTERVAL_SECONDS` (default `3600`, `0` = off), as `system:reconcile`. It
+  only reports (audit row, `lakeloom_reconcile_drifted_models`, `jobs.reconcile` in
+  `get_server_info`) unless `LAKELOOM_RECONCILE_COMMIT=true`.
+- **Commit.** A committing run queues a Git publication (`rec_…`) through the normal outbox,
+  rendered exactly as an applied proposal would be. Its commit says
+  `ontology(<slug>): direct edits in OpenMetadata` and carries
+  `Lakeloom-Origin: om-direct-edit` and `Lakeloom-Reconcile: rec_…`. Reconciliation never writes
+  OpenMetadata and never reverts an edit.
+- **CLI.** `lakeloom reconcile [--model SLUG] [--commit] [--json]`: exit `0` in sync (skips
+  included), `3` drift found, `1` an error. `--commit` takes the job's lease, so it is refused
+  (`conflict`) while the server's reconcile job is on: let the job commit, or set the interval
+  to `0` for manual runs. A run without `--commit` always works.
+- **Caches.** A direct term edit does not change the glossary's version in OpenMetadata rc1, so
+  version-keyed caches (HTTP `ETag`) can show the old state until their TTL
+  (`LAKELOOM_MODEL_CACHE_TTL_SECONDS`).
+- **Scheduled drift.** `LAKELOOM_DRIFT_INTERVAL_SECONDS` (default `0`, off; `300`–`604800`)
+  runs the drift check of every model with an applied scan as `system:drift`. It only reports
+  (`lakeloom_drift_tables{model}`, `jobs.drift` in `get_server_info`, a log line); it never
+  drafts a proposal. Every run scans the lake and stores fresh scan records; it writes no
+  audit row.
+
+### Rate limits
+
+Every MCP `tools/call` and every `/v1` request takes a token from the caller's bucket
+(NFR-SEC-16). One bucket per principal (type and subject), shared by MCP and HTTP:
+`LAKELOOM_RATE_LIMIT_BURST` (default `60`) is its size and `LAKELOOM_RATE_LIMIT_PER_MINUTE`
+(default `300`, `0` = off) its refill. Over the limit, a tool returns the error `rate_limited`
+with a "retry after <n> s" hint and HTTP returns `429` with `Retry-After`. Health, metrics,
+the protected-resource metadata, MCP `initialize` and the `*/list` calls are not limited.
+The count is `lakeloom_rate_limited_total{surface}`.
+
+### Running more than one replica
+
+Background jobs (the Git outbox `git-publisher`, `triplestore-sink`, `reconcile`,
+`drift-schedule`) take a lease in the state store, so each runs on one replica at a time; a
+replica that stops loses its jobs after at most one lease TTL (`max(3 × interval, 60 s)`).
+`get_server_info` shows the jobs of the replica that answers (`jobs`).
+
+- Use the **PostgreSQL** state store: SQLite is single-replica only.
+- Set **`LAKELOOM_MCP_STATELESS=true`** or route each client to one replica (sticky
+  sessions). An MCP session is bound to the principal that opened it and lives in one
+  replica's memory; another principal, or another replica, answers `404` "unknown MCP session".
+- **Rate limits are per replica**: N replicas admit up to N times the configured rate.
+- Keep the replicas' clocks in sync (NTP): lease expiry uses each replica's clock.
+- **Shutdown.** `LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS` (default `30`) is both the time in-flight
+  requests get and the time a running job tick then gets, so a stop can take up to twice that;
+  leases are released on the way out. Queued publications stay in the store.
+- Not shared across replicas yet (M4a backlog): the per-model proposal lock, and releases and
+  imports, which are serialised per process (the Git remote rejects the losing push).
+
 ### Surfaces overview
 
 | Capability | MCP tool | MCP resource | HTTP route |
@@ -652,6 +715,7 @@ answered by OpenMetadata. It needs the scope `lakeloom:read`.
 | Import and restore | `import_model`, `import_from_git` | | none (CLI `lakeloom import`, `lakeloom import-git`) |
 | Drift | `detect_drift`, prompt `drift_check` | | none (CLI `lakeloom drift`) |
 | SPARQL | `sparql_query` | | `POST /v1/models/{slug}/sparql` |
+| Reconciliation | | | none (CLI `lakeloom reconcile`; job `reconcile`) |
 | Ontology export | `export_model` | `lakeloom://models/{slug}/ontology.{ttl,jsonld,owl,nt}` | `GET /v1/models/{slug}` (`Accept`) |
 | JSON-LD context | | `lakeloom://models/{slug}/context.jsonld` | `GET /v1/models/{slug}/context.jsonld` |
 | SHACL shapes | | `lakeloom://models/{slug}/shapes.ttl` | `GET /v1/models/{slug}/shapes` (`Accept`) |
@@ -689,7 +753,8 @@ header pointing at the OpenMetadata entity (`rel="via"`; a release links its Git
 `latest` adds the commit of the last Git publication as `rel="related"`),
 `Vary: Accept` and `Cache-Control: private, max-age=0, must-revalidate`. Send `If-None-Match` to get
 `304` with no body. Errors are JSON, `{"error": {"code", "message", "hint"}}`, with `404`
-`not_found`, `403` `forbidden`, `400` `validation_error`, `503` `upstream_unavailable`.
+`not_found`, `403` `forbidden`, `400` `validation_error`, `429` `rate_limited` (with
+`Retry-After`), `503` `upstream_unavailable`.
 
 ### MCP resources
 
@@ -726,7 +791,7 @@ For development setup see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Observability
 
-- **Prometheus**: `GET /metrics` (no auth) always serves `lakeloom_tool_calls_total`, `lakeloom_resource_reads_total`, `lakeloom_om_request_seconds`, `lakeloom_scan_duration_seconds` and `lakeloom_http_requests_total`.
+- **Prometheus**: `GET /metrics` (no auth) always serves `lakeloom_tool_calls_total`, `lakeloom_resource_reads_total`, `lakeloom_om_request_seconds`, `lakeloom_scan_duration_seconds` and `lakeloom_http_requests_total`; since M4a also `lakeloom_rate_limited_total{surface}`, `lakeloom_reconcile_drifted_models`, `lakeloom_reconcile_runs_total{outcome}` and `lakeloom_drift_tables{model}`.
 - **OpenTelemetry (OTLP)**: off unless `LAKELOOM_OTEL_EXPORTER_OTLP_ENDPOINT` is set (for example `http://collector:4318`). Then traces go to `{endpoint}/v1/traces` and metrics to `{endpoint}/v1/metrics` over OTLP/HTTP, with `service.name=lakeloom` and the Lakeloom version. When unset, no exporter or thread is created. Works for both the HTTP and stdio transports.
 - **Spans**: `HTTP <method> <route>` (not for `/healthz`, `/readyz`, `/metrics`), `mcp.tool/<tool>` (tool name, outcome, principal type; never arguments), `mcp.resource` (resource kind and outcome), `om.<operation>` (status code) and `scan` (source, table counts, status). Tokens, headers, URLs and untrusted text are never recorded.
 - **OTel metrics**: `lakeloom.tool_calls`, `lakeloom.resource_reads`, `lakeloom.om.request.duration` (s) and `lakeloom.scan.duration` (s).

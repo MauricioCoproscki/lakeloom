@@ -457,6 +457,13 @@ Scopes are OAuth scopes (section 8.2). "OM write" means the tool creates or chan
 | `LAKELOOM_SPARQL_TIMEOUT_SECONDS` | `30` | SPARQL query timeout, passed to OpenMetadata in milliseconds (1 to 30; FR-PUB-03). |
 | `LAKELOOM_SPARQL_MAX_RESULT_BYTES` | `5242880` | Largest SPARQL result Lakeloom returns; a larger one fails (add `LIMIT`). |
 | `LAKELOOM_SPARQL_MAX_QUERY_CHARS` | `20000` | Longest SPARQL query accepted. |
+| `LAKELOOM_RATE_LIMIT_PER_MINUTE` | `300` | Refill of each principal's token bucket, shared by MCP `tools/call` and `/v1` (NFR-SEC-16); `0` switches the limit off. Per replica. |
+| `LAKELOOM_RATE_LIMIT_BURST` | `60` | Size of each principal's bucket (at least 1). |
+| `LAKELOOM_MCP_STATELESS` | `false` | Stateless MCP (no session ids, JSON responses); needed for several replicas without sticky sessions (NFR-DEP-07). |
+| `LAKELOOM_RECONCILE_INTERVAL_SECONDS` | `3600` | Reconciliation of OpenMetadata with Git (FR-GIT-08): `0` (off) or 60 to 86400; runs once at start, needs Git publishing. |
+| `LAKELOOM_RECONCILE_COMMIT` | `false` | Let the reconcile job queue a Git publication of the drift it finds (otherwise it only reports). |
+| `LAKELOOM_DRIFT_INTERVAL_SECONDS` | `0` | Scheduled report-only drift check (FR-PRO-07): `0` (off) or 300 to 604800; every run scans the lake. |
+| `LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS` | `30` | Graceful shutdown (NFR-OPS-04): the time in-flight requests get, then the time a running job tick gets (1 to 600). |
 | `LAKELOOM_TRIPLESTORE_ENABLED` | `false` | Enable FR-TS module. |
 | `LAKELOOM_STDIO_ENABLED` | `false` in production | Allow stdio transport. |
 | `LAKELOOM_OTEL_EXPORTER_OTLP_ENDPOINT` | — | Telemetry endpoint. |

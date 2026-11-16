@@ -203,6 +203,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     with a warning; a concurrent duplicate import confirm or drift run is a `conflict`.
   - The M3c acceptance test restores a released throwaway model into a fresh OpenMetadata
     model without a semantic diff, and drafts drift after a column is added.
+- M4a jobs, rate limits and reconciliation (ADR 0017):
+  - Job leases in the state store (table `job_leases`, migration `0005_job_leases`): the Git
+    outbox (`git-publisher:<repo>`), the triple-store sink, reconciliation and scheduled drift
+    each run on one replica at a time; `get_server_info` shows them under `jobs` (NFR-DEP-07).
+  - Graceful shutdown: `LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS` for in-flight requests and a running
+    job tick; leases are released on the way out (NFR-OPS-04).
+  - A token-bucket rate limit per principal on MCP `tools/call` and `/v1`
+    (`LAKELOOM_RATE_LIMIT_PER_MINUTE`, `LAKELOOM_RATE_LIMIT_BURST`): the tool error
+    `rate_limited`, or `429` with `Retry-After`; metric `lakeloom_rate_limited_total`
+    (NFR-SEC-16).
+  - MCP sessions are bound to the principal that opened them: another principal's or an
+    unknown session id is `404` "unknown MCP session". `LAKELOOM_MCP_STATELESS` runs MCP
+    without sessions for several replicas.
+  - Reconciliation of OpenMetadata with the last Git publication finds direct edits in
+    OpenMetadata: the `reconcile` job (`LAKELOOM_RECONCILE_INTERVAL_SECONDS`) and
+    `lakeloom reconcile [--model] [--commit] [--json]`. It reports by default; with
+    `LAKELOOM_RECONCILE_COMMIT` or `--commit` it queues a publication with
+    `Lakeloom-Origin: om-direct-edit` and `Lakeloom-Reconcile` trailers. It never writes
+    OpenMetadata (FR-GIT-08, FR-OM-02).
+  - A scheduled report-only drift check (`LAKELOOM_DRIFT_INTERVAL_SECONDS`, off by default;
+    FR-PRO-07).
+  - Dev stack: the compose Lakeloom runs no scheduled reconciliation
+    (`LAKELOOM_RECONCILE_INTERVAL_SECONDS: "0"`), so the CLI can commit, and has a generous
+    rate limit (6000 per minute, burst 1000) so the contract suite is not throttled.
+  - The M4a acceptance test commits a direct OpenMetadata edit to Git through reconciliation
+    and checks leases on PostgreSQL, the rate limit and session binding live.
 
 ### Fixed
 
