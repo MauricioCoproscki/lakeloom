@@ -11,6 +11,10 @@ column                    rewritten to the bound one; for a type change the name
                           ``allowed_values`` are kept when the mapper has none (the upsert
                           replaces every field in OpenMetadata, ADR 0016 R2). FK relations
                           whose columns are new are kept the same way.
+moved table               an added table whose mapper concept is the bound concept of a
+                          removed table, 1:1 (:func:`resolve_moves`): ``changed``, diffed
+                          against the removed table's baseline on its binding; the removed
+                          table gets no operations
 comment change            reported only (:func:`comment_changes`): rc1 ignores description
                           changes on an existing native property (ADR 0016 R2)
 removed column            ``RemoveAttribute`` on the bound name, only when the model has it
@@ -60,6 +64,7 @@ __all__ = [
     "comment_changes",
     "diff_scans",
     "drift_operations",
+    "resolve_moves",
     "table_of",
 ]
 
@@ -83,6 +88,8 @@ class TableDrift(BaseModel):
     added_columns: list[str] = []
     removed_columns: list[str] = []
     changed_columns: list[str] = []
+    # the subset of changed_columns whose raw type changed (the rest: comment only)
+    type_changed_columns: list[str] = []
     renames: list[tuple[str, str]] = []
     error: str | None = None
 
@@ -187,6 +194,7 @@ def _table_drift(fqn: str, old: ScannedTable, new: ScannedTable) -> TableDrift:
         added_columns=added,
         removed_columns=removed,
         changed_columns=changed,
+        type_changed_columns=[c for c in changed if a[c].data_type != b[c].data_type],
         renames=_column_renames(fqn, before, after, removed, added),
     )
 
@@ -243,6 +251,64 @@ def comment_changes(
         f"{len(changed)} column comments changed; attribute descriptions cannot be changed on "
         f"{_OM}: {', '.join(changed[:_MAX_LISTED])}{more}"
     ]
+
+
+def resolve_moves(
+    drifts: Sequence[TableDrift],
+    baseline: Mapping[str, ScannedTable],
+    current: Mapping[str, ScannedTable],
+    bindings: Mapping[str, TableBinding],
+    current_scan: ScanRecord,
+    policy: MappingPolicy,
+) -> tuple[list[TableDrift], dict[str, TableBinding], list[str]]:
+    """Treat a table that moved (another schema, or a name mapping to the same concept) as
+    changed, not as removed plus added: an added table whose mapper concept is the bound
+    concept of a removed table, 1:1, takes over that table's binding and is diffed against its
+    baseline. The added table's drift becomes ``changed`` with a ``(old, new)`` ``renames``
+    entry; the removed table keeps its ``removed`` drift and gets no operations. Ambiguous
+    cases keep the remove-plus-add behaviour, with a warning."""
+    mapped = _mapped(current_scan, policy, [])
+    removed_by: dict[str, list[str]] = defaultdict(list)
+    for d in drifts:
+        if d.status == "removed" and d.fqn in bindings:
+            removed_by[bindings[d.fqn].concept].append(d.fqn)
+    added_by: dict[str, list[str]] = defaultdict(list)
+    for d in drifts:
+        c = mapped.concept_of.get(d.fqn) if d.status == "added" else None
+        if c is not None:
+            added_by[c].append(d.fqn)
+    moves: dict[str, str] = {}  # new -> old
+    warnings: list[str] = []
+    for concept in sorted(set(removed_by) & set(added_by)):
+        olds, news = removed_by[concept], added_by[concept]
+        if len(olds) == 1 and len(news) == 1:
+            moves[news[0]] = olds[0]
+        else:
+            warnings.append(
+                f"tables {', '.join(olds)} may have moved to {', '.join(news)} (concept "
+                f"{concept}); not 1:1, so proposed as removed plus added"
+            )
+    if not moves:
+        return list(drifts), dict(bindings), warnings
+    moved_old = set(moves.values())
+    out: list[TableDrift] = []
+    for d in drifts:
+        if d.fqn in moves:
+            old = moves[d.fqn]
+            diff = _table_drift(d.fqn, baseline[old], current[d.fqn])
+            out.append(
+                diff.model_copy(
+                    update={"status": "changed", "renames": [(old, d.fqn), *diff.renames]}
+                )
+            )
+        elif d.status == "added" and any(old in moved_old for old, _ in d.renames):
+            out.append(d.model_copy(update={"renames": []}))  # its candidate moved elsewhere
+        else:
+            out.append(d)
+    bound = dict(bindings)
+    for new, old in moves.items():
+        bound[new] = bindings[old]
+    return out, bound, warnings
 
 
 def table_of(op: ProposalOperation, tables: Iterable[str]) -> str | None:
@@ -325,6 +391,10 @@ class _Builder:
         self.table_renames = {
             old: new for d in drifts for old, new in d.renames if d.status == "added"
         }
+        # removed tables that moved (resolve_moves): the changed table carries (old, new)
+        self.moved = {
+            old for d in drifts if d.status == "changed" for old, new in d.renames if new == d.fqn
+        }
 
     def concept(self, tbl: str) -> str | None:
         bound = self.bindings.get(tbl)
@@ -350,7 +420,12 @@ class _Builder:
             self.warnings.append(f"table {d.fqn} has no concept in the model; drift not proposed")
             return
         bound = self.bindings.get(d.fqn, TableBinding(concept=concept))
-        renamed = {old.rsplit(".", 1)[1]: new.rsplit(".", 1)[1] for old, new in d.renames}
+        prefix = f"{d.fqn}."
+        renamed = {
+            old.removeprefix(prefix): new.removeprefix(prefix)
+            for old, new in d.renames
+            if old.startswith(prefix) and new.startswith(prefix)
+        }
         renamed_to = {new: old for old, new in renamed.items()}
         for col in d.removed_columns:
             new = renamed.get(col)
@@ -361,7 +436,7 @@ class _Builder:
             detail = _rename_detail(f"{d.fqn}.{old}", f"{d.fqn}.{col}") if old else None
             self.add_column(d.fqn, concept, col, detail)
         self.new_relations(d.fqn, concept, set(d.added_columns))
-        for col in d.changed_columns:
+        for col in d.type_changed_columns:  # a comment-only change is never proposed
             self.change_column(d.fqn, concept, bound, col)
 
     def remove_column(
@@ -414,6 +489,12 @@ class _Builder:
             return
         name = bound.attributes.get(col, op.name)
         term = self.terms.attributes.get((concept, name))
+        if term is None and col in bound.attributes:
+            self.warnings.append(
+                f"column {tbl}.{col} changed type but attribute {concept}.{name} is not in the "
+                "model (removed since the scan); not proposed"
+            )
+            return
         update: dict[str, Any] = {"concept": concept, "name": name}
         if term is not None:
             update["is_identifier"] = op.is_identifier or term.is_identifier
@@ -435,6 +516,8 @@ class _Builder:
     # -- removed and added tables ------------------------------------------------------------
 
     def removed(self, d: TableDrift) -> None:
+        if d.fqn in self.moved:
+            return  # diffed as the changed table it moved to
         bound = self.bindings.get(d.fqn)
         if bound is None:
             self.warnings.append(f"table {d.fqn} has no concept in the model; not removed")

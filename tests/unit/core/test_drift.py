@@ -10,6 +10,7 @@ from lakeloom.core.drift import (
     comment_changes,
     diff_scans,
     drift_operations,
+    resolve_moves,
 )
 from lakeloom.core.import_terms import (
     AttributeTerm,
@@ -162,11 +163,15 @@ def ops_for(
     errors: dict[str, str] | None = None,
     versions: dict[str, float] | None = None,
 ) -> tuple[list[TableDrift], list[ProposalOperation], list[ProposalOperation], list[str]]:
+    scan = record(*current.values())
     drifts = diff_scans(baseline, current, errors or {})
-    rewritten, added, warnings = drift_operations(
-        drifts, record(*current.values()), bindings, model_terms, POLICY, versions or {}
+    drifts, bindings, move_warnings = resolve_moves(
+        drifts, baseline, current, bindings, scan, POLICY
     )
-    return drifts, rewritten, added, warnings
+    rewritten, added, warnings = drift_operations(
+        drifts, scan, bindings, model_terms, POLICY, versions or {}
+    )
+    return drifts, rewritten, added, sorted([*move_warnings, *warnings])
 
 
 ORDERS = "c.s.orders"
@@ -447,3 +452,90 @@ def test_unchanged_tables_produce_nothing() -> None:
     assert [(d.fqn, d.status) for d in drifts] == [(ORDERS, "unchanged")]
     assert rewritten == [] and added == [] and warnings == []
     assert comment_changes(by_fqn(t), by_fqn(t)) == []
+
+
+def test_moved_table_is_changed_not_removed() -> None:
+    old = table("orders", [("id", "bigint"), ("total", "decimal")])
+    moved = ScannedTable.model_validate(
+        {
+            **table(
+                "orders", [("id", "bigint"), ("total", "decimal"), ("extra", "string")]
+            ).model_dump(by_alias=True),
+            "ref": {"catalog": "c", "schema": "t", "name": "orders"},
+        }
+    )
+    binding = {ORDERS: TableBinding(concept="Order", attributes={"id": "id", "total": "total"})}
+    model = terms(["Order"], [("Order", "id", "xsd:long"), ("Order", "total", "xsd:decimal")])
+    drifts, rewritten, added, _ = ops_for(
+        by_fqn(old), by_fqn(moved), binding, model, versions={"Order": 0.4}
+    )
+
+    status = {d.fqn: (d.status, d.renames, d.added_columns) for d in drifts}
+    assert status == {
+        ORDERS: ("removed", [], []),
+        "c.t.orders": ("changed", [(ORDERS, "c.t.orders")], ["extra"]),
+    }
+    # the move keeps the concept: no removal, no new concept, only the new column
+    assert [op_key(op) for op in rewritten] == ["attr:Order.extra"]
+    assert added == []
+
+
+def test_ambiguous_move_keeps_remove_and_add_with_warning() -> None:
+    a = table("orders", [("id", "bigint")])
+    b = table("orders_old", [("id", "bigint"), ("x", "int")])
+    moved = ScannedTable.model_validate(
+        {**table("orders", [("id", "bigint")]).model_dump(by_alias=True),
+         "ref": {"catalog": "c", "schema": "t", "name": "orders"}}
+    )  # fmt: skip
+    binding = {
+        ORDERS: TableBinding(concept="Order", attributes={"id": "id"}),
+        "c.s.orders_old": TableBinding(concept="Order", attributes={"id": "id"}),
+    }
+    model = terms(["Order"], [("Order", "id", "xsd:long")])
+    drifts, rewritten, added, warnings = ops_for(
+        by_fqn(a, b), by_fqn(moved), binding, model, versions={"Order": 0.4}
+    )
+
+    assert {d.fqn: d.status for d in drifts}["c.t.orders"] == "added"
+    assert "remove-concept:Order" in [op_key(op) for op in rewritten]
+    assert "concept:Order" in [op_key(op) for op in added]
+    assert any("may have moved" in w and "c.t.orders" in w for w in warnings)
+
+
+def test_comment_only_change_never_recreates_a_removed_attribute() -> None:
+    old = table("orders", [("id", "bigint", "old text")])
+    new = table("orders", [("id", "bigint", "new text")])
+    drifts, rewritten, _, _ = ops_for(by_fqn(old), by_fqn(new), BOUND, terms(["PurchaseOrder"]))
+
+    assert drifts[0].changed_columns == ["id"] and drifts[0].type_changed_columns == []
+    assert rewritten == []
+
+
+def test_comment_only_change_never_reverts_model_edits() -> None:
+    old = table("orders", [("id", "bigint", "old text")])
+    new = table("orders", [("id", "bigint", "new text")])
+    edited = terms(
+        ["PurchaseOrder"],
+        [("PurchaseOrder", "orderId", "xsd:decimal")],  # edited in the model after the scan
+        unit={("PurchaseOrder", "orderId"): "unit:EUR"},
+    )
+    _, rewritten, _, _ = ops_for(by_fqn(old), by_fqn(new), BOUND, edited)
+
+    assert rewritten == []
+
+
+def test_type_change_of_removed_attribute_is_skipped() -> None:
+    old = table("orders", [("id", "int")])
+    new = table("orders", [("id", "bigint")])
+    _, rewritten, _, warnings = ops_for(by_fqn(old), by_fqn(new), BOUND, terms(["PurchaseOrder"]))
+
+    assert rewritten == []
+    assert any("c.s.orders.id" in w and "not in the model" in w for w in warnings)
+
+
+def test_type_change_of_unbound_column_is_added() -> None:
+    old = table("orders", [("id", "int"), ("qty", "int")])
+    new = table("orders", [("id", "int"), ("qty", "bigint")])
+    _, rewritten, _, _ = ops_for(by_fqn(old), by_fqn(new), BOUND, terms(["PurchaseOrder"]))
+
+    assert [op_key(op) for op in rewritten] == ["attr:PurchaseOrder.qty"]

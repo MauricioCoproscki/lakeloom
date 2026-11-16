@@ -481,3 +481,43 @@ async def test_tombstoned_and_pending_operations_are_left_out() -> None:
     assert report.proposal is None
     assert any("deleted in OpenMetadata" in w and "Order.total" in w for w in report.warnings)
     assert any("already pending in prop_open" in w for w in report.warnings)
+
+
+async def test_dedupe_match_of_a_removed_concept_keeps_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = Env()
+    env.baseline("prop_1", scan("scan_1", ORDERS_V1), ORDER_OPS, [ORDERS])
+    env.scans.lake["lake"] = [table("purchases", [("id", "bigint"), ("note", "string")])]
+
+    async def fake_dedupe(ops: list[ProposalOperation], **kw: Any) -> DedupeResult:
+        kept: list[ProposalOperation] = [op for op in ops if not isinstance(op, AddConcept)]
+        return DedupeResult(
+            operations=kept,
+            matches=[Match(op_key="concept:Purchase", candidate_fqn="shop.Order", confidence=0.93,
+                           matched_on="name", action="realized")],
+        )  # fmt: skip
+
+    monkeypatch.setattr(drift_service, "dedupe", fake_dedupe)
+    report = await env.detect()
+
+    (call,) = env.proposals.calls
+    keys = [op_key(op) for op in call["operations"]]
+    assert not any(k.startswith("remove-") for k in keys), keys
+    assert any("c.s.orders" in w and "Order" in w and "not proposed" in w for w in report.warnings)
+
+
+async def test_table_moved_between_baseline_schemas_keeps_its_concept() -> None:
+    env = Env()
+    items = table("items", [("id", "bigint")], schema="t")
+    env.baseline("prop_1", scan("scan_1", ORDERS_V1, items), ORDER_OPS, [ORDERS, "c.t.items"])
+    moved = table(
+        "orders", [("id", "bigint"), ("note", "string"), ("total", "decimal")], schema="t"
+    )
+    env.scans.lake["lake"] = [moved, items]
+
+    report = await env.detect()
+
+    status = {d.fqn: (d.status, d.renames) for d in report.tables}
+    assert status["c.t.orders"] == ("changed", [(ORDERS, "c.t.orders")])
+    (call,) = env.proposals.calls
+    assert [op_key(op) for op in call["operations"]] == ["attr:Order.total"]
+    assert env.om.term_reads == []  # no RemoveConcept, so no version read

@@ -45,6 +45,7 @@ from lakeloom.core.drift import (
     comment_changes,
     diff_scans,
     drift_operations,
+    resolve_moves,
     table_of,
 )
 from lakeloom.core.import_terms import TermSet, extract_terms
@@ -65,6 +66,7 @@ from lakeloom.core.operations import (
     AddConcept,
     AddRelation,
     ProposalOperation,
+    RemoveConcept,
     native_member_key,
     op_key,
 )
@@ -217,8 +219,6 @@ class DriftService:
 
         policy = policy_for(self._policies, model)
         bindings = self._bindings(base, applied, policy)
-        terms, base_iri = await self._terms(model)
-        versions = await self._versions(model, terms, drifts, bindings)
         combined = ScanRecord(
             id=fresh.records[0].id if fresh.records else "scan_none",
             source=fresh.records[0].source if fresh.records else "-",
@@ -228,6 +228,12 @@ class DriftService:
             status="completed",
             tables=[fresh.tables[k] for k in sorted(fresh.tables)],
         )
+        drifts, bindings, move_warnings = resolve_moves(
+            drifts, base.tables, fresh.tables, bindings, combined, policy
+        )
+        warnings += move_warnings
+        terms, base_iri = await self._terms(model)
+        versions = await self._versions(model, terms, drifts, bindings)
         rewritten, additions, op_warnings = drift_operations(
             drifts, combined, bindings, terms, policy, versions
         )
@@ -254,6 +260,8 @@ class DriftService:
             )
             additions = result.operations
             warnings += result.warnings
+            folded = {_bare(m.candidate_fqn) for m in result.matches if m.action != "kept"}
+            rewritten = self._keep_folded(rewritten, folded, warnings)
             matches = [
                 ProposalMatch(
                     op_key=m.op_key,
@@ -289,6 +297,29 @@ class DriftService:
             warnings=list(dict.fromkeys(warnings)),
         )
         return report, ops, tables, matches, scan_id
+
+    @staticmethod
+    def _keep_folded(
+        ops: list[ProposalOperation], folded: set[str], warnings: list[str]
+    ) -> list[ProposalOperation]:
+        """Drop the removal of a table whose concept an added table was folded into by
+        ``dedupe``: that table most likely moved, and the draft must not delete the concept."""
+        gone: dict[str, str] = {}  # removed table -> concept
+        for op in ops:
+            if isinstance(op, RemoveConcept) and _bare(op.fqn) in folded:
+                ref = next((e.ref for e in op.evidence if e.kind == "table"), None)
+                if ref is not None:
+                    gone[ref] = _bare(op.fqn)
+        if not gone:
+            return ops
+        for tbl, concept in sorted(gone.items()):
+            warnings.append(
+                f"table {tbl} may have moved: an added table matched its concept {concept}; "
+                "its removal is not proposed"
+            )
+        return [
+            op for op in ops if not any(e.kind == "table" and e.ref in gone for e in op.evidence)
+        ]
 
     async def _applied(self, model: str) -> list[Proposal]:
         out: list[Proposal] = []
@@ -427,11 +458,15 @@ class DriftService:
         bindings: Mapping[str, TableBinding],
     ) -> dict[str, float]:
         """OM versions of the concepts of removed tables (those the model has)."""
+        moved = {
+            old for d in drifts if d.status == "changed" for old, new in d.renames if new == d.fqn
+        }
         names = sorted(
             {
                 b.concept
                 for d in drifts
                 if d.status == "removed"
+                and d.fqn not in moved
                 and (b := bindings.get(d.fqn)) is not None
                 and b.concept in terms.concepts
             }
