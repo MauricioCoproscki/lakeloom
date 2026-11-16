@@ -322,6 +322,32 @@ def test_readding_deleted_definition_skipped_with_warning() -> None:
     ]
 
 
+def test_update_keeps_other_changes_when_new_parent_is_dropped() -> None:
+    """Only the parent change depends on the dropped concept; label, description and
+    synonym edits are still proposed."""
+    current = terms([concept("A", description="old")])
+    incoming = terms(
+        [
+            concept("A", description="new", display_name="Alpha", synonyms=("x",), parent="P"),
+            concept("P"),
+        ]
+    )
+    result = run(current, incoming, versions={"A": 0.3}, deleted=[f"concept:{NS}P"])
+    (op,) = result.operations
+    assert isinstance(op, UpdateConcept)
+    assert op.parent is None and op.display_name == "Alpha" and op.synonyms == ["x"]
+    assert op.description is not None and op.description.text == "new"
+    assert result.warnings[-1] == "1 operations that depend on them are left out"
+    # a parent change alone is dropped entirely
+    only_parent = run(
+        terms([concept("A")]),
+        terms([concept("A", parent="P"), concept("P")]),
+        versions={"A": 0.3},
+        deleted=[f"concept:{NS}P"],
+    )
+    assert only_parent.operations == []
+
+
 def _fake_context(ops: list[Any]) -> OMContext:
     created = [o for o in ops if isinstance(o, AddConcept)]
     return OMContext(

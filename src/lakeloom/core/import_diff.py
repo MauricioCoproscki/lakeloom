@@ -194,9 +194,9 @@ class _Diff:
             changes["synonyms"] = list(inc.synonyms)
         if inc.parent is not None and inc.parent != cur.parent:
             if inc.parent in self.dropped_concepts:
-                self.dependents += 1
-                return
-            changes["parent"] = inc.parent
+                self.dependents += 1  # only the parent change depends on it; keep the rest
+            else:
+                changes["parent"] = inc.parent
         if not changes:
             return
         self.adds.append(
