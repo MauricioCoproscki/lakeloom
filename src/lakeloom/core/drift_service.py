@@ -17,8 +17,10 @@ through ``dedupe`` like ``propose_from_scan`` (only with ``include_new_tables``)
 re-creating a deleted native definition (an rc1 tombstone, ADR 0016 R4) and operations
 already pending in an open proposal are left out with a warning. With anything left,
 :meth:`ProposalService.propose_operations` creates the draft (``origin="drift"``, the new
-scan id, provenance tables = the tables with operations at their new versions). No drift is
-not an error: the report has ``proposal=None``.
+scan id, provenance tables = the tables with operations at their new versions), re-reading
+the pending operations under the model lock (``recheck_pending``): a concurrent drift run
+that proposed them first makes this one a ``conflict``. No drift is not an error: the report
+has ``proposal=None``.
 
 Audit: ``propose_operations`` audits a created draft as ``detect_drift``. The no-drift path
 and refusals before it are audited here when the service owns auditing (the CLI); MCP passes
@@ -190,6 +192,7 @@ class DriftService:
             tables=tables,
             matches=matches,
             warnings=report.warnings,
+            recheck_pending=True,  # dedupe and the pending filter ran before the model lock
         )
         return report.model_copy(update={"proposal": proposal})
 

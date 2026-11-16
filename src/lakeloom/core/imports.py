@@ -12,7 +12,8 @@ Two steps: the ``plan_*`` dry run returns an :class:`ImportPlan` and a confirm t
 the caller, the arguments (for a file, the content's sha256) and
 ``sha256(model version, source object sha, the planned operations)``. ``confirm_*`` plans
 again on fresh state, verifies the token, then creates the draft; any change in between is a
-``conflict``.
+``conflict``, and so is an operation that became pending meanwhile (``recheck_pending``:
+two concurrent confirms of one token create one draft).
 
 Audit: ``propose_operations`` writes the record of a confirmed import (``tool`` is the MCP
 tool name). A refusal before it is audited here when the service owns auditing (the CLI);
@@ -373,6 +374,7 @@ class ImportService:
             tool=tool,
             source_document=source.document,
             warnings=computed.warnings,
+            recheck_pending=True,  # the pending filter ran before the model lock
         )
 
     async def _write_audit(

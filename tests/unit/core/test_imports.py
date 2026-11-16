@@ -262,6 +262,35 @@ async def test_pending_overlap_dropped(env: Env) -> None:
     assert f"2 operations already pending in {first.id}" in info.value.warnings
 
 
+async def test_concurrent_confirms_of_one_token_create_one_draft(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent retrying a confirm on timeout: both calls plan before either takes the model
+    lock, so only the re-check under the lock stops the duplicate draft."""
+    token = (await plan(env)).confirm_token
+    service = env.kit.service
+    real = service.propose_operations
+    arrived: list[None] = []
+    both = asyncio.Event()
+
+    async def barrier(*args: Any, **kw: Any) -> Any:
+        arrived.append(None)
+        if len(arrived) == 2:
+            both.set()
+        await both.wait()  # both confirms planned on the same state
+        return await real(*args, **kw)
+
+    monkeypatch.setattr(service, "propose_operations", barrier)
+    results = await asyncio.gather(confirm(env, token), confirm(env, token), return_exceptions=True)
+
+    created = [r for r in results if not isinstance(r, BaseException)]
+    errors = [r for r in results if isinstance(r, LakeloomError)]
+    assert len(created) == 1 and len(errors) == 1, results
+    assert errors[0].code == "conflict"
+    assert len(await env.kit.repo.open_for_model("shop")) == 1
+    assert len(env.om.created()) == 2  # one proposal: glossary + native change sets
+
+
 async def test_nothing_to_import(env: Env) -> None:
     env.changed(FILE.decode())
 

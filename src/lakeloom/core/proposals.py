@@ -35,7 +35,8 @@ Per-model access (NFR-SEC-07): ``propose_from_scan``, ``propose_operations``, ``
 (:func:`~lakeloom.core.model_policy.require_group`; empty = anyone, the CLI Actor exempt).
 
 Audit ownership (NFR-SEC-12): exactly one audit record per call of a write method
-(``propose_from_scan``, ``propose_change``, ``propose_realization``, ``submit``, ``discard``,
+(``propose_from_scan``, ``propose_operations`` (audited as its caller's ``tool``),
+``propose_change``, ``propose_realization``, ``submit``, ``discard``,
 ``rebase``; ``tool`` = the MCP tool name, ``submit_proposal``, ``discard_proposal`` and
 ``rebase_proposal`` included, in the CLI too). The service writes it **only when
 constructed with an** ``audit`` **repository** (the CLI). MCP tools construct it with
@@ -58,8 +59,11 @@ Provenance of agent edits (FR-PRO-03): operations an agent passes to ``propose_c
 replaced, never trusted.
 
 Concurrency: a per-proposal lock serialises edits, a per-model lock serialises
-``propose_from_scan`` (dedupe reads the model's open proposals), and the store is
-compare-and-set. The locks are in-process: with several replicas, two scans of one model at
+``propose_from_scan`` (dedupe reads the model's open proposals) and ``propose_operations``,
+and the store is compare-and-set. Imports and drift filter pending operations before the
+lock, so they pass ``recheck_pending``: the pending operations are read again under the lock
+and any overlap is a ``conflict`` (two concurrent confirms of one import token, or two drift
+runs, create one draft). The locks are in-process: with several replicas, two scans of one model at
 the same instant can still propose the same operation (accepted limitation for M2a).
 """
 
@@ -1534,10 +1538,15 @@ class ProposalService:
         source_document: SourceDocument | None = None,
         matches: Sequence[ProposalMatch] = (),
         warnings: Sequence[str] = (),
+        recheck_pending: bool = False,
     ) -> Proposal:
         """A draft proposal of operations computed elsewhere (import, Git restore, drift),
         created exactly like a scan's (:meth:`_create`), audited as ``tool``. Operations
-        without a table (imports) are packed into parts in their order."""
+        without a table (imports) are packed into parts in their order.
+
+        ``recheck_pending``: the caller filtered pending operations before the model lock
+        (imports, drift), so they are read again under it; any operation now pending in an
+        open proposal is a ``conflict`` and nothing is created."""
 
         async def run(trail: AuditContext) -> tuple[Proposal, str | None]:
             trail.model = model
@@ -1546,6 +1555,8 @@ class ProposalService:
                 ops = list(operations)
                 if not ops:
                     raise NothingToPropose(list(matches), sorted(set(warnings)))
+                if recheck_pending:
+                    await self._require_not_pending(model, ops)
                 target = await self._target(model)
                 provenance = Provenance(
                     scan_id=scan_id,
@@ -1571,6 +1582,21 @@ class ProposalService:
                 )
 
         return await self._audited(tool, principal, client, run)
+
+    async def _require_not_pending(self, model: str, ops: Sequence[ProposalOperation]) -> None:
+        """``conflict`` when an operation became pending since the caller planned (under the
+        model lock: a concurrent import confirm or drift run created it)."""
+        pending = await self._repo.pending_op_keys(model)
+        taken = [op_key(op) for op in ops if op_key(op) in pending]
+        if not taken:
+            return
+        ids = sorted({pending[k] for k in taken})
+        raise LakeloomError(
+            "conflict",
+            f"{len(taken)} operations became pending in {', '.join(ids)} since they were planned",
+            "plan again (a concurrent call proposed them); review or discard "
+            f"{', '.join(ids)} first if it should not stand",
+        )
 
     # -- propose_change ----------------------------------------------------------------------
 

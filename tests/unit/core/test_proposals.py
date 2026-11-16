@@ -1680,6 +1680,35 @@ async def test_propose_operations_fails_closed_before_any_write(make) -> None:
         assert list((await session.execute(select(ProposalRow))).scalars()) == []
 
 
+async def test_propose_operations_rechecks_pending_under_the_model_lock(make) -> None:
+    """Two callers that both filtered pending operations before the lock (an import confirm
+    retried on timeout): with recheck_pending the second finds them pending, ``conflict``."""
+    kit = make()
+    ops = _imported(2)
+
+    async def go() -> Any:
+        return await kit.service.propose_operations(
+            "shop", ops, origin="import", principal=AGENT, client=None, tool="import_model",
+            recheck_pending=True,
+        )  # fmt: skip
+
+    results = await asyncio.gather(go(), go(), return_exceptions=True)
+
+    created = [r for r in results if isinstance(r, Proposal)]
+    errors = [r for r in results if isinstance(r, LakeloomError)]
+    assert len(created) == 1 and len(errors) == 1
+    assert errors[0].code == "conflict"
+    assert created[0].id in errors[0].message and errors[0].hint
+    assert len(await kit.repo.open_for_model("shop")) == 1
+    rows = sorted((r.tool, r.result) for r in await kit.audit_rows())
+    assert rows == [("import_model", "error"), ("import_model", "ok")]  # one row per call
+    # without the flag (propose_from_scan's own dedupe runs under the lock) nothing changes
+    again = await kit.service.propose_operations(
+        "shop", ops, origin="import", principal=AGENT, client=None, tool="import_model"
+    )
+    assert again.id != created[0].id
+
+
 async def test_provenance_block_has_origin_and_document(make) -> None:
     kit = make()
     doc = SourceDocument(

@@ -5,6 +5,7 @@ The tool and prompt tests (``test_detect_drift_tool_scope_and_audit``,
 tests/unit/server/test_tools_import.py and tests/unit/server/test_prompts.py.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -163,18 +164,28 @@ class FakeProposalRepo:
 
 
 class FakeProposals:
+    """Records calls; like ProposalService, holds the created operations as pending and
+    re-checks them (``recheck_pending``) under a model lock."""
+
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.pending: dict[str, str] = {}
+        self.lock = asyncio.Lock()
 
     async def pending_op_keys(self, model: str) -> dict[str, str]:
         return dict(self.pending)
 
     async def propose_operations(self, model: str, operations: Any, **kw: Any) -> Proposal:
-        ops = list(operations)
+        async with self.lock:
+            return self._create(model, list(operations), **kw)
+
+    def _create(self, model: str, ops: list[ProposalOperation], **kw: Any) -> Proposal:
         if not ops:
             raise NothingToPropose([], [])
+        if kw.get("recheck_pending") and any(op_key(op) in self.pending for op in ops):
+            raise LakeloomError("conflict", "operations now pending", "run detect_drift again")
         self.calls.append({"model": model, "operations": ops, **kw})
+        self.pending.update({op_key(op): "prop_drift" for op in ops})
         data: dict[str, Any] = {
             "id": "prop_drift",
             "model": model,
@@ -530,3 +541,31 @@ def test_scan_id_is_none_without_a_fresh_scan() -> None:
     warnings: list[str] = []
     assert DriftService._scan_id(_Fresh(), _Baseline(), [], warnings) is None  # pyright: ignore[reportPrivateUsage]
     assert warnings == []
+
+
+async def test_concurrent_detects_create_one_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both detects plan before either takes the model lock; the pending re-check under the
+    lock (recheck_pending) turns the second into a ``conflict``, not a duplicate draft."""
+    env = Env()
+    env.baseline("prop_1", scan("scan_1", ORDERS_V1), ORDER_OPS, [ORDERS])
+    env.scans.lake["lake"] = [table("orders", [("id", "bigint"), ("total", "decimal")])]
+    real = env.proposals.propose_operations
+    arrived: list[None] = []
+    both = asyncio.Event()
+
+    async def barrier(*args: Any, **kw: Any) -> Any:
+        arrived.append(None)
+        if len(arrived) == 2:
+            both.set()
+        await both.wait()
+        return await real(*args, **kw)
+
+    monkeypatch.setattr(env.proposals, "propose_operations", barrier)
+    results = await asyncio.gather(env.detect(), env.detect(), return_exceptions=True)
+
+    reports = [r for r in results if not isinstance(r, BaseException)]
+    errors = [r for r in results if isinstance(r, LakeloomError)]
+    assert len(reports) == 1 and reports[0].proposal is not None
+    assert [e.code for e in errors] == ["conflict"]
+    (call,) = env.proposals.calls
+    assert call["recheck_pending"] is True
