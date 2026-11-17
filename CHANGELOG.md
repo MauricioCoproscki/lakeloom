@@ -229,6 +229,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rate limit (6000 per minute, burst 1000) so the contract suite is not throttled.
   - The M4a acceptance test commits a direct OpenMetadata edit to Git through reconciliation
     and checks leases on PostgreSQL, the rate limit and session binding live.
+- M4b connectors (ADR 0018):
+  - A native Snowflake source (`type: snowflake`, extra `snowflake`). It reads databases,
+    schemas, tables, columns, comments, owners, primary and foreign keys from
+    `INFORMATION_SCHEMA` and `SHOW … KEYS`, and tags from `TAG_REFERENCES_ALL_COLUMNS`. Auth is
+    key-pair, password or OAuth token. Profiling runs in the warehouse and is opt-in
+    (FR-SRC-04).
+  - Profiling privacy rules are shared by the Arrow and SQL profilers (`sources/privacy.py`;
+    FR-SRC-09).
+  - `auth: databricks` for the Unity Catalog source takes headers from `databricks-sdk` (extra
+    `databricks`; TC-7).
+  - `lakeloom sources check NAME [--call] [--tools] [--json]` checks an upstream MCP mapping
+    against `tools/list`, plus a guide in `docs/guides/mcp-mappings.md` (FR-SRC-05). The
+    Databricks and Snowflake examples keep placeholder tool names.
+  - Snowflake and the MCP examples are tested against local fakes only, not verified live.
+  - A contract probe shows an OpenMetadata export never holds part of a change set being
+    applied (ADR 0017 R4).
 
 ### Fixed
 

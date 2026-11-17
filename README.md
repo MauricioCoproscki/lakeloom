@@ -233,6 +233,55 @@ Unity Catalog OSS keeps its state inside its container, so recreating the contai
 the fixture registrations; re-seed them with
 `docker compose -f deploy/compose/docker-compose.yml run --rm uc-init`.
 
+#### Snowflake, Databricks authentication and mapping checks
+
+Extras: `delta` (delta-rs and pyarrow), `snowflake` (`snowflake-connector-python`) and
+`databricks` (`databricks-sdk`), as in `pip install 'lakeloom[snowflake]'`. A source whose extra
+is missing stops startup with a configuration error naming the `pip install` to run.
+
+A **Snowflake** source reads `INFORMATION_SCHEMA` and `SHOW … KEYS` (ADR 0018). A database is a
+catalog:
+
+```yaml
+  - type: snowflake
+    name: sf_prod
+    account: myorg-myaccount
+    user: LAKELOOM_SVC
+    role: LAKELOOM_READER             # optional
+    warehouse: LAKELOOM_WH            # needed only for profiling
+    databases: [SALES, MARKETING]     # optional allow-list (recommended)
+    auth:                             # exactly one method
+      private_key_file: /run/secrets/sf_key.p8   # key-pair (recommended)
+      private_key_passphrase_env: SF_KEY_PASS    # optional
+      # or: password_env: SF_PASSWORD
+      # or: token_env: SF_OAUTH_TOKEN            # OAuth access token
+    profiling: false                  # opt in: profiling runs warehouse queries (cost)
+    om_service: snowflake_prod
+```
+
+Grant the role:
+- `USAGE` on the databases and schemas;
+- `REFERENCES` (or ownership) on the tables, so `SHOW PRIMARY/IMPORTED KEYS` can see their keys;
+- with profiling, also `USAGE` on the warehouse and `SELECT` on the tables.
+
+Tags are read when the role may read tag references. Otherwise tables come back without tags.
+A Snowflake tag shows as `NAME.VALUE`, so the default sensitive glob `PII.*` covers a `PII` tag.
+
+For **Databricks-hosted Unity Catalog**, `auth: databricks` (with an optional `profile` from
+`~/.databrickscfg`) takes the headers from `databricks-sdk`. That gives service-principal
+OAuth, Azure, Google and CLI profiles in place of a `token_env` personal access token.
+
+`lakeloom sources check NAME [--call] [--tools] [--json]` checks an **upstream MCP mapping**
+against the server's `tools/list`. Each operation is reported `ok`, `placeholder`, `missing` or
+`schema_mismatch`. `--call` runs the read operations once. The exit code is 0 when all is ok and
+3 otherwise. The Databricks and Snowflake examples in `examples/mcp-mappings/` keep placeholder
+tool names. [docs/guides/mcp-mappings.md](docs/guides/mcp-mappings.md) walks from an example to
+a working mapping.
+
+**Not verified live:** the Snowflake connector and both MCP examples have been tested only
+against local fakes, never against a real Snowflake account or a real Databricks or Snowflake
+MCP server.
+
 ### Semantic tools
 
 The semantic read path serves the business vocabulary kept in OpenMetadata (one glossary is one

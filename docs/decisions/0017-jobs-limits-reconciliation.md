@@ -174,7 +174,7 @@ hard-deleted in teardown, never sealed). An OM upgrade that changes any of this 
   not seen; a proposal stopped part-way (`apply_failed`) keeps its model skipped until it is
   approved again or rejected; changes of a rejected, partly applied proposal are reported as
   direct edits. Reconciliation also assumes OM never exposes a half-applied change set in an
-  export; that is not verified and is listed for the M4b probe.
+  export; the M4b probe confirmed it on OM 2.1.0-rc1 (ADR 0018, § R4 probe).
 - Reconciliation reads OM only through endpoints Lakeloom already uses (the glossary and native
   exports, `get_change_set`); it adds no OM endpoint.
 

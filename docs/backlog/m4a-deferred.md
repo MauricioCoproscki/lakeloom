@@ -25,8 +25,9 @@ limits: [ADR 0017](../decisions/0017-jobs-limits-reconciliation.md).
   bounded as one budget.
 
 ## Reconciliation
-- Reconciliation assumes OpenMetadata never exposes a half-applied change set in an export
-  (ADR 0017 R4). Not verified; listed for the M4b probe.
+- ~~Reconciliation assumes OpenMetadata never exposes a half-applied change set in an export
+  (ADR 0017 R4). Not verified; listed for the M4b probe.~~ Verified on OM 2.1.0-rc1 by the M4b
+  probe: no partial export seen ([ADR 0018](../decisions/0018-connectors.md)).
 - A reconcile commit's body lists the check-time diff, but its exports are re-read at commit
   time, so the body can lag an edit made between the check and the commit.
 - A proposal stuck in `apply_failed` is reported as "publication in flight". A distinct reason
