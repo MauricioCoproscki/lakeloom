@@ -100,3 +100,28 @@ def test_fr_src_06_missing_delta_extra_shows_install_hint(monkeypatch: pytest.Mo
         build_sources(cfg, Settings())
     assert "needs the 'deltalake' package" in str(info.value)
     assert "pip install 'lakeloom[delta]'" in str(info.value)
+
+
+def test_snowflake_missing_extra_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    from lakeloom.sources.config import SnowflakeAuth, SnowflakeSourceConfig
+
+    real = importlib.util.find_spec
+
+    def no_snowflake(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "snowflake.connector" or name == "snowflake":
+            return None
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", no_snowflake)
+    source = SnowflakeSourceConfig(
+        type="snowflake",
+        name="s",
+        account="a",
+        user="u",
+        auth=SnowflakeAuth(password_env="P"),  # noqa: S106 (a variable name)
+    )
+    with pytest.raises(ConfigError) as info:
+        build_sources(SourcesConfig(sources=[source]), Settings())
+    assert "pip install 'lakeloom[snowflake]'" in str(info.value)

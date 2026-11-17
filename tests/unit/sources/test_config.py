@@ -8,6 +8,7 @@ from lakeloom.sources.config import (
     DeltaSourceConfig,
     McpSourceConfig,
     PluginSourceConfig,
+    SnowflakeSourceConfig,
     UnityCatalogSourceConfig,
     load_sources_config,
 )
@@ -131,3 +132,63 @@ def test_fr_src_01_compose_sources_config_is_valid() -> None:
     assert [(t.uri, t.catalog, t.schema_) for t in scratch.tables] == [
         ("file:///scratch-lake/orders_drift", "retail", "drift")
     ]
+
+
+SNOWFLAKE_YAML = """
+sources:
+  - type: snowflake
+    name: sf_prod
+    account: myorg-myaccount
+    user: LAKELOOM_SVC
+    role: LAKELOOM_READER
+    warehouse: LAKELOOM_WH
+    databases: [SALES, MARKETING]
+    auth:
+      private_key_file: keys/sf_key.p8
+      private_key_passphrase_env: SF_KEY_PASS
+    profiling: false
+    query_timeout_seconds: 60
+    om_service: snowflake_prod
+"""
+
+
+def test_snowflake_config_parses_and_resolves_key_file(tmp_path: Path) -> None:
+    path = tmp_path / "sources.yaml"
+    path.write_text(SNOWFLAKE_YAML)
+    (source,) = load_sources_config(path).sources
+    assert isinstance(source, SnowflakeSourceConfig)
+    assert source.account == "myorg-myaccount"
+    assert source.databases == ["SALES", "MARKETING"]
+    assert source.auth.private_key_file == tmp_path / "keys" / "sf_key.p8"
+    assert source.auth.private_key_passphrase_env == "SF_KEY_PASS"  # noqa: S105 (a variable name)
+    assert source.om_service == "snowflake_prod"
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {},
+        {"password_env": "A", "token_env": "B"},
+        {"private_key_file": "/k.p8", "password_env": "A"},
+        {"password_env": "A", "private_key_passphrase_env": "P"},
+    ],
+)
+def test_snowflake_auth_needs_exactly_one_method(tmp_path: Path, auth: dict[str, str]) -> None:
+    import yaml
+
+    path = tmp_path / "sources.yaml"
+    source = {"type": "snowflake", "name": "s", "account": "a", "user": "u", "auth": auth}
+    raw = {"sources": [source]}
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="auth"):
+        load_sources_config(path)
+
+
+def test_snowflake_profiling_needs_warehouse(tmp_path: Path) -> None:
+    path = tmp_path / "sources.yaml"
+    path.write_text(
+        "sources:\n  - type: snowflake\n    name: s\n    account: a\n    user: u\n"
+        "    auth: {password_env: P}\n    profiling: true\n"
+    )
+    with pytest.raises(ConfigError, match="warehouse"):
+        load_sources_config(path)

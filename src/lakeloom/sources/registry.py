@@ -19,6 +19,7 @@ _BUILTIN_MODULES = {
     "delta": "lakeloom.sources.delta_storage",
     "unity_catalog": "lakeloom.sources.unity_catalog",
     "mcp": "lakeloom.sources.mcp_adapter",
+    "snowflake": "lakeloom.sources.snowflake",
 }
 
 

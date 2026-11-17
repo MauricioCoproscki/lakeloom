@@ -27,13 +27,15 @@ __all__ = [
     "DeltaTableEntry",
     "McpSourceConfig",
     "PluginSourceConfig",
+    "SnowflakeAuth",
+    "SnowflakeSourceConfig",
     "SourceConfig",
     "SourcesConfig",
     "UnityCatalogSourceConfig",
     "load_sources_config",
 ]
 
-_BUILTIN_TYPES = ("delta", "unity_catalog", "mcp")
+_BUILTIN_TYPES = ("delta", "unity_catalog", "mcp", "snowflake")
 
 
 class _Base(BaseModel):
@@ -112,6 +114,54 @@ class McpSourceConfig(_Base):
         return self
 
 
+class SnowflakeAuth(_Base):
+    """Exactly one method: key-pair (recommended), password, or an OAuth access token.
+
+    Secrets are referenced by environment-variable *name* or file path, never inlined.
+    """
+
+    private_key_file: Path | None = None
+    private_key_passphrase_env: str | None = None
+    password_env: str | None = None
+    token_env: str | None = None  # OAuth access token
+
+    @model_validator(mode="after")
+    def _one_method(self) -> "SnowflakeAuth":
+        methods = [self.private_key_file, self.password_env, self.token_env]
+        if sum(m is not None for m in methods) != 1:
+            raise ValueError(
+                "auth needs exactly one of private_key_file, password_env and token_env"
+            )
+        if self.private_key_passphrase_env is not None and self.private_key_file is None:
+            raise ValueError("auth: private_key_passphrase_env needs private_key_file")
+        return self
+
+
+class SnowflakeSourceConfig(_Base):
+    """A Snowflake account read through ``INFORMATION_SCHEMA`` (FR-SRC-04).
+
+    A database is a catalog. ``profiling`` is opt-in because it runs warehouse queries.
+    """
+
+    type: Literal["snowflake"]
+    name: str
+    account: str
+    user: str
+    role: str | None = None
+    warehouse: str | None = None
+    databases: list[str] | None = None
+    auth: SnowflakeAuth
+    profiling: bool = False
+    query_timeout_seconds: int = Field(default=60, ge=1, le=3600)
+    om_service: str | None = None
+
+    @model_validator(mode="after")
+    def _profiling_needs_warehouse(self) -> "SnowflakeSourceConfig":
+        if self.profiling and not self.warehouse:
+            raise ValueError("profiling: true needs a warehouse")
+        return self
+
+
 class PluginSourceConfig(BaseModel):
     """Any other ``type``: resolved through the ``lakeloom.sources`` entry-point group."""
 
@@ -131,6 +181,7 @@ SourceConfig = Annotated[
     Annotated[DeltaSourceConfig, Tag("delta")]
     | Annotated[UnityCatalogSourceConfig, Tag("unity_catalog")]
     | Annotated[McpSourceConfig, Tag("mcp")]
+    | Annotated[SnowflakeSourceConfig, Tag("snowflake")]
     | Annotated[PluginSourceConfig, Tag("plugin")],
     Discriminator(_tag),
 ]
@@ -184,7 +235,7 @@ def load_sources_config(path: Path | None) -> SourcesConfig:
 
 
 def _resolve_relative(config: SourcesConfig, base: Path) -> SourcesConfig:
-    """Resolve relative MCP ``mapping`` / ``token_file`` paths against ``base``."""
+    """Resolve relative MCP ``mapping``/``token_file`` and Snowflake key paths against ``base``."""
     resolved: list[SourceConfig] = []
     for source in config.sources:
         if isinstance(source, McpSourceConfig):
@@ -194,5 +245,10 @@ def _resolve_relative(config: SourcesConfig, base: Path) -> SourcesConfig:
             if source.token_file is not None and not source.token_file.is_absolute():
                 update["token_file"] = base / source.token_file
             source = source.model_copy(update=update)
+        elif isinstance(source, SnowflakeSourceConfig):
+            key = source.auth.private_key_file
+            if key is not None and not key.is_absolute():
+                auth = source.auth.model_copy(update={"private_key_file": base / key})
+                source = source.model_copy(update={"auth": auth})
         resolved.append(source)
     return config.model_copy(update={"sources": resolved})
