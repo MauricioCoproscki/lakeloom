@@ -2,7 +2,9 @@
 
 ``lakeloom serve`` runs the HTTP app (health, metrics and the MCP endpoint at ``/mcp``).
 ``lakeloom sources``, ``lakeloom tables SOURCE`` and ``lakeloom scan SOURCE`` use the
-sources in ``LAKELOOM_CONFIG_FILE`` directly, as the operator (FR-AGT-07, FR-SRC-10).
+sources in ``LAKELOOM_CONFIG_FILE`` directly, as the operator (FR-AGT-07, FR-SRC-10);
+``lakeloom sources check NAME [--call] [--tools]`` checks an MCP mapping against the
+upstream's ``tools/list`` (FR-SRC-05).
 Configuration errors are printed to stderr and exit with code 2, without a traceback;
 ``lakeloom models``, ``concept``, ``context``, ``export`` and ``validate`` read the semantic
 models in OpenMetadata (FR-CTX-01..04, FR-IO-01). ``lakeloom propose SCAN_ID --model M``,
@@ -28,6 +30,7 @@ There is no review command: approving and rejecting are for human reviewers thro
 
 import asyncio
 import getpass
+import json
 import sys
 from collections.abc import AsyncGenerator, Coroutine
 from contextlib import asynccontextmanager
@@ -59,6 +62,7 @@ if TYPE_CHECKING:
     from lakeloom.om.client import OMClient
     from lakeloom.rdf.canonical import InputFormat
     from lakeloom.sources.base import LakeSource
+    from lakeloom.sources.mcp_check import CheckReport
     from lakeloom.state.leases import LeaseRepository
     from lakeloom.state.publications import Publication, PublicationRepository
 
@@ -219,9 +223,18 @@ def _operator() -> str:
         return "operator"
 
 
-@app.command("sources")
-def sources_cmd() -> None:
+sources_app = typer.Typer(
+    help="List the configured lake sources, or check one (sources check NAME).",
+    invoke_without_command=True,
+)
+app.add_typer(sources_app, name="sources")
+
+
+@sources_app.callback()
+def sources_cmd(ctx: typer.Context) -> None:
     """List the configured lake sources with kind and availability."""
+    if ctx.invoked_subcommand is not None:
+        return
     from lakeloom.core.sources import source_status
 
     settings = _cli_settings()
@@ -238,6 +251,88 @@ def sources_cmd() -> None:
                 typer.echo(f"{single_line(name)}\t{single_line(status.kind)}\t{state}")
 
     _run(_go())
+
+
+def _check_text(report: "CheckReport") -> str:
+    lines: list[str] = []
+    if report.error is not None:
+        lines.append(f"error\t{single_line(report.error)}")
+    for op in report.operations:
+        problems = "; ".join(op.problems)
+        lines.append(
+            f"{op.operation}\t{single_line(op.tool)}\t{op.status}\t{single_line(problems)}"
+        )
+    for call in report.calls:
+        lines.append(f"call\t{call.operation}\t{call.status}\t{single_line(call.detail or '')}")
+    for tool in report.tools:
+        schema = json.dumps(tool.input_schema, sort_keys=True)
+        description = single_line(tool.description or "")
+        lines.append(f"tool\t{single_line(tool.name)}\t{description}\t{single_line(schema)}")
+    lines.append(f"result\t{'ok' if report.ok else 'not ok'}")
+    return "\n".join(lines) + "\n"
+
+
+@sources_app.command("check")
+def sources_check_cmd(
+    name: Annotated[str, typer.Argument(help="Configured source name.")],
+    call: Annotated[
+        bool, typer.Option("--call", help="Also run the read operations once.")
+    ] = False,
+    tools: Annotated[
+        bool, typer.Option("--tools", help="List the upstream tools and input schemas.")
+    ] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+) -> None:
+    """Check a source; for an MCP source, its mapping against the server's tools/list.
+
+    Exit code 0: every mapped operation is ok; 3: something is not; 1: an error."""
+    from lakeloom.core.sources import get_source, source_status
+    from lakeloom.server.http_app import load_config
+    from lakeloom.sources.config import McpSourceConfig
+    from lakeloom.sources.mcp_check import CallCheck, CheckReport, check_mcp_source
+    from lakeloom.sources.mcp_mapping import load_mapping
+
+    settings = _cli_settings()
+    reports: list[CheckReport] = []
+
+    async def _go() -> None:
+        configured = {s.name: s for s in load_config(settings).sources}
+        config = configured.get(name)
+        if isinstance(config, McpSourceConfig):
+            reports.append(
+                await check_mcp_source(
+                    config, load_mapping(config.mapping), call=call, include_tools=tools
+                )
+            )
+            return
+        async with _open_sources(settings) as sources:
+            src = get_source(sources, name)
+            status = source_status(name, src)
+            report = CheckReport(source=name, kind=status.kind, connected=status.error is None)
+            if status.error is not None:
+                report.error = f"{status.error.code}: {status.error.hint}"
+            elif call:
+                try:
+                    catalogs = await src.list_catalogs()
+                    detail = f"{len(catalogs)} catalogs"
+                    report.calls = [
+                        CallCheck(operation="list_catalogs", status="ok", detail=detail)
+                    ]
+                except LakeloomError as exc:
+                    detail = f"{exc.code}: {exc.message} (hint: {exc.hint})"
+                    report.calls = [
+                        CallCheck(operation="list_catalogs", status="error", detail=detail)
+                    ]
+            reports.append(report)
+
+    _run(_go())
+    (report,) = reports
+    if as_json:
+        typer.echo(report.model_dump_json(indent=2))
+    else:
+        typer.echo(_check_text(report), nl=False)
+    if not report.ok:
+        raise typer.Exit(code=3)
 
 
 @app.command("tables")

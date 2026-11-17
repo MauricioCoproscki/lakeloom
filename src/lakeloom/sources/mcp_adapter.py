@@ -381,6 +381,30 @@ class McpUpstreamSource:
             self.available = False
             self.last_error = _unavailable(f"upstream MCP source '{self.name}' disconnected")
 
+    async def list_upstream_tools(self) -> dict[str, Tool]:
+        """Connect once, return every tool of ``tools/list`` and disconnect (``sources check``).
+
+        The mapping is not checked here and the source's own session is not touched.
+        """
+        token = self._token()
+
+        async def fetch() -> dict[str, Tool]:
+            async with AsyncExitStack() as stack:
+                _session, tools = await self._connect(stack, token)
+                return tools
+
+        try:
+            return await asyncio.wait_for(fetch(), timeout=self._connect_timeout)
+        except TimeoutError:
+            raise _unavailable(
+                f"connecting to upstream MCP source '{self.name}' timed out after "
+                f"{self._connect_timeout:g} s"
+            ) from None
+        except Exception as exc:
+            raise _unavailable(
+                f"cannot connect to upstream MCP source '{self.name}' ({_kind(exc)})"
+            ) from None
+
     async def start(self) -> None:
         """Connect, run ``tools/list`` and check every mapped tool; never raises.
 

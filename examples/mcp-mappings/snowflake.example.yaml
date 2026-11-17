@@ -1,4 +1,5 @@
 # EXAMPLE TO VERIFY — tool names are placeholders; run tools/list against your server and edit
+# See docs/guides/mcp-mappings.md and run: lakeloom sources check <name> --tools
 #
 # Upstream MCP mapping skeleton for a Snowflake MCP server (FR-SRC-05). Nothing here has been
 # tested against a live server: replace every `<tool-from-tools/list>` with a tool name your

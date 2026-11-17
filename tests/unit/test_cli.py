@@ -1052,3 +1052,10 @@ def test_cli_reconcile_reads_baselines_from_its_own_clone(tmp_path: Path) -> Non
     wc, key = asyncio.run(go())
     assert wc.path == tmp_path / "git" / "cli-repo"
     assert key == hashlib.sha256(remote.encode()).hexdigest()
+
+
+def test_cli_sources_bare_still_lists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _sources_env(monkeypatch, tmp_path)
+    result = CliRunner().invoke(app, ["sources"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "lake\tdelta\tavailable\n"
