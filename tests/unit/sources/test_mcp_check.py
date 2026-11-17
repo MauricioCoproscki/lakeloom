@@ -264,7 +264,7 @@ def test_cli_sources_check_exit_codes(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert "describe_table\tfake_describe_table\tok" in ok.output
     as_json = runner.invoke(app, ["sources", "check", "up", "--call", "--json"])
     assert as_json.exit_code == 0, as_json.output
-    report = CheckReport.model_validate_json(as_json.output)
+    report = CheckReport.model_validate_json(as_json.stdout)
     assert report.ok and len(report.calls) == 4
 
     _mcp_env(monkeypatch, tmp_path, filled=False)
@@ -294,4 +294,4 @@ def test_check_never_prints_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     result = CliRunner().invoke(app, ["sources", "check", "up", "--call", "--tools", "--json"])
     assert result.exit_code == 0, result.output
     assert "tok-xyz" in tokens  # the token reached the upstream
-    assert "tok-xyz" not in result.output
+    assert "tok-xyz" not in result.output + result.stderr

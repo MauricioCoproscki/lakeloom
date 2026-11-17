@@ -14,7 +14,7 @@ import yaml
 from mcp import ClientSession
 from mcp.client._memory import InMemoryTransport  # pyright: ignore[reportPrivateUsage]
 from mcp.server.mcpserver import MCPServer
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from lakeloom.sources.config import McpSourceConfig
 from lakeloom.sources.mcp_mapping import McpMapping, load_mapping
@@ -172,8 +172,9 @@ class ToolsFake:
 
     def __init__(self, tools: dict[str, Callable[..., Any]]) -> None:
         self.server = MCPServer("fake-tools")
+        read_only = ToolAnnotations(read_only_hint=True)
         for name, fn in tools.items():
-            self.server.add_tool(fn, name=name)
+            self.server.add_tool(fn, name=name, annotations=read_only)
 
 
 def tools_factory(
