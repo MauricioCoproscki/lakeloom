@@ -34,15 +34,26 @@ from lakeloom.sources.base import ProfilePolicy, SourceCapabilities
 from lakeloom.sources.config import SnowflakeSourceConfig
 from lakeloom.sources.models import (
     ColumnInfo,
+    ColumnProfile,
     Constraint,
     TableDescription,
     TableProfile,
     TableRef,
     TableVersion,
 )
+from lakeloom.sources.privacy import (
+    ValueKind,
+    allow_counts,
+    allow_minmax,
+    is_sensitive,
+    rank_top_k,
+    render,
+    truncate,
+    withheld_reason,
+)
 from lakeloom.untrusted import UntrustedText
 
-__all__ = ["Connect", "SnowflakeSource", "build_source", "quote_ident"]
+__all__ = ["Connect", "SnowflakeSource", "build_source", "quote_ident", "snowflake_kind"]
 
 _log = logging.getLogger(__name__)
 
@@ -56,6 +67,24 @@ _HINT = "check that the Snowflake account is reachable and the source settings a
 def quote_ident(name: str) -> str:
     """A Snowflake quoted identifier: case kept, ``"`` doubled."""
     return '"' + name.replace('"', '""') + '"'
+
+
+_NUMBER = ("NUMBER", "DECIMAL", "NUMERIC", "INT", "BIGINT", "SMALLINT", "TINYINT", "BYTEINT")
+_FLOAT = ("FLOAT", "DOUBLE", "REAL")
+
+
+def snowflake_kind(data_type: str) -> ValueKind:
+    """The profiling kind of a Snowflake type; semi-structured and binary types are ``other``."""
+    base = data_type.upper().split("(", 1)[0].strip()
+    if base in _NUMBER or base.startswith(_FLOAT):
+        return "number"
+    if base in ("DATE", "TIME") or base.startswith("TIMESTAMP") or base == "DATETIME":
+        return "temporal"
+    if base in ("TEXT", "VARCHAR", "CHAR", "CHARACTER", "STRING", "NCHAR", "NVARCHAR"):
+        return "string"
+    if base == "BOOLEAN":
+        return "boolean"
+    return "other"
 
 
 def _require_connector() -> None:
@@ -108,7 +137,9 @@ def _data_type(row: dict[str, Any]) -> str:
 
 def _tag(row: dict[str, Any]) -> str:
     value = row.get("TAG_VALUE")
-    return f"{row['TAG_NAME']}={value}" if value else str(row["TAG_NAME"])
+    # NAME.VALUE, as OpenMetadata maps a Snowflake tag to Classification.Tag; so the default
+    # sensitive_tags glob ``PII.*`` matches a ``PII`` tag whatever its value.
+    return f"{row['TAG_NAME']}.{value}" if value else str(row["TAG_NAME"])
 
 
 class SnowflakeSource:
@@ -402,13 +433,77 @@ class SnowflakeSource:
         return TableVersion(committed_at=_utc(table.get("LAST_ALTERED")))
 
     async def profile_table(self, ref: TableRef, policy: ProfilePolicy) -> TableProfile:
+        """Aggregates computed in the warehouse, under the shared privacy rules (FR-SRC-09).
+
+        One aggregate statement gives the row count, null counts and the allowed min/max; a
+        bounded ``DISTINCT`` subquery per countable column caps the distinct count at
+        ``low_cardinality + 1``; values are grouped only for top-k, which needs samples on.
+        """
         if not self._config.profiling:
             raise LakeloomError(
                 "validation_error",
                 f"profiling is disabled for Snowflake source {self.name!r}",
                 hint="set profiling: true on the source (it runs warehouse queries)",
             )
-        raise NotImplementedError
+        description = await self.describe_table(ref)
+        fq, what = self._fq(ref), f"table {ref.full_name}"
+        cap = policy.low_cardinality + 1
+        plans: list[tuple[ColumnInfo, ValueKind, bool, bool]] = []
+        select = ['COUNT(*) AS "N"']
+        for i, column in enumerate(description.columns):
+            kind = snowflake_kind(column.data_type)
+            sensitive = is_sensitive(column.tags, policy.sensitive_tags)
+            minmax = allow_minmax(kind, sensitive=sensitive, policy=policy)
+            name = quote_ident(column.name)
+            select.append(f'COUNT_IF({name} IS NULL) AS "N{i}"')
+            if minmax:
+                select += [f'MIN({name}) AS "LO{i}"', f'MAX({name}) AS "HI{i}"']
+            plans.append((column, kind, sensitive, minmax))
+        (totals,) = await self._query(f"SELECT {', '.join(select)} FROM {fq}", what=what)
+        rows_total = int(totals["N"] or 0)
+        out: list[ColumnProfile] = []
+        for i, (column, kind, sensitive, minmax) in enumerate(plans):
+            name = quote_ident(column.name)
+            distinct: int | None = None
+            if allow_counts(kind):
+                (found,) = await self._query(
+                    f'SELECT COUNT(*) AS "D" FROM (SELECT DISTINCT {name} FROM {fq} '
+                    f"WHERE {name} IS NOT NULL LIMIT %s)",
+                    (cap + 1,),
+                    what=what,
+                )
+                count = int(found["D"] or 0)
+                distinct = count if count <= cap else None
+            withheld = withheld_reason(sensitive=sensitive, policy=policy)
+            top_k: list[tuple[str, int]] | None = None
+            if withheld is None and distinct is not None:
+                groups = await self._query(
+                    f'SELECT {name} AS "V", COUNT(*) AS "N" FROM {fq} '
+                    f"WHERE {name} IS NOT NULL GROUP BY 1",
+                    what=what,
+                )
+                top_k = rank_top_k({g["V"]: int(g["N"]) for g in groups}, policy)
+            lo = hi = None
+            if minmax:
+                lo, hi = totals.get(f"LO{i}"), totals.get(f"HI{i}")
+                lo = render(lo) if lo is not None else None
+                hi = render(hi) if hi is not None else None
+                if kind == "string":
+                    lo = truncate(lo, policy.value_max_length) if lo is not None else None
+                    hi = truncate(hi, policy.value_max_length) if hi is not None else None
+            nulls = int(totals.get(f"N{i}") or 0)
+            out.append(
+                ColumnProfile(
+                    name=column.name,
+                    null_rate=nulls / rows_total if rows_total else None,
+                    distinct_count=distinct,
+                    min=lo,
+                    max=hi,
+                    top_k=top_k,
+                    values_withheld=withheld,
+                )
+            )
+        return TableProfile(ref=ref, row_count=rows_total, columns=out)
 
     async def aclose(self) -> None:
         async with self._lock:

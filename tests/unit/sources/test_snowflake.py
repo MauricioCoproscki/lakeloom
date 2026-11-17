@@ -6,7 +6,7 @@ live Snowflake account.
 
 import logging
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,14 +17,23 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from lakeloom.config import Settings
 from lakeloom.core.scans import ScanService
 from lakeloom.errors import LakeloomError
+from lakeloom.sources.base import ProfilePolicy
 from lakeloom.sources.config import SnowflakeAuth, SnowflakeSourceConfig
 from lakeloom.sources.models import Constraint, TableRef
-from lakeloom.sources.snowflake import SnowflakeSource, quote_ident
+from lakeloom.sources.snowflake import SnowflakeSource, quote_ident, snowflake_kind
 from lakeloom.state.db import create_engine, upgrade
 from lakeloom.state.scans import ScanRepository
 from lakeloom.untrusted import UntrustedText
 
-from .fake_snowflake import INJECTION, Connector, FakeConnection, Responder, account, rows
+from .fake_snowflake import (
+    INJECTION,
+    Connector,
+    FakeConnection,
+    Responder,
+    account,
+    profile_responders,
+    rows,
+)
 
 ORDERS = TableRef(catalog="SALES", schema="PUBLIC", name="ORDERS")
 
@@ -122,7 +131,7 @@ async def test_fr_src_04_tags_table_and_column() -> None:
     desc = await src.describe_table(ORDERS)
     assert desc.tags == ["TIER"]
     email = next(c for c in desc.columns if c.name == "EMAIL")
-    assert email.tags == ["PII=EMAIL"]
+    assert email.tags == ["PII.EMAIL"]
 
     responders = account()
     denied = ProgrammingError(msg="Insufficient privileges", errno=3001)
@@ -288,3 +297,157 @@ async def test_snowflake_scan_end_to_end(repo: ScanRepository) -> None:
     )
     assert record.status == "completed", record.warnings
     assert sorted(t.ref.name for t in record.tables) == ["CUSTOMERS", "ORDERS"]
+
+
+def profiling_source(
+    data: dict[str, list[Any]], columns: list[dict[str, Any]] | None = None
+) -> tuple[SnowflakeSource, FakeConnection]:
+    responders = profile_responders(data) + account()
+    if columns is not None:
+        responders.insert(0, (r"INFORMATION_SCHEMA\.COLUMNS", rows(*columns)))
+    return source(responders, profiling=True)
+
+
+ORDERS_DATA: dict[str, list[Any]] = {
+    "ORDER_ID": [1, 2, 3, 3],
+    "CUSTOMER_ID": [10, None, 10, 11],
+    "EMAIL": ["a@x.io", "b@x.io", None, "a@x.io"],
+    "ORDER_DATE": [date(2026, 1, 1), date(2026, 3, 1), None, None],
+}
+
+
+def profile_policy(**overrides: Any) -> ProfilePolicy:
+    values: dict[str, Any] = {
+        "samples": False,
+        "sensitive_tags": ["PII.*"],
+        "top_k": 2,
+        "low_cardinality": 50,
+        "value_max_length": 4,
+    }
+    values.update(overrides)
+    return ProfilePolicy(**values)
+
+
+async def test_fr_src_09_snowflake_profile_privacy() -> None:
+    src, conn = profiling_source(ORDERS_DATA)
+    profile = await src.profile_table(ORDERS, profile_policy())
+    assert profile.row_count == 4
+    by_name = {c.name: c for c in profile.columns}
+    email = by_name["EMAIL"]  # tagged PII.EMAIL: sensitive under the default PII.* glob
+    assert (email.min, email.max, email.top_k) == (None, None, None)
+    assert email.values_withheld == "sensitive"
+    assert email.null_rate == 0.25 and email.distinct_count == 2
+    order_id = by_name["ORDER_ID"]
+    assert (order_id.min, order_id.max) == ("1", "3")
+    assert order_id.top_k is None and order_id.values_withheld == "samples_disabled"
+    assert order_id.distinct_count == 3
+    assert by_name["CUSTOMER_ID"].null_rate == 0.25
+    assert (by_name["ORDER_DATE"].min, by_name["ORDER_DATE"].max) == ("2026-01-01", "2026-03-01")
+    sql = " ".join(text for text, _ in conn.statements)
+    assert 'MIN("EMAIL")' not in sql and 'MAX("EMAIL")' not in sql
+    assert "GROUP BY" not in sql  # no top-k without samples
+
+    src, conn = profiling_source(ORDERS_DATA)
+    profile = await src.profile_table(ORDERS, profile_policy(samples=True))
+    by_name = {c.name: c for c in profile.columns}
+    assert by_name["ORDER_ID"].top_k == [("3", 2), ("1", 1)]
+    assert by_name["ORDER_ID"].values_withheld is None
+    assert by_name["EMAIL"].top_k is None and by_name["EMAIL"].min is None
+    grouped = [text for text, _ in conn.statements if "GROUP BY" in text]
+    assert not any('"EMAIL"' in text for text in grouped)
+
+
+async def test_snowflake_profile_truncates_string_values() -> None:
+    data = {**ORDERS_DATA, "EMAIL": ["long-value", "zz", None, "long-value"]}
+    columns = [
+        {
+            "COLUMN_NAME": "NOTE",
+            "DATA_TYPE": "TEXT",
+            "IS_NULLABLE": "YES",
+            "COMMENT": None,
+            "ORDINAL_POSITION": 1,
+            "NUMERIC_PRECISION": None,
+            "NUMERIC_SCALE": None,
+        }
+    ]
+    src, _ = profiling_source({"NOTE": data["EMAIL"]}, columns)
+    profile = await src.profile_table(ORDERS, profile_policy(samples=True))
+    (note,) = profile.columns
+    assert (note.min, note.max) == ("long…", "zz")
+    assert note.top_k == [("long…", 2), ("zz", 1)]
+
+
+async def test_snowflake_profile_high_cardinality() -> None:
+    data = {"ORDER_ID": list(range(10))}
+    columns = [
+        {
+            "COLUMN_NAME": "ORDER_ID",
+            "DATA_TYPE": "NUMBER",
+            "IS_NULLABLE": "NO",
+            "COMMENT": None,
+            "ORDINAL_POSITION": 1,
+            "NUMERIC_PRECISION": 38,
+            "NUMERIC_SCALE": 0,
+        }
+    ]
+    src, conn = profiling_source(data, columns)
+    profile = await src.profile_table(ORDERS, profile_policy(samples=True, low_cardinality=2))
+    (order_id,) = profile.columns
+    assert order_id.distinct_count is None and order_id.top_k is None
+    limits = [p for text, p in conn.statements if "SELECT DISTINCT" in text]
+    assert limits == [(4,)]  # cap = low_cardinality + 1, asked for cap + 1
+
+
+async def test_snowflake_profile_empty_table_and_variant() -> None:
+    columns = [
+        {
+            "COLUMN_NAME": name,
+            "DATA_TYPE": kind,
+            "IS_NULLABLE": "YES",
+            "COMMENT": None,
+            "ORDINAL_POSITION": i,
+            "NUMERIC_PRECISION": None,
+            "NUMERIC_SCALE": None,
+        }
+        for i, (name, kind) in enumerate([("AMOUNT", "FLOAT"), ("PAYLOAD", "VARIANT")], 1)
+    ]
+    src, conn = profiling_source({"AMOUNT": [], "PAYLOAD": []}, columns)
+    profile = await src.profile_table(ORDERS, profile_policy(samples=True))
+    assert profile.row_count == 0
+    amount, payload = profile.columns
+    assert amount.null_rate is None and amount.distinct_count == 0 and amount.top_k == []
+    assert (payload.min, payload.max, payload.distinct_count, payload.top_k) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    sql = " ".join(text for text, _ in conn.statements)
+    assert 'MIN("PAYLOAD")' not in sql and 'DISTINCT "PAYLOAD"' not in sql
+
+
+async def test_snowflake_profiling_disabled_is_validation_error() -> None:
+    src, _ = source()
+    with pytest.raises(LakeloomError) as info:
+        await src.profile_table(ORDERS, profile_policy())
+    assert info.value.code == "validation_error"
+    assert "profiling: true" in (info.value.hint or "")
+    assert src.capabilities.profiling is False
+
+
+@pytest.mark.parametrize(
+    ("data_type", "kind"),
+    [
+        ("NUMBER(38,0)", "number"),
+        ("FLOAT", "number"),
+        ("DATE", "temporal"),
+        ("TIMESTAMP_NTZ", "temporal"),
+        ("TIME", "temporal"),
+        ("TEXT", "string"),
+        ("BOOLEAN", "boolean"),
+        ("VARIANT", "other"),
+        ("BINARY", "other"),
+    ],
+)
+def test_snowflake_kind(data_type: str, kind: str) -> None:
+    assert snowflake_kind(data_type) == kind

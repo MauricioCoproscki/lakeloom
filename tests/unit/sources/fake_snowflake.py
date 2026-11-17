@@ -173,3 +173,36 @@ def account() -> list[tuple[str, Responder]]:
         (r"^SHOW IMPORTED KEYS IN TABLE", imported_keys),
         (r"TAG_REFERENCES_ALL_COLUMNS", tags),
     ]
+
+
+def profile_responders(data: dict[str, list[Any]]) -> list[tuple[str, Responder]]:
+    """Answer the profiler's aggregate, distinct and group-by statements from column data."""
+
+    def aggregate(sql: str, _params: tuple[Any, ...]) -> Rows:
+        n = len(next(iter(data.values()), []))
+        row: dict[str, Any] = {"N": n}
+        for column, alias in re.findall(r'COUNT_IF\("(\w+)" IS NULL\) AS "(N\d+)"', sql):
+            row[alias] = sum(v is None for v in data[column])
+        for fn, column, alias in re.findall(r'(MIN|MAX)\("(\w+)"\) AS "((?:LO|HI)\d+)"', sql):
+            present = [v for v in data[column] if v is not None]
+            row[alias] = (min if fn == "MIN" else max)(present) if present else None
+        return [row]
+
+    def distinct(sql: str, params: tuple[Any, ...]) -> Rows:
+        (column,) = re.findall(r'SELECT DISTINCT "(\w+)"', sql)
+        values = {v for v in data[column] if v is not None}
+        return [{"D": min(len(values), int(params[0]))}]
+
+    def groups(sql: str, _params: tuple[Any, ...]) -> Rows:
+        (column,) = re.findall(r'^SELECT "(\w+)" AS "V"', sql)
+        counts: dict[Any, int] = {}
+        for value in data[column]:
+            if value is not None:
+                counts[value] = counts.get(value, 0) + 1
+        return [{"V": v, "N": c} for v, c in counts.items()]
+
+    return [
+        (r'^SELECT COUNT\(\*\) AS "N"', aggregate),
+        (r"SELECT DISTINCT", distinct),
+        (r"GROUP BY", groups),
+    ]
