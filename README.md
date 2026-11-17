@@ -264,8 +264,10 @@ Grant the role:
 - `REFERENCES` (or ownership) on the tables, so `SHOW PRIMARY/IMPORTED KEYS` can see their keys;
 - with profiling, also `USAGE` on the warehouse and `SELECT` on the tables.
 
-Tags are read when the role may read tag references. Otherwise tables come back without tags.
-A Snowflake tag shows as `NAME.VALUE`, so the default sensitive glob `PII.*` covers a `PII` tag.
+Tags are read when the role may read tag references. Otherwise a describe has no tags, and a
+profile treats every column as sensitive (no values shown). A Snowflake tag shows as
+`NAME.VALUE`, and a tag set on a table or schema also marks the columns it applies to, so the
+default sensitive glob `PII.*` covers a `PII` tag wherever it is set.
 
 For **Databricks-hosted Unity Catalog**, `auth: databricks` (with an optional `profile` from
 `~/.databrickscfg`) takes the headers from `databricks-sdk`. That gives service-principal

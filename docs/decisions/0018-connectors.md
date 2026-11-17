@@ -30,27 +30,41 @@ placeholders (owner decision).
   - `token_env` (OAuth access token, `authenticator=oauth`).
 
   Secrets are read from the environment when the connection opens. Every session sets
-  `QUERY_TAG=lakeloom` and `STATEMENT_TIMEOUT_IN_SECONDS` (`query_timeout_seconds`, default 60),
-  and the same value is used for the login and network timeouts.
+  `QUERY_TAG=lakeloom` and `STATEMENT_TIMEOUT_IN_SECONDS` (`query_timeout_seconds`, default 60).
+  The same value bounds login and HTTP requests (`login_timeout`, `request_timeout`). No
+  client-side `query_timeout` is set, so a slow statement is never cut short on the client and
+  then retried. `client_session_keep_alive` is on. The 5.x parameter names are used:
+  `private_key_password`, not the deprecated `private_key_file_pwd`.
 - **Reads:**
   - `SHOW TERSE DATABASES`, filtered by the `databases` allow-list;
   - `<db>.INFORMATION_SCHEMA.SCHEMATA`, `TABLES` (`BASE TABLE` and `VIEW`) and `COLUMNS`;
   - `SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS IN TABLE`, grouped by constraint name and
-    ordered by `key_sequence`. Snowflake has no `KEY_COLUMN_USAGE`.
+    ordered by `key_sequence`. Snowflake has no `KEY_COLUMN_USAGE`. Views are not asked: they
+    have no keys.
   - The table's version is `committed_at = LAST_ALTERED`, with no version number. The owner is
     `TABLE_OWNER`. The properties are `table_type` and `clustering_key`. `NUMBER` columns carry
     precision and scale (`NUMBER(38,0)`). Names keep the case Snowflake reports.
 - **Tags.** One table function, `TAG_REFERENCES_ALL_COLUMNS(<table>, 'table')`, returns both
-  levels: rows with `LEVEL = 'COLUMN'` are column tags, and every other row is a table tag.
+  levels. A row naming a column is a tag of that column, including tags inherited from the
+  table, schema or database, which Snowflake reports per column. A row whose `LEVEL` is not
+  `COLUMN` is also a table tag.
   - This replaces the two functions the design listed.
   - A tag renders as `NAME.VALUE` (`NAME` when the value is empty). OpenMetadata maps a
     Snowflake tag to `Classification.Tag`, so the default sensitive glob `PII.*` matches a `PII`
     tag whatever its value. The design said `NAME=VALUE`, which would have missed it.
-  - Any `ProgrammingError` on the tag query (missing privilege, edition) means no tags and a
-    DEBUG log with the errno; the describe still succeeds.
+  - Any `ProgrammingError` on the tag query (missing privilege, edition) leaves the tags
+    *unknown*, with a DEBUG log carrying the errno. A describe then reports no tags and still
+    succeeds. A **profile fails closed**: every column is treated as sensitive, so no values
+    are shown.
+  - For sensitivity matching, a tag with an empty value (`PII`) is also matched as `PII.`, so
+    the default glob `PII.*` covers it.
   - `ACCOUNT_USAGE` is not used: it lags by up to hours and needs an extra grant.
-- **Safety.** Every identifier goes through `quote_ident` (`"` doubled), and every value is
-  bound by the driver (`%s`). Comments are `UntrustedText(source="snowflake:<name>")`.
+- **Safety.** The driver's pyformat binding runs `query % params` on the client. So
+  `quote_ident` doubles `"` and also `%`. Values are `%s` parameters, which the driver
+  interpolates as quoted literals. A statement without parameters is unescaped once
+  (`sql % ()`), as the driver would, so the database name `GROWTH_%` works in every statement.
+  The test fake runs the driver's own `ClientSideBindingConverter.interpolate_query`. Comments
+  are `UntrustedText(source="snowflake:<name>")`.
 - **Errors.** No driver message is ever copied into an error; only the `errno` is. The mapping:
 
   | Driver error | Lakeloom error |
@@ -62,8 +76,11 @@ placeholders (owner decision).
 
   errno 250001 ("could not connect to backend") is a network failure, not an auth failure.
 - **Runtime.** One connection per source, opened on first use, with statements serialised by
-  an `asyncio.Lock` and run in `asyncio.to_thread`. After a connection error the connection is
-  dropped, reopened once, and the statement retried once.
+  an `asyncio.Lock` and run in `asyncio.to_thread`. The connection is dropped, reopened once and
+  the statement retried once after any of:
+  - a connection error (`OperationalError`, `InterfaceError`);
+  - an expired session (`ReauthenticationRequest`, or errno 390112/390114), which the 5.x
+    driver raises as a `ProgrammingError` subclass.
 - **Profiling (opt-in, `profiling: true`, needs `warehouse`).** It runs warehouse queries, which
   cost credit:
   - one aggregate statement: row count, null counts, and the min/max the privacy rules allow;

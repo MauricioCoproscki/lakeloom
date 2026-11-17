@@ -240,7 +240,7 @@ async def test_snowflake_unset_secret_is_forbidden(monkeypatch: pytest.MonkeyPat
                 private_key_file=Path("/k.p8"),
                 private_key_passphrase_env="SF_KEY_PASS",  # noqa: S106 (a variable name)
             ),
-            {"private_key_file": "/k.p8", "private_key_file_pwd": "key-pass"},
+            {"private_key_file": "/k.p8", "private_key_password": "key-pass"},
         ),
         (
             SnowflakeAuth(password_env="SF_PASSWORD"),  # noqa: S106 (a variable name)
@@ -265,12 +265,13 @@ async def test_snowflake_connect_params_per_auth(
         assert params[key] == value
     assert params["account"] == "myorg-acct" and params["user"] == "SVC"
     assert params["role"] == "READER" and params["warehouse"] == "WH"
-    assert params["login_timeout"] == 45 and params["network_timeout"] == 45
+    assert params["login_timeout"] == 45 and params["request_timeout"] == 45
+    assert "network_timeout" not in params and "query_timeout" not in params
     assert params["session_parameters"] == {
         "QUERY_TAG": "lakeloom",
         "STATEMENT_TIMEOUT_IN_SECONDS": 45,
     }
-    other = {"password", "token", "authenticator", "private_key_file", "private_key_file_pwd"}
+    other = {"password", "token", "authenticator", "private_key_file", "private_key_password"}
     assert not (other - set(expected)) & set(params)
 
 
@@ -451,3 +452,86 @@ async def test_snowflake_profiling_disabled_is_validation_error() -> None:
 )
 def test_snowflake_kind(data_type: str, kind: str) -> None:
     assert snowflake_kind(data_type) == kind
+
+
+async def test_snowflake_percent_in_names_survives_client_side_binding() -> None:
+    responders = account()
+    responders.insert(0, (r"^SHOW TERSE DATABASES", rows({"name": "GROWTH_%"})))
+    src, conn = source(responders)
+    assert await src.list_catalogs() == ["GROWTH_%"]
+    await src.list_tables("GROWTH_%", "50%off")
+    await src.list_schemas("A%%B")
+    sent = " ".join(conn.sent)
+    assert '"GROWTH_%".INFORMATION_SCHEMA.TABLES' in sent
+    assert '"A%%B".INFORMATION_SCHEMA.SCHEMATA' in sent  # the name exactly, not A%B
+    keys = [s for s in conn.sent if s.startswith("SHOW PRIMARY KEYS")]
+    await src.describe_table(TableRef(catalog="SALES", schema="PUBLIC", name="ORDERS"))
+    keys = [s for s in conn.sent if s.startswith("SHOW PRIMARY KEYS")]
+    assert keys == ['SHOW PRIMARY KEYS IN TABLE "SALES"."PUBLIC"."ORDERS"']
+
+
+async def test_snowflake_percent_in_table_name_for_bound_statements() -> None:
+    responders = account()
+    src, conn = source(responders)
+    with pytest.raises(LakeloomError) as info:  # no such table in the fake account
+        await src.describe_table(TableRef(catalog="SAL%ES", schema="PUB%LIC", name="PCT_%"))
+    assert info.value.code == "not_found"
+    assert any('"SAL%ES".INFORMATION_SCHEMA.TABLES' in s for s in conn.sent)
+
+
+@pytest.mark.filterwarnings("ignore:`ReauthenticationRequest` currently subclasses:FutureWarning")
+async def test_snowflake_reauthentication_reconnects() -> None:
+    from snowflake.connector.errors import ReauthenticationRequest
+
+    expired = FakeConnection(
+        [(r".", lambda _s, _p: ReauthenticationRequest(msg="token expired", errno=390114))]
+    )
+    connector = Connector(expired, FakeConnection(account()))
+    src = SnowflakeSource(config(), connect=connector)
+    assert await src.list_catalogs() == ["HR", "SALES", "TMP"]
+    assert len(connector.params) == 2
+    assert expired.closed
+    assert connector.params[0]["client_session_keep_alive"] is True
+
+
+async def test_snowflake_views_skip_show_keys() -> None:
+    src, conn = source()
+    view = TableRef(catalog="SALES", schema="PUBLIC", name="CUSTOMERS")
+    desc = await src.describe_table(view)
+    assert desc.constraints == []
+    assert not any(text.startswith("SHOW") and "KEYS" in text for text, _ in conn.statements)
+
+
+async def test_snowflake_inherited_tags_reach_their_columns() -> None:
+    responders = account()
+    inherited = rows(
+        {"TAG_NAME": "PII", "TAG_VALUE": "ANY", "LEVEL": "SCHEMA", "COLUMN_NAME": "EMAIL"},
+        {"TAG_NAME": "PII", "TAG_VALUE": "ANY", "LEVEL": "SCHEMA", "COLUMN_NAME": "ORDER_ID"},
+    )
+    responders.insert(0, (r"TAG_REFERENCES_ALL_COLUMNS", inherited))
+    src, _ = source(responders)
+    desc = await src.describe_table(ORDERS)
+    by_name = {c.name: c.tags for c in desc.columns}
+    assert by_name["EMAIL"] == ["PII.ANY"] and by_name["ORDER_ID"] == ["PII.ANY"]
+    assert desc.tags == ["PII.ANY"]
+
+
+async def test_snowflake_profile_fails_closed_when_tags_are_unknown() -> None:
+    responders = profile_responders(ORDERS_DATA) + account()
+    denied = ProgrammingError(msg="Insufficient privileges", errno=3001)
+    responders.insert(0, (r"TAG_REFERENCES_ALL_COLUMNS", lambda _s, _p: denied))
+    src, conn = source(responders, profiling=True)
+    profile = await src.profile_table(ORDERS, profile_policy(samples=True))
+    assert all(c.values_withheld == "sensitive" for c in profile.columns)
+    assert all(c.top_k is None and c.min is None for c in profile.columns)
+    assert "GROUP BY" not in " ".join(text for text, _ in conn.statements)
+
+
+async def test_snowflake_profile_empty_value_tag_is_sensitive() -> None:
+    responders = profile_responders(ORDERS_DATA) + account()
+    bare = rows({"TAG_NAME": "PII", "TAG_VALUE": "", "LEVEL": "COLUMN", "COLUMN_NAME": "EMAIL"})
+    responders.insert(0, (r"TAG_REFERENCES_ALL_COLUMNS", bare))
+    src, _ = source(responders, profiling=True)
+    profile = await src.profile_table(ORDERS, profile_policy(samples=True))
+    email = next(c for c in profile.columns if c.name == "EMAIL")
+    assert email.values_withheld == "sensitive" and email.top_k is None

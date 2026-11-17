@@ -8,11 +8,16 @@ so the base install never loads it. A database is a catalog. Reads (ADR 0018):
 * ``SHOW PRIMARY KEYS`` / ``SHOW IMPORTED KEYS IN TABLE`` (Snowflake has no
   ``KEY_COLUMN_USAGE``);
 * tags from ``TAG_REFERENCES_ALL_COLUMNS(<table>, 'table')``, which returns table and column
-  levels; without the privilege or the edition for it a table simply has no tags.
+  levels (inherited tags arrive as rows for each column they apply to); without the privilege
+  or the edition for it a table has no tags in a describe, and a profile treats every column
+  as sensitive (it fails closed).
 
-Every identifier goes through :func:`quote_ident` and every value through driver binding, so
-a name can never change a statement. The driver is synchronous: statements run in a thread on
-one connection per source, serialised by a lock, reconnecting once after a connection error.
+Every identifier goes through :func:`quote_ident` (``"`` doubled, and ``%`` doubled because
+the driver's pyformat binding runs ``query % params`` on the client) and every value is a
+bound parameter, so a name cannot change a statement. Statements without parameters are
+unescaped once (``sql % ()``), as the driver would. The driver is synchronous: statements run
+in a thread on one connection per source, serialised by a lock, reconnecting once after a
+lost connection or an expired session (``ReauthenticationRequest``).
 Driver messages are never copied into errors (they can echo values); only the ``errno`` is.
 Comments are untrusted text (NFR-SEC-14). Credentials are read from the environment when the
 connection opens and never logged.
@@ -61,12 +66,13 @@ Connect = Callable[[dict[str, Any]], Any]
 
 _NOT_FOUND = frozenset({2003, 2043})  # object does not exist or not authorised
 _AUTH = frozenset({390100, 390144, 390318})  # bad credentials, invalid JWT, expired token
+_SESSION_EXPIRED = frozenset({390112, 390114})  # session or master token expired: reconnect
 _HINT = "check that the Snowflake account is reachable and the source settings are right"
 
 
 def quote_ident(name: str) -> str:
-    """A Snowflake quoted identifier: case kept, ``"`` doubled."""
-    return '"' + name.replace('"', '""') + '"'
+    """A Snowflake quoted identifier: case kept, ``"`` doubled, ``%`` doubled for binding."""
+    return '"' + name.replace('"', '""').replace("%", "%%") + '"'
 
 
 _NUMBER = ("NUMBER", "DECIMAL", "NUMERIC", "INT", "BIGINT", "SMALLINT", "TINYINT", "BYTEINT")
@@ -113,12 +119,19 @@ def _default_connect(params: dict[str, Any]) -> Any:
 def _run(conn: Any, sql: str, params: tuple[object, ...]) -> list[dict[str, Any]]:
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, params or None)
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql % ())  # no binding: unescape the ``%%`` of quote_ident
         description: list[tuple[Any, ...]] = list(cursor.description or [])
         names = [str(d[0]) for d in description]
         return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
     finally:
         cursor.close()
+
+
+class _Skipped(Exception):
+    """An optional statement failed with a ``ProgrammingError`` (privilege, edition)."""
 
 
 def _utc(value: object) -> datetime | None:
@@ -133,6 +146,12 @@ def _data_type(row: dict[str, Any]) -> str:
     if kind == "NUMBER" and precision is not None:
         return f"NUMBER({precision},{row.get('NUMERIC_SCALE') or 0})"
     return kind
+
+
+def _match_forms(tags: list[str]) -> list[str]:
+    """Tags for sensitivity matching: a bare ``PII`` (empty value) also as ``PII.``, so the
+    default glob ``PII.*`` covers it."""
+    return tags + [f"{t}." for t in tags if "." not in t]
 
 
 def _tag(row: dict[str, Any]) -> str:
@@ -184,7 +203,10 @@ class SnowflakeSource:
             "account": cfg.account,
             "user": cfg.user,
             "login_timeout": timeout,
-            "network_timeout": timeout,
+            # HTTP requests only; statements are bounded by STATEMENT_TIMEOUT_IN_SECONDS on the
+            # server, so a slow statement is not cut short client-side and then retried.
+            "request_timeout": timeout,
+            "client_session_keep_alive": True,
             "session_parameters": {
                 "QUERY_TAG": "lakeloom",
                 "STATEMENT_TIMEOUT_IN_SECONDS": timeout,
@@ -197,7 +219,7 @@ class SnowflakeSource:
         if auth.private_key_file is not None:
             params["private_key_file"] = str(auth.private_key_file)
             if auth.private_key_passphrase_env:
-                params["private_key_file_pwd"] = self._secret(auth.private_key_passphrase_env)
+                params["private_key_password"] = self._secret(auth.private_key_passphrase_env)
         elif auth.password_env:
             params["password"] = self._secret(auth.password_env)
         elif auth.token_env:
@@ -246,6 +268,17 @@ class SnowflakeSource:
             )
         return LakeloomError("upstream_unavailable", f"Snowflake error {errno}", hint=_HINT)
 
+    @staticmethod
+    def _lost(exc: Exception) -> bool:
+        """A dead connection or an expired session: reconnecting may help."""
+        errors = _errors()
+        reauth = getattr(errors, "ReauthenticationRequest", None)
+        if isinstance(exc, errors.OperationalError | errors.InterfaceError):
+            return True
+        if reauth is not None and isinstance(exc, reauth):
+            return True
+        return isinstance(exc, errors.Error) and getattr(exc, "errno", None) in _SESSION_EXPIRED
+
     async def _query(
         self,
         sql: str,
@@ -254,7 +287,7 @@ class SnowflakeSource:
         what: str = "query",
         optional: bool = False,
     ) -> list[dict[str, Any]]:
-        """Run one statement; ``optional`` turns a ``ProgrammingError`` into no rows."""
+        """Run one statement; ``optional`` turns a ``ProgrammingError`` into ``_Skipped``."""
         async with self._lock:
             for attempt in (0, 1):
                 conn = await self._connection()
@@ -262,7 +295,7 @@ class SnowflakeSource:
                     return await asyncio.to_thread(_run, conn, sql, params)
                 except Exception as exc:
                     errors = _errors()
-                    lost = isinstance(exc, errors.OperationalError | errors.InterfaceError)
+                    lost = self._lost(exc)
                     if lost and attempt == 0:
                         await self._drop()
                         continue
@@ -273,7 +306,7 @@ class SnowflakeSource:
                             what,
                             getattr(exc, "errno", None),
                         )
-                        return []
+                        raise _Skipped from None
                     if lost:
                         await self._drop()
                     raise self._mapped(exc, what=what) from None
@@ -341,8 +374,39 @@ class SnowflakeSource:
         return found[0]
 
     async def describe_table(self, ref: TableRef) -> TableDescription:
-        table = await self._table_row(ref)
+        return (await self._describe(ref))[0]
+
+    async def _tags(self, ref: TableRef) -> tuple[dict[str, list[str]], list[str]] | None:
+        """Column and table tags; ``None`` when they could not be read (unknown, not none)."""
         db, fq = self._need_catalog(ref.catalog), self._fq(ref)
+        try:
+            rows = await self._query(
+                "SELECT TAG_NAME, TAG_VALUE, LEVEL, COLUMN_NAME FROM "
+                f"TABLE({quote_ident(db)}.INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS"
+                "(%s, 'table'))",
+                (fq,),
+                what="tags",
+                optional=True,
+            )
+        except _Skipped:
+            return None
+        column_tags: dict[str, list[str]] = defaultdict(list)
+        table_tags: list[str] = []
+        for row in rows:
+            tag = _tag(row)
+            column = row.get("COLUMN_NAME")
+            # A tag set on the table, schema or database is reported for each column it
+            # applies to (inherited); it is a tag of those columns and of the table.
+            if column and tag not in column_tags[str(column)]:
+                column_tags[str(column)].append(tag)
+            if row.get("LEVEL") != "COLUMN" and tag not in table_tags:
+                table_tags.append(tag)
+        return dict(column_tags), table_tags
+
+    async def _describe(self, ref: TableRef) -> tuple[TableDescription, bool]:
+        """The description, and whether its tags are known (a profile fails closed if not)."""
+        table = await self._table_row(ref)
+        db = self._need_catalog(ref.catalog)
         raw_columns = await self._query(
             "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COMMENT, ORDINAL_POSITION, "
             f"NUMERIC_PRECISION, NUMERIC_SCALE FROM {quote_ident(db)}.INFORMATION_SCHEMA.COLUMNS "
@@ -350,20 +414,8 @@ class SnowflakeSource:
             (ref.schema_, ref.name),
             what=f"table {ref.full_name}",
         )
-        tag_rows = await self._query(
-            "SELECT TAG_NAME, TAG_VALUE, LEVEL, COLUMN_NAME FROM "
-            f"TABLE({quote_ident(db)}.INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS(%s, 'table'))",
-            (fq,),
-            what="tags",
-            optional=True,
-        )
-        column_tags: dict[str, list[str]] = defaultdict(list)
-        table_tags: list[str] = []
-        for row in tag_rows:
-            if row.get("LEVEL") == "COLUMN" and row.get("COLUMN_NAME"):
-                column_tags[str(row["COLUMN_NAME"])].append(_tag(row))
-            elif _tag(row) not in table_tags:
-                table_tags.append(_tag(row))
+        tags = await self._tags(ref)
+        column_tags, table_tags = tags if tags is not None else ({}, [])
         columns = [
             ColumnInfo(
                 name=str(c["COLUMN_NAME"]),
@@ -381,16 +433,19 @@ class SnowflakeSource:
             if table.get(column)
         }
         owner = table.get("TABLE_OWNER")
-        return TableDescription(
+        # A view has no keys; SHOW … KEYS IN TABLE is only asked of tables.
+        is_view = table.get("TABLE_TYPE") == "VIEW"
+        description = TableDescription(
             ref=ref,
             comment=self._untrusted(table.get("COMMENT")),
             columns=columns,
-            constraints=await self._constraints(ref),
+            constraints=[] if is_view else await self._constraints(ref),
             tags=table_tags,
             owners=[str(owner)] if owner else [],
             properties=properties,
             version=TableVersion(committed_at=_utc(table.get("LAST_ALTERED"))),
         )
+        return description, tags is not None
 
     def _untrusted(self, value: object) -> UntrustedText | None:
         return UntrustedText(text=str(value), source=self._source) if value else None
@@ -445,14 +500,17 @@ class SnowflakeSource:
                 f"profiling is disabled for Snowflake source {self.name!r}",
                 hint="set profiling: true on the source (it runs warehouse queries)",
             )
-        description = await self.describe_table(ref)
+        description, tags_known = await self._describe(ref)
         fq, what = self._fq(ref), f"table {ref.full_name}"
         cap = policy.low_cardinality + 1
         plans: list[tuple[ColumnInfo, ValueKind, bool, bool]] = []
         select = ['COUNT(*) AS "N"']
         for i, column in enumerate(description.columns):
             kind = snowflake_kind(column.data_type)
-            sensitive = is_sensitive(column.tags, policy.sensitive_tags)
+            # Unknown tags fail closed: no column may show values.
+            sensitive = not tags_known or is_sensitive(
+                _match_forms(column.tags), policy.sensitive_tags
+            )
             minmax = allow_minmax(kind, sensitive=sensitive, policy=policy)
             name = quote_ident(column.name)
             select.append(f'COUNT_IF({name} IS NULL) AS "N{i}"')

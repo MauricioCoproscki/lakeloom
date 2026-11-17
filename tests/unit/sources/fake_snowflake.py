@@ -27,8 +27,14 @@ class FakeCursor:
         self._rows: list[tuple[Any, ...]] = []
 
     def execute(self, sql: str, params: tuple[Any, ...] | None = None) -> "FakeCursor":
+        from snowflake.connector._internal.binding_converters import (  # pyright: ignore[reportMissingTypeStubs]
+            ClientSideBindingConverter,
+        )
+
         text, args = normalise(sql), tuple(params or ())
         self._conn.statements.append((text, args))
+        # What the real driver sends: pyformat params are interpolated on the client.
+        self._conn.sent.append(ClientSideBindingConverter.interpolate_query(sql, params))
         if self._conn.closed:
             from snowflake.connector.errors import InterfaceError
 
@@ -55,6 +61,7 @@ class FakeConnection:
     def __init__(self, responders: list[tuple[str, Responder]]) -> None:
         self.responders = responders
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
+        self.sent: list[str] = []  # the statements after the driver's client-side binding
         self.closed = False
 
     def cursor(self) -> FakeCursor:
