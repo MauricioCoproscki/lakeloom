@@ -15,7 +15,6 @@ rules (ADR 0008):
 """
 
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 from typing import Any
 
 import pyarrow as pa
@@ -23,45 +22,36 @@ import pyarrow.compute as pc
 
 from lakeloom.sources.base import ProfilePolicy
 from lakeloom.sources.models import ColumnProfile, TableDescription, TableProfile
+from lakeloom.sources.privacy import (
+    ValueKind,
+    allow_counts,
+    allow_minmax,
+    is_sensitive,
+    rank_top_k,
+    render,
+    truncate,
+    withheld_reason,
+)
 
 __all__ = ["profile_arrow_dataset"]
 
-_ELLIPSIS = "…"
 
-
-def _is_string(t: pa.DataType) -> bool:
-    return pa.types.is_string(t) or pa.types.is_large_string(t) or pa.types.is_string_view(t)
-
-
-def _is_orderable(t: pa.DataType) -> bool:
-    return (
-        pa.types.is_integer(t)
-        or pa.types.is_floating(t)
-        or pa.types.is_decimal(t)
-        or pa.types.is_date(t)
-        or pa.types.is_timestamp(t)
-        or pa.types.is_time(t)
-        or _is_string(t)
-    )
-
-
-def _is_countable(t: pa.DataType) -> bool:
-    return _is_orderable(t) or pa.types.is_boolean(t)
-
-
-def _render(value: Any) -> str:
-    iso = getattr(value, "isoformat", None)
-    return str(iso()) if callable(iso) else str(value)
-
-
-def _truncate(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + _ELLIPSIS
+def _arrow_kind(t: pa.DataType) -> ValueKind:
+    if pa.types.is_integer(t) or pa.types.is_floating(t) or pa.types.is_decimal(t):
+        return "number"
+    if pa.types.is_date(t) or pa.types.is_timestamp(t) or pa.types.is_time(t):
+        return "temporal"
+    if pa.types.is_string(t) or pa.types.is_large_string(t) or pa.types.is_string_view(t):
+        return "string"
+    if pa.types.is_boolean(t):
+        return "boolean"
+    return "other"
 
 
 @dataclass
 class _ColumnState:
     name: str
-    dtype: pa.DataType
+    kind: ValueKind
     sensitive: bool
     want_minmax: bool
     want_counts: bool
@@ -90,11 +80,6 @@ class _ColumnState:
             self.counts = None  # high cardinality: stop tracking, bounds memory
 
 
-def _matches(tags: list[str], patterns: list[str]) -> bool:
-    folded = [p.strip().casefold() for p in patterns]
-    return any(fnmatchcase(tag.strip().casefold(), pat) for tag in tags for pat in folded)
-
-
 def profile_arrow_dataset(
     dataset: Any,
     description: TableDescription,
@@ -109,19 +94,17 @@ def profile_arrow_dataset(
     for info in description.columns:
         if info.name not in schema.names:
             continue
-        dtype = schema.field(info.name).type
-        sensitive = _matches(info.tags, policy.sensitive_tags)
-        minmax_ok = _is_orderable(dtype) and not sensitive
-        if _is_string(dtype) and not policy.samples:
-            minmax_ok = False
+        kind = _arrow_kind(schema.field(info.name).type)
+        sensitive = is_sensitive(info.tags, policy.sensitive_tags)
+        counts = allow_counts(kind)
         states.append(
             _ColumnState(
                 name=info.name,
-                dtype=dtype,
+                kind=kind,
                 sensitive=sensitive,
-                want_minmax=minmax_ok,
-                want_counts=_is_countable(dtype),
-                counts={} if _is_countable(dtype) else None,
+                want_minmax=allow_minmax(kind, sensitive=sensitive, policy=policy),
+                want_counts=counts,
+                counts={} if counts else None,
             )
         )
     columns = [s.name for s in states]
@@ -135,24 +118,15 @@ def profile_arrow_dataset(
     out: list[ColumnProfile] = []
     for state in states:
         distinct = len(state.counts) if state.counts is not None else None
-        if state.sensitive:
-            withheld = "sensitive"
-        elif not policy.samples:
-            withheld = "samples_disabled"
-        else:
-            withheld = None
+        withheld = withheld_reason(sensitive=state.sensitive, policy=policy)
         top_k: list[tuple[str, int]] | None = None
         if withheld is None and state.counts is not None:
-            ranked = sorted(
-                ((_render(v), c) for v, c in state.counts.items()),
-                key=lambda t: (-t[1], t[0]),
-            )[: policy.top_k]
-            top_k = [(_truncate(v, policy.value_max_length), c) for v, c in ranked]
-        lo = _render(state.min) if state.min is not None else None
-        hi = _render(state.max) if state.max is not None else None
-        if _is_string(state.dtype):
-            lo = _truncate(lo, policy.value_max_length) if lo is not None else None
-            hi = _truncate(hi, policy.value_max_length) if hi is not None else None
+            top_k = rank_top_k(state.counts, policy)
+        lo = render(state.min) if state.min is not None else None
+        hi = render(state.max) if state.max is not None else None
+        if state.kind == "string":
+            lo = truncate(lo, policy.value_max_length) if lo is not None else None
+            hi = truncate(hi, policy.value_max_length) if hi is not None else None
         out.append(
             ColumnProfile(
                 name=state.name,
