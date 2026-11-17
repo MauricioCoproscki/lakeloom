@@ -96,6 +96,8 @@ select = ["E", "F", "I", "UP", "B", "S", "ASYNC", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]
+# Identifiers go through quote_ident and values through driver binding (ADR 0018).
+"src/lakeloom/sources/snowflake.py" = ["S608"]
 
 [tool.pyright]
 include = ["src", "tests"]
