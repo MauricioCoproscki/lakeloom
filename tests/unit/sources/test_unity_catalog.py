@@ -384,3 +384,110 @@ async def test_read_storage_normalised_location_maps(
     version = await UnityCatalogSource(config, delta_factory=factory).get_table_version(_ref())
     assert version.version == 1
     assert seen[0].tables[0].uri == f"{LAKE}/orders"
+
+
+class FakeDatabricksConfig:
+    def __init__(self, host: str, profile: str | None, *, fail: Exception | None = None) -> None:
+        self.host, self.profile, self.fail, self.calls = host, profile, fail, 0
+
+    def authenticate(self) -> dict[str, str]:
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return {"Authorization": "Bearer from-sdk"}
+
+
+async def test_uc_databricks_auth_sends_sdk_headers(respx_mock: respx.MockRouter) -> None:
+    made: list[FakeDatabricksConfig] = []
+
+    def factory(host: str, profile: str | None) -> FakeDatabricksConfig:
+        made.append(FakeDatabricksConfig(host, profile))
+        return made[-1]
+
+    route = respx_mock.get(f"{API}/catalogs").respond(json=_json("catalogs.json"))
+    source = UnityCatalogSource(
+        _config(auth="databricks", profile="prod"), databricks_config=factory
+    )
+    await source.list_catalogs()
+    await source.list_catalogs()
+    assert route.calls.last.request.headers["authorization"] == "Bearer from-sdk"
+    assert len(made) == 1 and made[0].profile == "prod"
+    assert made[0].host.rstrip("/") == BASE
+    assert made[0].calls == 2  # asked on every request: the SDK caches and refreshes
+
+
+async def test_uc_databricks_auth_failure_is_forbidden(
+    respx_mock: respx.MockRouter, caplog: pytest.LogCaptureFixture
+) -> None:
+    respx_mock.get(f"{API}/catalogs").respond(json=_json("catalogs.json"))
+
+    def failing(host: str, profile: str | None) -> FakeDatabricksConfig:
+        return FakeDatabricksConfig(host, profile, fail=ValueError("token abc123 expired"))
+
+    source = UnityCatalogSource(
+        _config(auth="databricks", profile="prod"), databricks_config=failing
+    )
+    with caplog.at_level(logging.DEBUG), pytest.raises(LakeloomError) as err:
+        await source.list_catalogs()
+    assert err.value.code == "forbidden"
+    assert "ValueError" in err.value.message
+    assert "prod" in (err.value.hint or "")
+    assert "abc123" not in err.value.message + (err.value.hint or "") + str(err.value)
+    assert "abc123" not in caplog.text
+
+    def broken(host: str, profile: str | None) -> FakeDatabricksConfig:
+        raise RuntimeError("cannot parse ~/.databrickscfg secret=abc123")
+
+    source = UnityCatalogSource(_config(auth="databricks"), databricks_config=broken)
+    with pytest.raises(LakeloomError) as err:
+        await source.list_catalogs()
+    assert err.value.code == "forbidden"
+    assert BASE in (err.value.hint or "")
+    assert "abc123" not in err.value.message + (err.value.hint or "")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"auth": "databricks", "token_env": "UC_TOKEN"},
+        {"profile": "prod"},
+        {"auth": "token", "profile": "prod"},
+    ],
+)
+def test_uc_auth_config_validation(fields: dict[str, Any]) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _config(**fields)
+
+
+def test_uc_databricks_missing_extra_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    from lakeloom.config import ConfigError
+
+    real = importlib.util.find_spec
+
+    def no_sdk(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name in ("databricks", "databricks.sdk"):
+            return None
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", no_sdk)
+    with pytest.raises(ConfigError) as info:
+        build_sources(SourcesConfig(sources=[_config(auth="databricks")]), Settings())
+    assert "pip install 'lakeloom[databricks]'" in str(info.value)
+    build_sources(SourcesConfig(sources=[_config()]), Settings())  # token auth needs no SDK
+
+
+async def test_uc_databricks_401_hint_points_at_the_sdk(respx_mock: respx.MockRouter) -> None:
+    respx_mock.get(f"{API}/catalogs").respond(403)
+    source = UnityCatalogSource(
+        _config(auth="databricks", profile="prod"),
+        databricks_config=lambda host, profile: FakeDatabricksConfig(host, profile),
+    )
+    with pytest.raises(LakeloomError) as err:
+        await source.list_catalogs()
+    assert err.value.code == "forbidden"
+    assert "token_env" not in (err.value.hint or "")
+    assert "Databricks profile prod" in (err.value.hint or "")

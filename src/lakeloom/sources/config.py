@@ -82,6 +82,18 @@ class UnityCatalogSourceConfig(_Base):
     # {"file:///lake": "/home/me/lake"} when Lakeloom sees the data at another path than UC.
     storage_root_map: dict[str, str] = {}
     om_service: str | None = None
+    # ``databricks``: headers from databricks-sdk (OAuth M2M, Azure, Google, CLI profiles),
+    # with ``url`` as the host and an optional ``~/.databrickscfg`` profile (TC-7).
+    auth: Literal["token", "databricks"] = "token"
+    profile: str | None = None
+
+    @model_validator(mode="after")
+    def _check_auth(self) -> "UnityCatalogSourceConfig":
+        if self.auth == "databricks" and self.token_env is not None:
+            raise ValueError("auth: databricks takes no token_env (the SDK authenticates)")
+        if self.profile is not None and self.auth != "databricks":
+            raise ValueError("profile needs auth: databricks")
+        return self
 
 
 class McpSourceConfig(_Base):

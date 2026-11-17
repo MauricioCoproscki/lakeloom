@@ -11,12 +11,18 @@ Delta connector are honoured here too (``lakeloom.tags``, ``lakeloom.owners``,
 ``lakeloom.columnTags.<column>``). Databricks-hosted UC reports ``table_constraints``,
 which are mapped as well. Comments are untrusted text (NFR-SEC-14).
 
+With ``auth: databricks`` the headers come from ``databricks-sdk`` (the optional
+``databricks`` extra, imported lazily): its credentials provider is asked on every request
+and caches and refreshes tokens itself. The SDK is only an authentication provider here.
+
 With ``read_storage=True``, table versions and profiles come from the table's Delta
 ``storage_location`` through :class:`DeltaStorageSource`; profiles are therefore computed
 where the data lives (FR-SRC-08). The bearer token is read from ``os.environ[token_env]``
 and never logged or placed in errors.
 """
 
+import asyncio
+import importlib.util
 import os
 import posixpath
 from collections.abc import Callable
@@ -48,6 +54,23 @@ _STORAGE_SCHEMES = ("file://", "s3://", "abfss://", "gs://")
 _MAX_PAGES = 1000
 _COLUMN_TAGS = "lakeloom.columnTags."
 _FOREIGN_KEY = "lakeloom.foreignKey."
+
+
+def _require_sdk() -> None:
+    if importlib.util.find_spec("databricks") is None or (
+        importlib.util.find_spec("databricks.sdk") is None
+    ):
+        raise LakeloomError(
+            "validation_error",
+            "auth: databricks needs the 'databricks-sdk' package",
+            hint="pip install 'lakeloom[databricks]'",
+        )
+
+
+def _sdk_config(host: str, profile: str | None) -> Any:
+    from databricks.sdk.core import Config
+
+    return Config(host=host, profile=profile)
 
 
 def _split(value: str | None) -> list[str]:
@@ -109,6 +132,7 @@ class UnityCatalogSource:
         *,
         http: httpx.AsyncClient | None = None,
         delta_factory: Callable[[DeltaSourceConfig], DeltaStorageSource] = DeltaStorageSource,
+        databricks_config: Callable[[str, str | None], Any] | None = None,
     ) -> None:
         self.name = config.name
         self.om_service = config.om_service
@@ -124,12 +148,37 @@ class UnityCatalogSource:
         self._http = http if http is not None else httpx.AsyncClient(timeout=30)
         self._delta_factory = delta_factory
         self._source = f"unity_catalog:{config.name}"
+        self._sdk_factory = databricks_config or _sdk_config
+        self._sdk: Any = None
 
     # --- HTTP -------------------------------------------------------------------------------
 
+    def _sdk_where(self) -> str:
+        if self._config.profile:
+            return f"the Databricks profile {self._config.profile}"
+        return "the DATABRICKS_* environment"
+
+    async def _sdk_headers(self) -> dict[str, str]:
+        """Headers from the Databricks SDK; a failure never carries the SDK's message."""
+        try:
+            if self._sdk is None:
+                self._sdk = await asyncio.to_thread(
+                    self._sdk_factory, str(self._config.url), self._config.profile
+                )
+            headers = await asyncio.to_thread(self._sdk.authenticate)
+        except Exception as exc:
+            raise LakeloomError(
+                "forbidden",
+                f"Databricks authentication failed ({type(exc).__name__})",
+                hint=f"check {self._sdk_where()} for host {self._config.url}",
+            ) from None
+        return {str(k): str(v) for k, v in cast("dict[object, object]", headers).items()}
+
     async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
         headers = {"Accept": "application/json"}
-        if self._token is not None:
+        if self._config.auth == "databricks":
+            headers.update(await self._sdk_headers())
+        elif self._token is not None:
             headers["Authorization"] = f"Bearer {self._token.get_secret_value()}"
         try:
             response = await self._http.get(f"{self._base}{path}", params=params, headers=headers)
@@ -146,10 +195,15 @@ class UnityCatalogSource:
             )
         if status in (401, 403):
             env = self._token_env or "token_env"
+            who = (
+                f"the principal of {self._sdk_where()}"
+                if self._config.auth == "databricks"
+                else f"the token in environment variable {env}"
+            )
             raise LakeloomError(
                 "forbidden",
                 f"Unity Catalog refused the request (HTTP {status})",
-                hint=f"check the token in environment variable {env} and its Unity Catalog grants",
+                hint=f"check {who} and its Unity Catalog grants",
             )
         if status >= 500:
             raise _unavailable(f"Unity Catalog returned HTTP {status}")
@@ -395,4 +449,6 @@ class UnityCatalogSource:
 
 def build_source(config: UnityCatalogSourceConfig, settings: Settings) -> UnityCatalogSource:
     """Registry factory (FR-SRC-06)."""
+    if config.auth == "databricks":
+        _require_sdk()
     return UnityCatalogSource(config)
