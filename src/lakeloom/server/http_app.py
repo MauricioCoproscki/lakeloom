@@ -233,6 +233,7 @@ class AppDeps:
                 self.confirm,
                 None,
                 self.policies,
+                proposal_repo=self.proposal_repo,
                 on_released=on_released,
             )
             base = web_base(self.settings)

@@ -269,3 +269,56 @@ async def test_git_failures_are_upstream_unavailable(
     assert exc.value.code == "upstream_unavailable"
     assert exc.value.message == "release tags unavailable"
     assert exc.value.hint
+
+
+# ---------------------------------------------------------------------------
+# M8: skos.ttl in releases
+# ---------------------------------------------------------------------------
+
+SKOS_TTL = (
+    "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n"
+    "@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n"
+    '<https://x.example/concepts/Revenue> a skos:Concept ;\n'
+    '    skos:prefLabel "Revenue"@en ;\n'
+    '    skos:scopeNote "Net of returns."@en .\n'
+)
+
+
+def full_with_skos(slug: str) -> dict[str, str]:
+    base = f"ontologies/{slug}"
+    return {**full(slug), f"{base}/skos.ttl": SKOS_TTL}
+
+
+async def test_ontology_skos_reads_skos_ttl_when_present(
+    seed: Seeder, reader: ReleaseReader
+) -> None:
+    """When skos.ttl exists in the release, ontology(format='skos') returns it directly."""
+    seed.release("retail/v1.0.0", full_with_skos("retail"))
+    data = await reader.ontology("retail", "1.0.0", "skos")
+    assert b"scopeNote" in data
+
+
+async def test_ontology_skos_falls_back_to_projection_when_no_skos_ttl(
+    seed: Seeder, reader: ReleaseReader
+) -> None:
+    """When skos.ttl is absent (old release), ontology(format='skos') converts ontology.ttl."""
+    seed.release("retail/v1.0.0", full("retail"))
+    data = await reader.ontology("retail", "1.0.0", "skos")
+    # Result should still be valid Turtle with SKOS content.
+    assert len(data) > 0
+    assert b"skos" in data or b"Concept" in data
+
+
+async def test_skos_ttl_in_optional_exports() -> None:
+    from lakeloom.gitstore.layout import OPTIONAL_EXPORTS
+    assert "skos.ttl" in OPTIONAL_EXPORTS
+
+
+async def test_snapshot_exports_accepts_skos_ttl() -> None:
+    from lakeloom.gitstore.layout import Snapshot
+    snap = Snapshot(
+        model="retail", glossary_id="g", glossary_fqn="retail",
+        model_version="v1", exports={"ontology.ttl": "ttl", "ontology.jsonld": "{}", "ontology.owl": "<rdf/>", "skos.ttl": SKOS_TTL},
+        proposal_id="p1", message="m",
+    )
+    assert "skos.ttl" in (snap.exports or {})

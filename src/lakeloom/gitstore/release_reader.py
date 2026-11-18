@@ -43,6 +43,7 @@ ReleaseFile = Literal[
     "ontology.owl",
     "shapes.ttl",
     "context.jsonld",
+    "skos.ttl",
     "manifest.yaml",
     "CHANGELOG.md",
 ]
@@ -53,6 +54,7 @@ _FILES: frozenset[str] = frozenset(
         "ontology.owl",
         "shapes.ttl",
         "context.jsonld",
+        "skos.ttl",
         "manifest.yaml",
         "CHANGELOG.md",
     }
@@ -61,6 +63,9 @@ _STORED: dict[ExportFormat, ReleaseFile] = {
     "turtle": "ontology.ttl",
     "jsonld": "ontology.jsonld",
     "rdfxml": "ontology.owl",
+    # skos.ttl is written by fill_exports when ops are provided (M8); older releases fall
+    # back to converting ontology.ttl via _converted, which still runs skos_projection.
+    "skos": "skos.ttl",
 }
 _SHAPES_FORMAT: dict[ShapesMedia, ExportFormat] = {
     "application/ld+json": "jsonld",
@@ -237,6 +242,14 @@ class ReleaseReader:
     async def ontology(self, slug: str, version: str, fmt: ExportFormat) -> bytes:
         stored = _STORED.get(fmt)
         if stored is not None:
+            if fmt == "skos":
+                # skos.ttl is only present in releases created with M8+; fall back to
+                # projecting ontology.ttl for older releases that lack the enriched file.
+                info = await self.get(slug, version)
+                data = await self._read(info, slug, "skos.ttl")
+                if data is not None:
+                    return data
+                return await self._converted(slug, version, "ontology.ttl", "skos")
             return await self.file(slug, version, stored)
         return await self._converted(slug, version, "ontology.ttl", fmt)
 

@@ -69,6 +69,7 @@ from lakeloom.gitstore.snapshot import fill_exports
 from lakeloom.om.client import OMClient
 from lakeloom.rdf.canonical import parse_rdf
 from lakeloom.state.audit import AuditRepository
+from lakeloom.state.proposals import ProposalRepository
 from lakeloom.state.publications import PublicationRepository
 from lakeloom.state.releases import Release, ReleaseRepository, SinkStatus
 
@@ -187,6 +188,7 @@ class ReleaseService:
         audit: AuditRepository | None,
         policies: Sequence[ModelPolicyEntry] = (),
         *,
+        proposal_repo: ProposalRepository | None = None,
         clock: Callable[[], datetime] = utcnow,
         on_released: Callable[[Release], Awaitable[None]] | None = None,
     ) -> None:
@@ -200,6 +202,7 @@ class ReleaseService:
         self._confirm = confirm
         self._audit = audit
         self._policies = list(policies)
+        self._proposal_repo = proposal_repo
         self._clock = clock
         self._on_released = on_released
         remote = settings.git_remote or ""
@@ -618,8 +621,21 @@ class ReleaseService:
             proposal_id="",
             message="",
         )
+        # Collect applied ops so fill_exports can produce an enriched skos.ttl (M8).
+        applied_ops = None
+        if self._proposal_repo is not None:
+            applied_ops = []
+            cursor = None
+            for _ in range(20):
+                page, cursor = await self._proposal_repo.list_by_status(
+                    ["applied"], model, cursor, 200
+                )
+                for p in page:
+                    applied_ops.extend(p.operations)
+                if cursor is None:
+                    break
         try:
-            snap = await fill_exports(self._models, self._om, base)
+            snap = await fill_exports(self._models, self._om, base, ops=applied_ops)
         except RuntimeError as exc:  # the model moved between the version reads
             raise LakeloomError(
                 "conflict", str(exc), "retry: the model changed while it was being exported"
