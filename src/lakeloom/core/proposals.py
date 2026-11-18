@@ -1616,7 +1616,7 @@ class ProposalService:
         model: str,
         operations: Sequence[ProposalOperation],
         *,
-        origin: Literal["import", "git", "drift"],
+        origin: Literal["import", "git", "drift", "direct"],
         principal: Caller,
         client: str | None,
         tool: str,
