@@ -32,10 +32,13 @@ __all__ = [
     "AddAttribute",
     "AddAxiom",
     "AddConcept",
+    "AddHistoryNote",
     "AddMapping",
     "AddRealization",
     "AddRelation",
+    "AddScopeNote",
     "AddSynonym",
+    "DeprecateConcept",
     "Evidence",
     "OMContext",
     "OMOps",
@@ -46,6 +49,7 @@ __all__ = [
     "RemoveMapping",
     "RemoveRealization",
     "RemoveRelation",
+    "SetCoverageModel",
     "TermSnapshot",
     "UpdateConcept",
     "draft_term_id",
@@ -257,6 +261,68 @@ class AddSynonym(_Op):
     synonym: Short
 
 
+# ---------------------------------------------------------------------------
+# Vocabulary enrichment ops (lakeloom-native: to_om returns OMOps())
+# ---------------------------------------------------------------------------
+
+Lang = Annotated[str, Field(pattern=r"^[a-z]{2,3}(-[A-Z]{2})?$")]
+
+
+class AddScopeNote(_Op):
+    """Adds a ``skos:scopeNote`` to an existing concept.
+
+    Stored in lakeloom's native RDF; not mapped to an OM change-set operation.
+    The SKOS export includes scope notes in its output.
+    """
+
+    op: Literal["add_scope_note"]
+    concept_fqn: Ref
+    note: Annotated[str, Field(min_length=1, max_length=2000)]
+    lang: Lang = "en"
+
+
+class AddHistoryNote(_Op):
+    """Records a ``skos:historyNote`` on an existing concept (editorial history, reason for
+    change, source of definition).  Stored in lakeloom's native RDF.
+    """
+
+    op: Literal["add_history_note"]
+    concept_fqn: Ref
+    note: Annotated[str, Field(min_length=1, max_length=2000)]
+    lang: Lang = "en"
+
+
+class DeprecateConcept(_Op):
+    """Marks a concept as deprecated.
+
+    The concept stays queryable (skos:hiddenLabel keeps it findable) but agents are
+    directed to ``successor`` when one is given.  Stored in lakeloom's native RDF;
+    no OM change-set operation is generated: the OM term is left in place so existing
+    realizations are not broken.
+    """
+
+    op: Literal["deprecate_concept"]
+    fqn: Ref
+    base_version: Version
+    reason: Annotated[str, Field(min_length=1, max_length=1000)]
+    successor: Ref | None = None
+
+
+class SetCoverageModel(_Op):
+    """Attaches a coverage model to the ontology's ConceptScheme.
+
+    Defines the intended scope of the taxonomy: which topics it covers, how deep,
+    at what granularity, and what it explicitly excludes.  Stored as metadata in
+    lakeloom's native RDF (``skos:ConceptScheme`` annotations).
+    """
+
+    op: Literal["set_coverage_model"]
+    topics: Annotated[list[Short], Field(min_length=1, max_length=50)]
+    depth: Annotated[int, Field(ge=1, le=20)]
+    granularity: Literal["coarse", "medium", "fine"]
+    exclusions: Annotated[list[Short], Field(max_length=50)] = Field(default_factory=list)
+
+
 class AddRealization(_Op):
     op: Literal["add_realization"]
     concept: Ref
@@ -284,6 +350,10 @@ ProposalOperation = Annotated[
     | AddAxiom
     | RemoveAxiom
     | AddSynonym
+    | AddScopeNote
+    | AddHistoryNote
+    | DeprecateConcept
+    | SetCoverageModel
     | AddRealization
     | RemoveRealization,
     Field(discriminator="op"),
@@ -384,6 +454,14 @@ def op_key(op: ProposalOperation) -> str:
             return f"remove-axiom:{_bare(op.concept)}.{op.name}"
         case AddSynonym():
             return f"syn:{_bare(op.concept_fqn)}|{op.synonym.casefold()}"
+        case AddScopeNote():
+            return f"scope-note:{_bare(op.concept_fqn)}|{op.lang}|{op.note[:40]}"
+        case AddHistoryNote():
+            return f"history-note:{_bare(op.concept_fqn)}|{op.note[:40]}"
+        case DeprecateConcept():
+            return f"deprecate:{_bare(op.fqn)}"
+        case SetCoverageModel():
+            return f"coverage-model:{','.join(op.topics[:3])}"
         case AddRealization():
             return f"real:{_bare(op.concept)}|{op.asset_fqn}|{op.column or ''}"
         case RemoveRealization():
@@ -692,6 +770,9 @@ def to_om(op: ProposalOperation, ctx: OMContext) -> OMOps:
             iri = _member_iri(ctx, op.concept, op.name)
             return OMOps(native=[_native_delete("DELETE_AXIOM", "axiom", iri, ctx)])
         case AddRealization() | RemoveRealization():
+            return OMOps()
+        case AddScopeNote() | AddHistoryNote() | DeprecateConcept() | SetCoverageModel():
+            # Lakeloom-native: stored in native RDF / state, not in OM change sets.
             return OMOps()
 
 

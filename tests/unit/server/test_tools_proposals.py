@@ -213,7 +213,7 @@ async def test_propose_change_schema_exposes_union(make_deps: DepsFactory) -> No
     items = schema["properties"]["operations"]["items"]
     assert items["discriminator"]["propertyName"] == "op"
     variants = items.get("oneOf") or items.get("anyOf")
-    assert variants is not None and len(variants) == 14
+    assert variants is not None and len(variants) == 18  # +4 ops added in M5a
     defs = schema["$defs"]
     ops = {defs[v["$ref"].rsplit("/", 1)[-1]]["properties"]["op"]["const"] for v in variants}
     assert {"add_concept", "add_attribute", "add_relation", "add_realization"} <= ops
