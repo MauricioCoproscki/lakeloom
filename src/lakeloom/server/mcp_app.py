@@ -34,6 +34,7 @@ from lakeloom.server.resources import LakeloomMCP
 from lakeloom.server.server_info import ServerInfo, build_server_info, summarize
 from lakeloom.server.tools_common import READ_SCOPE, guarded, tool_error
 from lakeloom.server.tools_cv import register_cv_tools
+from lakeloom.server.tools_map import register_map_tools
 from lakeloom.server.tools_import import register_import_tools
 from lakeloom.server.tools_proposals import register_proposal_tools
 from lakeloom.server.tools_release import register_release_tools
@@ -122,6 +123,7 @@ def create_mcp(deps: AppDeps) -> LakeloomMCP:
     register_review_tools(mcp, deps)
     register_release_tools(mcp, deps)
     register_cv_tools(mcp, deps)
+    register_map_tools(mcp, deps)
     register_import_tools(mcp, deps)
     register_prompts(mcp)
     return mcp
