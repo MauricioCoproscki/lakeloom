@@ -236,22 +236,33 @@ class SinkWorker:
         # The reader may fetch from the remote under the repository lock: no lock held here.
         listed = (await self._reader.list(rel.model))[:1]
         highest = bool(listed) and listed[0].version == rel.version
+        policy = triplestore_for(self._policies, rel.model)
         ontology = await self._reader.file(rel.model, rel.version, "ontology.ttl")
         await self._sink.replace_graph(_join(base, f"release/{rel.version}"), ontology)
+        skos_on = policy.skos if policy.skos is not None else self._settings.triplestore_skos
+        skos: bytes | None = None
+        if skos_on:
+            try:
+                skos = await self._reader.file(rel.model, rel.version, "skos.ttl")
+            except LakeloomError as exc:
+                if exc.code != "not_found":
+                    raise
+            if skos is not None:
+                await self._sink.replace_graph(_join(base, f"release/{rel.version}/skos"), skos)
         if not highest:
-            return  # <base>latest and <base>shapes belong to the highest release
+            return  # <base>latest, <base>shapes, <base>skos belong to the highest release
         await self._sink.replace_graph(_join(base, "latest"), ontology)
-        shapes_on = triplestore_for(self._policies, rel.model).shapes
-        if shapes_on is None:
-            shapes_on = self._settings.triplestore_shapes
+        shapes_on = policy.shapes if policy.shapes is not None else self._settings.triplestore_shapes
         if shapes_on:
             try:
                 shapes = await self._reader.file(rel.model, rel.version, "shapes.ttl")
             except LakeloomError as exc:
                 if exc.code != "not_found":
                     raise
-                return
-            await self._sink.replace_graph(_join(base, "shapes"), shapes)
+            else:
+                await self._sink.replace_graph(_join(base, "shapes"), shapes)
+        if skos_on and skos is not None:
+            await self._sink.replace_graph(_join(base, "skos"), skos)
 
     async def status(self) -> dict[str, Any]:
         """For ``server_info``: counts and the last error. Never raises, no URL, no password."""

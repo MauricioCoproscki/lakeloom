@@ -85,9 +85,10 @@ async def test_no_username_means_no_auth() -> None:
 
 
 class FakeReader:
-    def __init__(self, versions: list[str], shapes: bool = True) -> None:
+    def __init__(self, versions: list[str], shapes: bool = True, skos: bool = True) -> None:
         self.versions = versions  # highest first
         self.shapes = shapes
+        self.skos = skos
 
     async def list(self, slug: str) -> list[ReleaseInfo]:
         return [
@@ -104,6 +105,8 @@ class FakeReader:
     async def file(self, slug: str, version: str, name: str) -> bytes:
         if name == "shapes.ttl" and not self.shapes:
             raise LakeloomError("not_found", "release has no shapes", "none")
+        if name == "skos.ttl" and not self.skos:
+            raise LakeloomError("not_found", "release has no skos", "none")
         if version not in self.versions:
             raise LakeloomError("not_found", "no such release", "none")
         return f"{name}@{version}".encode()
@@ -151,6 +154,7 @@ class Kit:
         sink: Any = None,
         versions: list[str] | None = None,
         shapes_file: bool = True,
+        skos_file: bool = True,
         policies: list[ModelPolicyEntry] | None = None,
         base_iri: str | None = BASE,
         **settings: Any,
@@ -165,7 +169,7 @@ class Kit:
         return SinkWorker(
             s,
             self.repo,
-            FakeReader(versions or ["1.0.0"], shapes_file),  # type: ignore[arg-type]
+            FakeReader(versions or ["1.0.0"], shapes_file, skos_file),  # type: ignore[arg-type]
             FakeModels(base_iri),  # type: ignore[arg-type]
             sink or sink_for(self.rec),
             policies or [],
@@ -178,15 +182,23 @@ def kit(engine: AsyncEngine) -> Kit:
     return Kit(engine)
 
 
-async def test_worker_puts_release_latest_and_shapes(kit: Kit) -> None:
+async def test_worker_puts_release_latest_shapes_and_skos(kit: Kit) -> None:
     await kit.repo.add(release())
     (done,) = await kit.worker().process(NOW)
     assert done.sink_status == "done" and done.sink_attempts == 1
-    assert kit.rec.graphs == [f"{BASE}release/1.0.0", f"{BASE}latest", f"{BASE}shapes"]
+    assert kit.rec.graphs == [
+        f"{BASE}release/1.0.0",
+        f"{BASE}release/1.0.0/skos",
+        f"{BASE}latest",
+        f"{BASE}shapes",
+        f"{BASE}skos",
+    ]
     assert [r.content for r in kit.rec.requests] == [
         b"ontology.ttl@1.0.0",
+        b"skos.ttl@1.0.0",
         b"ontology.ttl@1.0.0",
         b"shapes.ttl@1.0.0",
+        b"skos.ttl@1.0.0",
     ]
     stored = await kit.repo.get("rel_1.0.0")
     assert stored is not None and stored.sink_status == "done" and stored.sink_last_error is None
@@ -195,7 +207,7 @@ async def test_worker_puts_release_latest_and_shapes(kit: Kit) -> None:
 async def test_latest_only_for_highest_release(kit: Kit) -> None:
     await kit.repo.add(release("1.0.0"))
     await kit.worker(versions=["1.1.0", "1.0.0"]).process(NOW)
-    assert kit.rec.graphs == [f"{BASE}release/1.0.0"]
+    assert kit.rec.graphs == [f"{BASE}release/1.0.0", f"{BASE}release/1.0.0/skos"]
 
 
 async def test_retry_of_older_release_never_overwrites_shapes(kit: Kit) -> None:
@@ -211,7 +223,8 @@ async def test_shapes_off_by_policy(kit: Kit) -> None:
     policies = [ModelPolicyEntry.model_validate({"name": "shop", "triplestore": {"shapes": False}})]
     await kit.repo.add(release())
     await kit.worker(policies=policies).process(NOW)
-    assert kit.rec.graphs == [f"{BASE}release/1.0.0", f"{BASE}latest"]
+    assert f"{BASE}shapes" not in kit.rec.graphs
+    assert f"{BASE}release/1.0.0" in kit.rec.graphs and f"{BASE}latest" in kit.rec.graphs
 
 
 async def test_shapes_off_by_setting_and_on_by_policy_override(kit: Kit) -> None:
@@ -383,7 +396,7 @@ async def test_process_never_raises_and_inline_attempt_does_not_double_push(
     first = await worker.attempt("rel_1.0.0")
     again = await worker.attempt("rel_1.0.0")  # already done: nothing to push
     assert first is not None and first.sink_status == "done" and again is None
-    assert len(kit.rec.requests) == 3
+    assert len(kit.rec.requests) == 5  # ontology, latest, shapes, skos-versioned, skos-latest
 
     class Broken(ReleaseRepository):
         async def sink_due(self, repo: str, now: datetime) -> list[Release]:
@@ -400,6 +413,48 @@ async def test_disabled_worker_does_nothing(kit: Kit, engine: AsyncEngine) -> No
     worker._settings = Settings(_env_file=None, git_remote=REMOTE)  # type: ignore[call-arg]
     assert await worker.process(NOW) == []
     assert (await worker.status())["enabled"] is False
+
+
+async def test_skos_versioned_graph_pushed_for_non_highest_release(kit: Kit) -> None:
+    """``release/{v}/skos`` is always pushed when skos.ttl is present; ``<base>skos`` is not."""
+    await kit.repo.add(release("1.0.0"))
+    await kit.worker(versions=["1.1.0", "1.0.0"]).process(NOW)
+    graphs = kit.rec.graphs
+    assert f"{BASE}release/1.0.0/skos" in graphs
+    assert f"{BASE}skos" not in graphs
+
+
+async def test_skos_latest_graph_pushed_only_for_highest_release(kit: Kit) -> None:
+    await kit.repo.add(release("1.1.0"))
+    await kit.worker(versions=["1.1.0", "1.0.0"]).process(NOW)
+    graphs = kit.rec.graphs
+    assert f"{BASE}release/1.1.0/skos" in graphs
+    assert f"{BASE}skos" in graphs
+
+
+async def test_skos_off_by_policy(kit: Kit) -> None:
+    policies = [ModelPolicyEntry.model_validate({"name": "shop", "triplestore": {"skos": False}})]
+    await kit.repo.add(release())
+    await kit.worker(policies=policies).process(NOW)
+    assert all("skos" not in g for g in kit.rec.graphs)
+
+
+async def test_skos_off_by_setting_and_on_by_policy_override(kit: Kit) -> None:
+    await kit.repo.add(release())
+    await kit.worker(triplestore_skos=False).process(NOW)
+    assert all("skos" not in g for g in kit.rec.graphs)
+    on = [ModelPolicyEntry.model_validate({"name": "shop", "triplestore": {"skos": True}})]
+    await kit.repo.add(release("1.1.0"))
+    kit.rec.requests.clear()
+    await kit.worker(triplestore_skos=False, policies=on, versions=["1.1.0", "1.0.0"]).process(NOW)
+    assert f"{BASE}release/1.1.0/skos" in kit.rec.graphs
+
+
+async def test_release_without_skos_file_is_still_done(kit: Kit) -> None:
+    await kit.repo.add(release())
+    (done,) = await kit.worker(skos_file=False).process(NOW)
+    assert done.sink_status == "done"
+    assert all("skos" not in g for g in kit.rec.graphs)
 
 
 def test_enabled_without_url_is_config_error() -> None:
