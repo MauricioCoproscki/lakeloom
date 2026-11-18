@@ -34,6 +34,7 @@ from lakeloom.server.resources import LakeloomMCP
 from lakeloom.server.server_info import ServerInfo, build_server_info, summarize
 from lakeloom.server.tools_common import READ_SCOPE, guarded, tool_error
 from lakeloom.server.tools_analytics import register_analytics_tools
+from lakeloom.server.tools_skos import register_skos_tools
 from lakeloom.server.tools_cv import register_cv_tools
 from lakeloom.server.tools_entity import register_entity_tools
 from lakeloom.server.tools_map import register_map_tools
@@ -128,6 +129,7 @@ def create_mcp(deps: AppDeps) -> LakeloomMCP:
     register_map_tools(mcp, deps)
     register_entity_tools(mcp, deps)
     register_analytics_tools(mcp, deps)
+    register_skos_tools(mcp, deps)
     register_import_tools(mcp, deps)
     register_prompts(mcp)
     return mcp
