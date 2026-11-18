@@ -3,9 +3,14 @@
 Keeps ``skos:ConceptScheme`` / ``skos:Concept`` typing and the SKOS predicates listed in
 ``SKOS_PREDICATES``. Where two ``skos:Concept`` classes are linked by ``rdfs:subClassOf`` and the
 child has no ``skos:broader`` at all, a ``skos:broader`` is derived from it.
+
+M6c: ``SKOS_PREDICATES`` now includes the annotation and editorial note predicates
+(``scopeNote``, ``historyNote``, ``changeNote``, ``editorialNote``, ``hiddenLabel``) and
+``owl:deprecated``, so they are preserved when the SKOS projection is built from an
+enriched graph (see :mod:`lakeloom.rdf.skos_enrichment`).
 """
 
-from rdflib import RDF, RDFS, Graph, URIRef
+from rdflib import OWL, RDF, RDFS, Graph, URIRef
 from rdflib.namespace import SKOS
 
 __all__ = ["SKOS_PREDICATES", "skos_projection"]
@@ -14,7 +19,12 @@ SKOS_PREDICATES: frozenset[URIRef] = frozenset(
     {
         SKOS.prefLabel,
         SKOS.altLabel,
+        SKOS.hiddenLabel,
         SKOS.definition,
+        SKOS.scopeNote,
+        SKOS.historyNote,
+        SKOS.changeNote,
+        SKOS.editorialNote,
         SKOS.broader,
         SKOS.narrower,
         SKOS.related,
@@ -25,6 +35,9 @@ SKOS_PREDICATES: frozenset[URIRef] = frozenset(
         SKOS.relatedMatch,
         SKOS.inScheme,
         SKOS.topConceptOf,
+        SKOS.hasTopConcept,
+        # owl:deprecated is not a SKOS predicate but belongs in the SKOS export.
+        OWL.deprecated,
     }
 )
 _SKOS_TYPES: frozenset[URIRef] = frozenset({SKOS.Concept, SKOS.ConceptScheme})
