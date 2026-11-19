@@ -16,7 +16,9 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 from rdflib import Graph
+from rdflib.namespace import RDF, SKOS
 
+from lakeloom.core.annotations import deprecated_concepts
 from lakeloom.core.callers import Actor, Caller
 from lakeloom.core.graph_analytics import concept_stats, hierarchy_report, realization_coverage
 from lakeloom.core.map_profile import build_map, validate_map
@@ -62,7 +64,10 @@ tell the user, do not call a tool for them.
 
 `goal`: `auto` (default, everything), `build` (structure and content gaps), `maintain` \
 (blockers, reviews, releases, lake changes) or `publish` (what stands between the model and a \
-release). `unavailable` lists sources that could not be read; their signals are missing. \
+release). `deliverables` says what each stage can already hand to people (glossary, data \
+dictionary, taxonomy, synonym file), with `ready`, `partial` or `unavailable` and the tool \
+that produces it: offer these early, the user need not finish the pipeline first. \
+`unavailable` lists sources that could not be read; their signals are missing. \
 Never call the suggested tools without the user's agreement. Read-only, no side effects. \
 Unknown model → `not_found`.
 
@@ -83,11 +88,24 @@ class StepResult(BaseModel):
     evidence: dict[str, Any]
 
 
+class DeliverableResult(BaseModel):
+    kind: str
+    stage: int
+    status: str
+    why: str
+    tool: str
+    args: dict[str, Any]
+
+
 class NextStepsResult(BaseModel):
     model: str
     stage: str
     health: dict[str, Any]
     steps: list[StepResult]
+    deliverables: list[DeliverableResult] = Field(
+        default_factory=list[DeliverableResult],
+        description="What each stage can already hand out (ready, partial or unavailable).",
+    )
     unavailable: list[str] = Field(
         default_factory=list[str], description="Sources that could not be read."
     )
@@ -201,6 +219,9 @@ async def gather_state(
         fields["orphan_concepts"] = len(hierarchy_report(g).orphan_concepts)
         fields["realized_concepts"] = cov.concepts_with_realizations
         fields["defined_concepts"] = validate_ansi_z39(g).concepts_with_definition
+        concepts = set(g.subjects(RDF.type, SKOS.Concept))
+        fields["synonym_concepts"] = len({c for c in g.subjects(SKOS.altLabel) if c in concepts})
+        fields["deprecated_concepts"] = len(deprecated_concepts(g))
 
     async def latest_scan() -> None:
         scan_ids = [p.scan_id for p in proposals if p.scan_id]
@@ -242,6 +263,12 @@ def _markdown(out: NextSteps, unavailable: list[str]) -> str:
         call = f" → `{s.tool}`" if s.tool and s.actionable else " (for someone else)"
         lines.append(f"{n}. **{s.title}**{call}")
         lines.append(f"   {s.why}")
+    usable = [d for d in out.deliverables if d.status != "unavailable"]
+    if usable:
+        lines += ["", "**You can already hand out:**"]
+        for d in usable:
+            mark = "" if d.status == "ready" else " (partial)"
+            lines.append(f"- {d.kind.replace('_', ' ')}{mark} → `{d.tool}`: {d.why}")
     if unavailable:
         lines += ["", f"_Could not read: {', '.join(unavailable)}; related checks skipped._"]
     return "\n".join(lines)
@@ -270,6 +297,10 @@ def register_guide_tools(mcp: MCPServer, deps: AppDeps) -> None:
                     for s in out.steps
                 ],
                 unavailable=unavailable,
+                deliverables=[
+                    DeliverableResult(**{k: getattr(d, k) for k in DeliverableResult.model_fields})
+                    for d in out.deliverables
+                ],
             )
             return CallToolResult(
                 content=[TextContent(type="text", text=_markdown(out, unavailable))],

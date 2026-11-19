@@ -18,6 +18,7 @@ from lakeloom.core.model_policy import AccessAction
 
 __all__ = [
     "Caller",
+    "DeliverableReadiness",
     "DriftSummary",
     "Goal",
     "ModelState",
@@ -26,6 +27,7 @@ __all__ = [
     "Stage",
     "Step",
     "Thresholds",
+    "deliverables",
     "detect_stage",
     "next_steps",
 ]
@@ -100,6 +102,8 @@ class ModelState:
     defined_concepts: int = 0  # S10
     orphan_concepts: int = 0  # S11
     max_depth: int = 0  # S12
+    synonym_concepts: int = 0  # deliverables: concepts with at least one synonym
+    deprecated_concepts: int = 0
 
 
 @dataclass(frozen=True)
@@ -129,12 +133,28 @@ class Step:
         return _IMPACT[self.impact] * math.log2(1 + max(self.reach, 1)) / self.effort
 
 
+DeliverableStatus = Literal["ready", "partial", "unavailable"]
+
+
+@dataclass(frozen=True)
+class DeliverableReadiness:
+    """What a stage can already hand to people, and why it is not complete yet."""
+
+    kind: str  # glossary, data_dictionary, taxonomy, synonyms
+    stage: int
+    status: DeliverableStatus
+    why: str
+    tool: str
+    args: dict[str, Any] = field(default_factory=dict[str, Any])
+
+
 @dataclass(frozen=True)
 class NextSteps:
     model: str
     stage: Stage
     steps: list[Step]
     health: dict[str, Any]
+    deliverables: list[DeliverableReadiness] = field(default_factory=list[DeliverableReadiness])
 
 
 def _ratio(part: int, whole: int) -> float:
@@ -430,6 +450,143 @@ _DETECTORS: tuple[Callable[[ModelState, Thresholds, Caller], list[Step]], ...] =
 )
 
 
+def deliverables(s: ModelState, t: Thresholds = DEFAULT_THRESHOLDS) -> list[DeliverableReadiness]:
+    """Each stage deliverable and whether it is worth handing out today. Nothing here needs
+    the next stage: a glossary is useful long before there is a taxonomy."""
+    m = {"model": s.model}
+    out: list[DeliverableReadiness] = []
+
+    defined = _ratio(s.defined_concepts, s.concepts)
+    if s.concepts == 0:
+        out.append(
+            DeliverableReadiness(
+                "glossary",
+                1,
+                "unavailable",
+                "No terms yet: agree on the first terms.",
+                "export_glossary",
+                m,
+            )
+        )
+    elif defined >= t.defined:
+        out.append(
+            DeliverableReadiness(
+                "glossary",
+                1,
+                "ready",
+                f"{_plural(s.concepts, 'term')}, {defined:.0%} defined: shareable as the business "
+                "glossary.",
+                "export_glossary",
+                m,
+            )
+        )
+    else:
+        missing = s.concepts - s.defined_concepts
+        out.append(
+            DeliverableReadiness(
+                "glossary",
+                1,
+                "partial",
+                f"Usable, but {_plural(missing, 'term')} still lack a definition and show as gaps.",
+                "export_glossary",
+                m,
+            )
+        )
+
+    if s.latest_scan_id is None:
+        out.append(
+            DeliverableReadiness(
+                "data_dictionary",
+                2,
+                "unavailable",
+                "No scan yet: scan the lake tables to describe their columns.",
+                "export_data_dictionary",
+                m,
+            )
+        )
+    else:
+        args = {**m, "scan_id": s.latest_scan_id}
+        unmapped = s.total_columns - s.mapped_columns
+        if s.total_columns and _ratio(unmapped, s.total_columns) <= t.unmapped_columns:
+            why = f"{s.mapped_columns} of {s.total_columns} scanned columns carry a term."
+            out.append(
+                DeliverableReadiness(
+                    "data_dictionary", 2, "ready", why, "export_data_dictionary", args
+                )
+            )
+        else:
+            why = (
+                f"Lists every scanned column; {_plural(unmapped, 'column')} have no term "
+                "yet and show as unmapped."
+            )
+            out.append(
+                DeliverableReadiness(
+                    "data_dictionary", 2, "partial", why, "export_data_dictionary", args
+                )
+            )
+
+    if s.max_depth < 1:
+        out.append(
+            DeliverableReadiness(
+                "taxonomy",
+                3,
+                "unavailable",
+                "The terms are a flat list: group them under broader terms first.",
+                "export_taxonomy",
+                m,
+            )
+        )
+    elif _orphans_high(s, t):
+        out.append(
+            DeliverableReadiness(
+                "taxonomy",
+                3,
+                "partial",
+                f"A tree exists, but {_plural(s.orphan_concepts, 'term')} are not placed in it.",
+                "export_taxonomy",
+                m,
+            )
+        )
+    else:
+        out.append(
+            DeliverableReadiness(
+                "taxonomy",
+                3,
+                "ready",
+                f"A {s.max_depth}-level tree, ready for navigation.",
+                "export_taxonomy",
+                m,
+            )
+        )
+
+    if s.synonym_concepts == 0 and s.deprecated_concepts == 0:
+        out.append(
+            DeliverableReadiness(
+                "synonyms",
+                4,
+                "unavailable",
+                "No synonyms or deprecations yet: nothing to feed a search engine.",
+                "export_synonyms",
+                m,
+            )
+        )
+    else:
+        bits = [_plural(s.synonym_concepts, "term") + " with synonyms"]
+        if s.deprecated_concepts:
+            bits.append(_plural(s.deprecated_concepts, "deprecated term") + " redirected")
+        out.append(
+            DeliverableReadiness(
+                "synonyms",
+                4,
+                "ready",
+                ", ".join(bits) + ": a synonym file for search.",
+                "export_synonyms",
+                m,
+            )
+        )
+    return out
+
+
 def _rank_key(step: Step) -> tuple[int, bool, float, str]:
     return (step.tier, not step.actionable, -step.score, step.id)
 
@@ -462,4 +619,5 @@ def next_steps(
         stage=detect_stage(state, thresholds),
         steps=steps[: max(limit, 0)],
         health=health,
+        deliverables=deliverables(state, thresholds),
     )

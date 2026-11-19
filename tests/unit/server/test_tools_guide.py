@@ -199,6 +199,11 @@ async def test_next_steps_end_to_end(make_deps: DepsFactory, kit: AuthKit) -> No
     assert data["model"] == "retail" and data["stage"]
     assert len(data["steps"]) <= 5
     assert text(result).startswith("## Next steps — retail")
+    kinds = {d["kind"]: d for d in data["deliverables"]}
+    assert set(kinds) == {"glossary", "data_dictionary", "taxonomy", "synonyms"}
+    assert kinds["glossary"]["status"] == "partial"  # 1 of 6 fixture terms is defined
+    assert kinds["synonyms"]["status"] == "ready"  # Order has the synonym Purchase
+    assert "You can already hand out" in text(result)
     for step in data["steps"]:
         # read-only caller: nothing that needs propose/review/publish is actionable
         assert not (step["actionable"] and step["who"] in {"propose", "review", "publish"})

@@ -214,3 +214,58 @@ def test_output_is_deterministic() -> None:
 def test_custom_thresholds() -> None:
     strict = Thresholds(coverage=0.95)
     assert ids(HEALTHY, thresholds=strict) == ["coverage.unrealized_concepts"]
+
+
+# --- deliverables: value at every stage ---------------------------------------------------
+
+
+def _status(state: ModelState) -> dict[str, str]:
+    from lakeloom.core.next_steps import deliverables
+
+    return {d.kind: d.status for d in deliverables(state)}
+
+
+def test_deliverables_of_an_empty_model_are_unavailable() -> None:
+    assert set(_status(ModelState(model="m")).values()) == {"unavailable"}
+
+
+def test_a_partly_defined_vocabulary_already_gives_a_glossary() -> None:
+    got = _status(ModelState(model="m", concepts=10, defined_concepts=3))
+    assert got["glossary"] == "partial"
+    assert got["taxonomy"] == "unavailable" and got["data_dictionary"] == "unavailable"
+
+
+def test_each_stage_ready_independently() -> None:
+    state = ModelState(
+        model="m",
+        concepts=10,
+        defined_concepts=9,
+        latest_scan_id="scan_1",
+        total_columns=10,
+        mapped_columns=10,
+        max_depth=2,
+        orphan_concepts=0,
+        synonym_concepts=4,
+        deprecated_concepts=1,
+    )
+    from lakeloom.core.next_steps import deliverables
+
+    got = {d.kind: d for d in deliverables(state)}
+    assert {k: d.status for k, d in got.items()} == {
+        "glossary": "ready",
+        "data_dictionary": "ready",
+        "taxonomy": "ready",
+        "synonyms": "ready",
+    }
+    assert got["data_dictionary"].args == {"model": "m", "scan_id": "scan_1"}
+    assert "1 deprecated term redirected" in got["synonyms"].why
+
+
+def test_next_steps_carries_deliverables() -> None:
+    out = next_steps(ModelState(model="m", concepts=5, defined_concepts=5), Caller(id="u"))
+    assert [d.kind for d in out.deliverables] == [
+        "glossary",
+        "data_dictionary",
+        "taxonomy",
+        "synonyms",
+    ]

@@ -278,10 +278,14 @@ assess_taxonomy_coverage checks the topics the user expects are covered.
 propose_add_relation for the pairs the user confirms. propose_add_scope_note, \
 propose_add_history_note and propose_deprecate_concept record how a term is used, how it \
 changed, and what replaces it. validate_thesaurus checks the structure.
-3. Every change is a draft proposal. Show its summary and warnings (a warning about missing \
+3. Point out what the user can already use: get_next_steps lists the `deliverables` that \
+are ready or partial. Offer them as soon as they are useful, without waiting for later \
+stages: export_glossary after the vocabulary, export_data_dictionary after the metadata \
+profile, export_taxonomy after the taxonomy, export_synonyms after the thesaurus.
+4. Every change is a draft proposal. Show its summary and warnings (a warning about missing \
 definitions or an unfinished vocabulary means: go back a stage). Call submit_proposal only \
 when the user agrees, and say that a human reviewer still has to approve it.
-4. Call get_next_steps again and continue, or stop when the user wants to. Never call a \
+5. Call get_next_steps again and continue, or stop when the user wants to. Never call a \
 write tool without the user's agreement.
 """
 

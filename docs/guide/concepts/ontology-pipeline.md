@@ -149,6 +149,9 @@ Blocking problems come first: structural errors, proposals waiting for you, appl
 not yet released. Steps meant for someone else (another author, a reviewer, an operator)
 are labelled as such.
 
+It also lists what each stage can already hand to people: see
+[What you get at each stage](deliverables.md).
+
 Or start the guided conversation: the `build_ontology` prompt walks you through the
 stages one approved step at a time.
 

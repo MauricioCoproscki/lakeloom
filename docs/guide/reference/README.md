@@ -28,7 +28,7 @@ Legend:
 | Tool | Scope | | Purpose |
 |------|-------|-|---------|
 | `get_server_info` | read | R | Versions, OpenMetadata status, features, sources, models, the caller's scopes |
-| `get_next_steps` | read | R | The model's stage plus ranked next steps. Each step has `title`, `why`, `tool`, `args` and `actionable`. `goal` is one of `auto`, `build`, `maintain` or `publish` |
+| `get_next_steps` | read | R | The model's stage plus ranked next steps. Each step has `title`, `why`, `tool`, `args` and `actionable`. `goal` is one of `auto`, `build`, `maintain` or `publish`. `deliverables` says what each stage can already hand out |
 
 ### Lake sources
 
@@ -51,6 +51,19 @@ Legend:
 | `export_model` | read | R | Turtle, RDF/XML, N-Triples, JSON-LD or SKOS. `latest` includes the governance annotations; `version=` exports a release |
 | `validate_model` | read | R | Structural check, with errors and warnings |
 | `sparql_query` | read | R | Read-only SPARQL over the model's glossary |
+
+### Stage deliverables
+
+All are read-only and need `read` scope. Each takes `format` and `version`, and the files
+are also available as MCP resources and over HTTP. See
+[What you get at each stage](../concepts/deliverables.md).
+
+| Tool | Formats | Purpose |
+|------|---------|---------|
+| `export_glossary` | `markdown`, `csv` | Business glossary, with `structured.quality` (vocabulary score) |
+| `export_data_dictionary` | `markdown`, `csv` | Columns of a scan with their terms and definitions (`scan_id`, default newest) |
+| `export_taxonomy` | `markdown`, `mermaid`, `csv` | Taxonomy tree |
+| `export_synonyms` | `solr`, `csv`, `deprecations` | Search synonym rules, synonym list, deprecation map |
 
 ### Stage 1 — Controlled vocabulary
 
@@ -160,6 +173,7 @@ code spans.
 | `lakeloom://models/{slug}/ontology.{ttl,jsonld,owl,nt}` | The ontology. Add `?version=` for a release |
 | `lakeloom://models/{slug}/shapes.ttl` | SHACL shapes |
 | `lakeloom://models/{slug}/context.jsonld` | JSON-LD context |
+| `lakeloom://models/{slug}/deliverables/{filename}` | A stage deliverable (`glossary.md`, `data-dictionary.csv`, `synonyms.txt`, …) |
 | `lakeloom://assets/{fqn}/context.md` | Asset context (percent-encode the FQN) |
 
 The same artefacts are served over the read-only HTTP API at `/v1`. See

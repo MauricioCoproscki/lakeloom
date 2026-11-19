@@ -21,6 +21,7 @@ This guide is organised by what you do with Lakeloom. Start with the path that f
 
 1. **Concepts**
    - [The ontology pipeline in plain language](concepts/ontology-pipeline.md)
+   - [What you get at each stage](concepts/deliverables.md)
    - [How Lakeloom works: proposals, review and the effective model](concepts/how-lakeloom-works.md)
    - [Glossary](concepts/glossary.md)
 2. **Tutorials** (business users)
@@ -40,7 +41,9 @@ This guide is organised by what you do with Lakeloom. Start with the path that f
 2. Agree, or ask for something else. The assistant prepares a **draft proposal**.
 3. You read the summary and the warnings, then the assistant submits it for review.
 4. A **reviewer** approves it with their own sign-in, and the change lands in OpenMetadata.
-5. When the model is in a good state, a release tags it and publishes it.
+5. At any stage, export what is ready: a glossary, a data dictionary, a taxonomy tree or
+   a search-synonym file. See [What you get at each stage](concepts/deliverables.md).
+6. When the model is in a good state, a release tags it and publishes it.
 
 Nothing you or the assistant do changes the model until a human reviewer approves it.
 
