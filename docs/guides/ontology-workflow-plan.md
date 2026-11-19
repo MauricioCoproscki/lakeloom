@@ -4,7 +4,10 @@ Objetivo: permitir que o usuário do lakeloom crie Vocabulário Controlado, MAP,
 Thesaurus e Ontologia tanto pela ingestão do lake (path já existente) quanto pela criação
 direta via ferramentas MCP.
 
-Baseado em: *Ontology Pipeline* (ASIN B0HJ8QWJ5V) + análise da codebase em 2026-11-18.
+Baseado em: Jessica Talisman, *Ontology Pipeline: A Framework for Building Knowledge
+Infrastructures* (Technics Publications, 2026; ASIN B0HJ8QWJ5V) — *The Ontology Pipeline®* é
+marca registrada da autora; referências completas em [THIRD_PARTY.md](../../THIRD_PARTY.md) —
++ análise da codebase em 2026-11-18.
 
 > **Status (2026-11-19):** plano executado em M5–M9 e revisado pela auditoria da pipeline.
 > Os nomes das ferramentas neste documento já seguem o padrão `verbo_objeto` adotado na

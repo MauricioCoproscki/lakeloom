@@ -43,3 +43,10 @@ This guide is organised by what you do with Lakeloom. Start with the path that f
 5. When the model is in a good state, a release tags it and publishes it.
 
 Nothing you or the assistant do changes the model until a human reviewer approves it.
+
+## Credits
+
+The staged method follows Jessica Talisman's *Ontology Pipeline: A Framework for Building
+Knowledge Infrastructures* (Technics Publications, 2026). *The Ontology Pipeline®* is her
+registered trademark. Lakeloom is independent and not endorsed by her. Standards, tools and
+their authors and licenses are listed in [THIRD_PARTY.md](../../THIRD_PARTY.md).

@@ -1,2 +1,25 @@
 Lakeloom
 Copyright 2026 Elcio Abrahão
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+This product includes software developed by the OpenMetadata project:
+
+  src/lakeloom/om/openapi/openmetadata-2.1.0-rc1.json
+    The OpenAPI specification of OpenMetadata 2.1.0-rc1
+    (https://github.com/open-metadata/OpenMetadata), unmodified apart from
+    key ordering.
+    OpenMetadata
+    Copyright 2021
+    Licensed under the Apache License, Version 2.0.
+
+------------------------------------------------------------------------------
+The method behind the ontology-pipeline tooling and guides is credited to
+Jessica Talisman, "Ontology Pipeline: A Framework for Building Knowledge
+Infrastructures" (Technics Publications, 2026). The Ontology Pipeline(R) is a
+registered trademark of Jessica Talisman. No text of the book is included
+except short, attributed quotations in docs/ontology-pipeline-guide.md.
+
+Other third-party components, sources and their licenses are listed in
+THIRD_PARTY.md.

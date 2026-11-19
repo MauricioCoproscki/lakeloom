@@ -1,7 +1,14 @@
 # The ontology pipeline in plain language
 
-Lakeloom follows the method of the book *Ontology Pipeline*, which builds on the ANSI/NISO
-Z39.19 standard for controlled vocabularies. This page explains the method without jargon,
+Lakeloom follows the method of Jessica Talisman's book *Ontology Pipeline: A Framework for
+Building Knowledge Infrastructures* (Technics Publications, 2026), which builds on the
+[ANSI/NISO Z39.19](https://www.niso.org/publications/ansiniso-z3919-2005-r2010) standard for
+controlled vocabularies. *The Ontology Pipeline®* is a registered trademark of Jessica
+Talisman, and Lakeloom is an independent project, not endorsed by her. Her
+[introductory article](https://jessicatalisman.substack.com/p/the-ontology-pipeline) is free
+to read. Full references are in [THIRD_PARTY.md](../../../THIRD_PARTY.md).
+
+This page explains the method in Lakeloom's own words, without jargon,
 and shows which Lakeloom tools belong to each step. You do not need to call the tools
 yourself: the assistant does, after you agree.
 
@@ -30,9 +37,9 @@ before**:
 **What it is.** A list of business terms, one preferred name each, with a one-sentence
 definition and the synonyms people actually use ("Client", "Account holder" → *Customer*).
 
-**Why it matters.** A term without a definition is a label, not shared meaning. The book
-calls a vocabulary of undefined labels *semantic theater*: it looks governed, but nobody
-agrees on anything.
+**Why it matters.** A term without a definition is a label, not shared meaning. Talisman's
+book calls this anti-pattern *semantic theater*: a vocabulary of undefined labels that looks
+governed, though nobody agrees on anything.
 
 **In Lakeloom**
 

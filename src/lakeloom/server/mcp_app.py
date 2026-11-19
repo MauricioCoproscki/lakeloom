@@ -77,7 +77,9 @@ def create_mcp(deps: AppDeps) -> LakeloomMCP:
         instructions=(
             "Lakeloom builds semantic models of a data lake in OpenMetadata, following the "
             "ontology pipeline: controlled vocabulary, metadata profile (MAP), taxonomy, "
-            "thesaurus, ontology, knowledge graph. Start with get_server_info (versions, "
+            "thesaurus, ontology, knowledge graph (the method of Jessica Talisman's book "
+            "Ontology Pipeline; The Ontology Pipeline is her registered trademark). Start "
+            "with get_server_info (versions, "
             "features, your scopes). When the user "
             "is unsure what to do on a model, call get_next_steps: it reports the model's stage "
             "and ranks the next steps, each with the tool to call; the build_ontology prompt "

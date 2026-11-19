@@ -46,7 +46,7 @@ Use the pipeline's quality bar:
 
 | Check | Why |
 |-------|-----|
-| Every new term has a clear definition | Without one, people will guess the meaning (*semantic theater*) |
+| Every new term has a clear definition | Without one, people will guess the meaning: the *semantic theater* anti-pattern of Talisman's *Ontology Pipeline* |
 | No duplicate of an existing term | Check the *matches* section; prefer a synonym over a near-duplicate |
 | The hierarchy is right ("is every X a kind of Y?") | A wrong broader term misleads every query that widens or narrows |
 | Related terms are really associated | RT links are for terms people look up together |

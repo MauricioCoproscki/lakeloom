@@ -4,7 +4,9 @@ Complements the lake-ingest path (mapper.py + proposals.py) by letting agents an
 construct CVs without a lake scan.  All output is a list of ProposalOperations; nothing is
 written here — callers pass the result to proposals.propose_operations() as usual.
 
-Stage 1 of the Ontology Pipeline (ANSI Z39.19 / ISO 25964):
+Stage 1 of the Ontology Pipeline (Jessica Talisman, *Ontology Pipeline*, Technics
+Publications, 2026; The Ontology Pipeline is her registered trademark; see THIRD_PARTY.md),
+built on ANSI Z39.19 / ISO 25964:
   Controlled Vocabulary → MAP → Taxonomy → Thesaurus → Ontology → Knowledge Graph
 """
 

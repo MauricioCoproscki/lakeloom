@@ -2,9 +2,9 @@
 
 The MAP documents the semantic contract between a physical lake source and an ontology:
 which column/table in the lake is realized by which concept. Lakeloom builds the
-*implementation layer* of the book's MAP (physical element → concept), computed on demand
-from a scan; the canonical layer (elements and obligations), crosswalks and versioned MAP
-documents are not modelled yet.
+*implementation layer* of the MAP described in Jessica Talisman's *Ontology Pipeline*
+(physical element → concept), computed on demand from a scan; the canonical layer
+(elements and obligations), crosswalks and versioned MAP documents are not modelled yet.
 
 Three tools:
 

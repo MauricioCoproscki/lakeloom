@@ -878,13 +878,22 @@ For development setup see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Project documents
 
 [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) ·
-[Security](SECURITY.md) · [Governance](GOVERNANCE.md) · [Changelog](CHANGELOG.md)
+[Security](SECURITY.md) · [Governance](GOVERNANCE.md) · [Changelog](CHANGELOG.md) ·
+[Credits and third-party licenses](THIRD_PARTY.md)
 
 ## Disclaimer
 
-Lakeloom is an **independent project**. It is not affiliated with, endorsed by, or sponsored by
-OpenMetadata, Collate, Databricks or Snowflake. All trademarks belong to their respective owners.
+Lakeloom is an **independent project**. It is not affiliated with, endorsed by, or sponsored
+by OpenMetadata, Collate, Databricks, Snowflake, Jessica Talisman or Technics Publications.
+The ontology-pipeline tooling follows the method of Jessica Talisman's *Ontology Pipeline: A
+Framework for Building Knowledge Infrastructures* (Technics Publications, 2026). *The
+Ontology Pipeline®* is her registered trademark. All other trademarks belong to their
+respective owners.
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+[THIRD_PARTY.md](THIRD_PARTY.md) credits the method, the standards and every tool Lakeloom
+uses or ships, with their authors, sites and licenses. It also explains why all of them are
+compatible with Apache-2.0.

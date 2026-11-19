@@ -1,8 +1,14 @@
 # Ontology Pipeline Guide: Adapting Lakeloom
 
-Based on *Ontology Pipeline: A Framework for Knowledge Engineering* (ASIN B0HJ8QWJ5V),
+Based on Jessica Talisman, *Ontology Pipeline: A Framework for Building Knowledge
+Infrastructures* (Technics Publications, 2026; Amazon ASIN B0HJ8QWJ5V) [[1]](#references),
 this guide maps the book's 6-stage SKMS framework onto the lakeloom architecture and provides
 concrete instructions for extending lakeloom into a full ontology-creation pipeline.
+
+> *The Ontology Pipeline®* is a registered trademark of Jessica Talisman. Lakeloom is an
+> independent project, not affiliated with or endorsed by the author or the publisher. The
+> summaries below are Lakeloom's own reading of the method. The short quotations are marked
+> and attributed: verify them against the published edition before citing them elsewhere.
 
 ---
 
@@ -238,7 +244,8 @@ A MAP is **living documentation**. Add to `core/map.py`:
 ### Semantic fragmentation anti-pattern
 
 > *"Semantic fragmentation is where the rules governing data have no meaningful connection to the
-> conceptual models that should give that data meaning."* — book
+> conceptual models that should give that data meaning."*
+> — Jessica Talisman, *Ontology Pipeline* [[1]](#references)
 
 Lakeloom should detect and report semantic fragmentation: cases where:
 - Two columns describe the same concept but use different names and no crosswalk exists
@@ -604,12 +611,13 @@ Every write tool creates a draft proposal; `submit_proposal` sends it to review 
 
 ---
 
-## 10. Governance Principles (from book)
+## 10. Governance Principles (from the book [[1]](#references))
 
 ### Core principle: governance and semantics are inseparable
 
 > *"Library science's successes with interoperability stem from its commitment to explicit data
 > modeling as the foundation of semantic systems."*
+> — Jessica Talisman, *Ontology Pipeline* [[1]](#references)
 
 Every metadata decision in lakeloom is a **semantic decision**. Build governance into the
 construction process, not on top of it:
@@ -623,6 +631,7 @@ construction process, not on top of it:
 
 > *"Semantic theater is a system that appears to provide rich meaning but instead offers better
 > search and visualization of the same semantically impoverished data."*
+> — Jessica Talisman, *Ontology Pipeline* [[1]](#references)
 
 Avoid this in lakeloom by:
 - Requiring definitions (not just labels) for every approved term
@@ -633,6 +642,7 @@ Avoid this in lakeloom by:
 
 > *"ALL users are users, and therefore all systems are designed for all users, be it human,
 > machine, or even AI."*
+> — Jessica Talisman, *Ontology Pipeline* [[1]](#references)
 
 Design every ontology artifact for dual audiences:
 - **Human-readable**: clear natural language definitions with examples and scope notes
@@ -698,11 +708,56 @@ Design every ontology artifact for dual audiences:
 
 ## References
 
-- ANSI Z39.19-2005: *Guidelines for the Construction, Format, and Management of Monolingual Controlled Vocabularies* (the standard underlying the book)
-- ISO 25964-1/2: *Thesauri and interoperability with other vocabularies*
-- W3C SKOS: https://www.w3.org/TR/skos-reference/
-- Dublin Core: https://www.dublincore.org/specifications/dublin-core/
-- DCAT 3: https://www.w3.org/TR/vocab-dcat-3/
-- SHACL: https://www.w3.org/TR/shacl/
-- VocBench: https://vocbench.uniroma2.it/
-- spaCy: https://spacy.io/
+### Method
+
+1. Jessica Talisman. *Ontology Pipeline: A Framework for Building Knowledge Infrastructures*.
+   Technics Publications, 2026. Amazon ASIN B0HJ8QWJ5V. Author's site:
+   <https://jessicatalisman.substack.com/about>. *The Ontology Pipeline®* is her registered
+   trademark.
+2. Jessica Talisman. "The Ontology Pipeline®". *Intentional Arrangement*.
+   <https://jessicatalisman.substack.com/p/the-ontology-pipeline>, and "The Ontology
+   Pipeline™, Refresh", <https://jessicatalisman.substack.com/p/the-ontology-pipeline-refreshed>.
+
+### Standards
+
+3. NISO. *ANSI/NISO Z39.19-2005 (R2010): Guidelines for the Construction, Format, and
+   Management of Monolingual Controlled Vocabularies*.
+   <https://www.niso.org/publications/ansiniso-z3919-2005-r2010>. This is the standard
+   underlying the book.
+4. ISO. *ISO 25964-1:2011* and *ISO 25964-2:2013, Thesauri and interoperability with other
+   vocabularies*. <https://www.iso.org/standard/53657.html>,
+   <https://www.iso.org/standard/53658.html>.
+5. W3C. *SKOS Simple Knowledge Organization System Reference*.
+   <https://www.w3.org/TR/skos-reference/>
+6. W3C. *OWL 2 Web Ontology Language Document Overview*. <https://www.w3.org/TR/owl2-overview/>
+7. W3C. *Shapes Constraint Language (SHACL)*. <https://www.w3.org/TR/shacl/>
+8. DCMI. *DCMI Metadata Terms* (Dublin Core).
+   <https://www.dublincore.org/specifications/dublin-core/dcmi-terms/>
+9. W3C. *Data Catalog Vocabulary (DCAT) – Version 3*. <https://www.w3.org/TR/vocab-dcat-3/>
+
+### Tools and vocabularies mentioned (not used by Lakeloom)
+
+These are suggestions from the design discussion above, not dependencies. Check each
+license before adopting one.
+
+| Name | Authors | License | Link |
+|------|---------|---------|------|
+| spaCy | Explosion AI | MIT | <https://spacy.io/> |
+| NLTK | The NLTK Project | Apache-2.0 | <https://www.nltk.org/> |
+| VocBench | ART Group, University of Rome Tor Vergata | BSD-3-Clause | <https://vocbench.uniroma2.it/> |
+| TopBraid Composer / EDG | TopQuadrant | Commercial | <https://www.topquadrant.com/> |
+| ELK reasoner | Yevgeny Kazakov, Markus Krötzsch, František Simančík and contributors | Apache-2.0 | <https://github.com/liveontologies/elk-reasoner> |
+| HermiT reasoner | University of Oxford (Boris Motik, Rob Shearer, Birte Glimm, Giorgos Stoilos, Ian Horrocks) | LGPL-3.0 | <http://www.hermit-reasoner.com/> |
+| py-horned-owl | Phillip Lord, Björn Gehrke and contributors | LGPL-3.0 | <https://github.com/ontology-tools/py-horned-owl> |
+| Owlready2 | Jean-Baptiste Lamy | LGPL-3.0 | <https://owlready2.readthedocs.io/> |
+| Wikidata | Wikimedia Foundation and contributors | Data CC0 1.0 | <https://www.wikidata.org/> |
+| schema.org | schema.org community (W3C Community Group) | CC BY-SA 3.0 | <https://schema.org/> |
+| DBpedia | DBpedia Association | CC BY-SA 3.0 and GFDL | <https://www.dbpedia.org/> |
+| FIBO | EDM Council | MIT | <https://spec.edmcouncil.org/fibo/> |
+| SNOMED CT | SNOMED International | Licensed (affiliate licence required) | <https://www.snomed.org/> |
+| NICE Framework | NIST | Public domain (US Government work) | <https://www.nist.gov/itl/applied-cybersecurity/nice/nice-framework-resource-center> |
+
+> **License note for future work.** HermiT, py-horned-owl and Owlready2 are LGPL-3.0. Using
+> them as separately installed, dynamically loaded libraries is compatible with Lakeloom's
+> Apache-2.0 license. Copying their code into Lakeloom is not. SNOMED CT cannot be
+> redistributed without a licence.
