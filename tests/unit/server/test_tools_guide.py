@@ -83,6 +83,9 @@ def deps(
     async def scan_get(scan_id: str) -> Any:
         return SimpleNamespace(id=scan_id)
 
+    async def latest_per_source() -> list[Any]:
+        return []
+
     return SimpleNamespace(
         models=SimpleNamespace(get_model=get_model, validation=validation),
         proposal_repo=Repo(proposals or []),
@@ -92,7 +95,7 @@ def deps(
         drift_schedule=SimpleNamespace(
             last_run=SimpleNamespace(tables=drift) if drift is not None else None
         ),
-        scans=SimpleNamespace(get=scan_get),
+        scans=SimpleNamespace(get=scan_get, latest_per_source=latest_per_source),
         policies=policies or [],
     )
 

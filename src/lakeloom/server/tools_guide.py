@@ -224,10 +224,11 @@ async def gather_state(
         fields["deprecated_concepts"] = len(deprecated_concepts(g))
 
     async def latest_scan() -> None:
-        scan_ids = [p.scan_id for p in proposals if p.scan_id]
-        if not scan_ids:
+        from lakeloom.server.deliverables import latest_scan_id
+
+        latest = await latest_scan_id(deps, model, realizations)
+        if latest is None:
             return
-        latest = max(scan_ids)  # scan ids are ULIDs: lexical order is time order
         fields["latest_scan_id"] = latest
         record = await deps.scans.get(latest)
         report = validate_map(build_map(record, model_slug=model, realizations=realizations))

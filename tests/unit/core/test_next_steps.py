@@ -86,7 +86,9 @@ def test_s3_never_asks_to_review_own_proposal_and_oldest_first() -> None:
     )
     (step,) = next_steps(state, ME).steps
     assert step.evidence["proposals"] == ["p3", "p2"] and step.evidence["oldest_days"] == 5
-    assert ids(replace(state, submitted=[ProposalRef("p1", "alice", 9)])) == []
+    # only my own proposals wait: tell me, but never as something I can review
+    own = next_steps(replace(state, submitted=[ProposalRef("p1", "alice", 9)]), ME).steps
+    assert [(s.id, s.actionable, s.tool) for s in own] == [("proposals.review.mine", False, None)]
 
 
 def test_s3_without_review_permission_is_informative() -> None:

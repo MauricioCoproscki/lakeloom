@@ -172,3 +172,24 @@ async def test_expand_query_tool(make_deps: DepsFactory, kit: AuthKit) -> None:
     assert [c["label"] for c in data["concepts"]] == ["Order", "OrderDate"]
     assert data["concepts"][0]["matched"] == "purchase"
     assert "Purchase" in data["terms"] and "Search terms:" in text(result)
+
+
+async def test_latest_scan_includes_scans_of_tables_the_model_realizes() -> None:
+    from types import SimpleNamespace
+
+    class Repo:
+        async def list_by_status(self, *a: Any) -> Any:
+            return [SimpleNamespace(scan_id="scan_01A")], None
+
+    def scan(sid: str, *fqns: str) -> Any:
+        return SimpleNamespace(id=sid, tables=[SimpleNamespace(om_fqn=f) for f in fqns])
+
+    async def latest_per_source() -> list[Any]:
+        return [scan("scan_01Z", "svc.retail.sales.orders"), scan("scan_01Y", "svc.other.t")]
+
+    deps: Any = SimpleNamespace(
+        proposal_repo=Repo(), scans=SimpleNamespace(latest_per_source=latest_per_source)
+    )
+    real = {"http://x/Order": ["svc.retail.sales.orders.order_id"]}
+    assert await service.latest_scan_id(deps, "retail", real) == "scan_01Z"
+    assert await service.latest_scan_id(deps, "retail", {}) == "scan_01A"  # proposals only

@@ -244,7 +244,18 @@ def _s3_submitted(s: ModelState, t: Thresholds, c: Caller) -> list[Step]:
         (p for p in s.submitted if p.author != c.id), key=lambda p: (-p.age_days, p.id)
     )
     if not reviewable:
-        return []
+        mine = sorted((p for p in s.submitted if p.author == c.id), key=lambda p: -p.age_days)
+        if not mine:
+            return []
+        return [Step(
+            id="proposals.review.mine",
+            title=f"{_plural(len(mine), 'proposal')} of yours wait for a reviewer",
+            why="Nothing you submitted is applied until another person reviews it; ask a "
+            "reviewer for the model (you cannot review your own proposals).",
+            tier=2, impact="high", effort=1, who="review", reach=len(mine),
+            evidence={"proposals": [p.id for p in mine], "oldest_days": mine[0].age_days},
+            actionable=False,
+        )]  # fmt: skip
     can = "review" in c.can
     oldest = reviewable[0]
     return [Step(

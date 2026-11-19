@@ -60,6 +60,15 @@ class ScanService:
     async def get(self, scan_id: str) -> ScanRecord:
         return await self._repo.get(scan_id)
 
+    async def latest_per_source(self) -> list[ScanRecord]:
+        """The newest scan of every configured source that has one."""
+        out: list[ScanRecord] = []
+        for name in sorted(self._sources):
+            record = await self._repo.latest_for_source(name)
+            if record is not None:
+                out.append(record)
+        return out
+
     async def _enumerate(
         self,
         src: LakeSource,

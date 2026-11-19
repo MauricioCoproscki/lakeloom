@@ -21,9 +21,13 @@ __all__ = ["deliverable_bytes", "latest_scan_id", "serve_deliverable"]
 _PAGE = 200
 
 
-async def latest_scan_id(deps: "AppDeps", model: str) -> str | None:
-    """The newest scan behind any proposal of ``model`` (scan ids are ULIDs: lexical order
-    is time order), or ``None``."""
+async def latest_scan_id(
+    deps: "AppDeps", model: str, realizations: dict[str, list[str]] | None = None
+) -> str | None:
+    """The newest scan that describes ``model``: one a proposal of the model came from, or
+    the newest scan of a source whose tables already carry the model's terms (a scan made
+    only to document the lake belongs to the model too). Scan ids are ULIDs: lexical order
+    is time order. ``None`` when there is none."""
     best: str | None = None
     cursor: str | None = None
     statuses = ["draft", "submitted", "changes_requested", "applied", "rejected"]
@@ -33,13 +37,22 @@ async def latest_scan_id(deps: "AppDeps", model: str) -> str | None:
             if p.scan_id and (best is None or p.scan_id > best):
                 best = p.scan_id
         if cursor is None:
-            return best
+            break
+    if realizations:
+        assets = {a for values in realizations.values() for a in values}
+        for record in await deps.scans.latest_per_source():
+            tables = {t.om_fqn for t in record.tables if t.om_fqn}
+            touches = any(a == t or a.startswith(t + ".") for a in assets for t in tables)
+            if touches and (best is None or record.id > best):
+                best = record.id
+    return best
 
 
 async def _profile(deps: "AppDeps", model: str, scan_id: str | None) -> MapProfile:
     from lakeloom.server.tools_analytics import load_realization_index
 
-    sid = scan_id or await latest_scan_id(deps, model)
+    index = await load_realization_index(deps, model)
+    sid = scan_id or await latest_scan_id(deps, model, index.realizations)
     if sid is None:
         raise LakeloomError(
             "not_found",
@@ -47,7 +60,6 @@ async def _profile(deps: "AppDeps", model: str, scan_id: str | None) -> MapProfi
             "scan the lake with scan_lake_source and propose_from_scan, or pass scan_id",
         )
     record = await deps.scans.get(sid)
-    index = await load_realization_index(deps, model)
     return build_map(record, model_slug=model, realizations=index.realizations)
 
 

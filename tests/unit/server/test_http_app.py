@@ -116,7 +116,9 @@ async def test_nfr_ops_02_unmatched_route_label(deps: AppDeps) -> None:
     async with _client(deps) as c:
         await c.get("/healthz/../nope/12345", headers={"Authorization": "Bearer x"})
         r = await c.get("/metrics")
-    assert "12345" not in r.text
+    # labels only: metrics are process-wide, so a sample *value* may contain these digits
+    labels = [line.split("{", 1)[1].split("}", 1)[0] for line in r.text.splitlines() if "{" in line]
+    assert not any("12345" in label for label in labels)
 
 
 async def test_nfr_ops_03_request_id_echoed(deps: AppDeps) -> None:
