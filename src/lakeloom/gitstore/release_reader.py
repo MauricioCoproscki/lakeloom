@@ -19,6 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from lakeloom.core.deliverables import DELIVERABLES
 from lakeloom.core.model_create import SLUG_PATTERN
 from lakeloom.core.release_diff import parse_version
 from lakeloom.errors import LakeloomError
@@ -46,6 +47,16 @@ ReleaseFile = Literal[
     "skos.ttl",
     "manifest.yaml",
     "CHANGELOG.md",
+    "deliverables/glossary.md",
+    "deliverables/glossary.csv",
+    "deliverables/data-dictionary.md",
+    "deliverables/data-dictionary.csv",
+    "deliverables/taxonomy.md",
+    "deliverables/taxonomy.mmd",
+    "deliverables/taxonomy.csv",
+    "deliverables/synonyms.txt",
+    "deliverables/synonyms.csv",
+    "deliverables/deprecations.csv",
 ]
 _FILES: frozenset[str] = frozenset(
     {
@@ -57,6 +68,7 @@ _FILES: frozenset[str] = frozenset(
         "skos.ttl",
         "manifest.yaml",
         "CHANGELOG.md",
+        *(f"deliverables/{d.filename}" for d in DELIVERABLES),
     }
 )
 _STORED: dict[ExportFormat, ReleaseFile] = {

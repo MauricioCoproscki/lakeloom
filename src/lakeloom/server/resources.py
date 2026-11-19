@@ -92,6 +92,13 @@ TEMPLATES: Final[tuple[tuple[str, str, str, str], ...]] = (
         "text/turtle",
     ),
     (
+        "lakeloom://models/{slug}/deliverables/{filename}",
+        "model_deliverable",
+        "A stage deliverable: glossary.md/.csv, data-dictionary.md/.csv, taxonomy.md/.mmd/.csv, "
+        "synonyms.txt/.csv or deprecations.csv; ?version= reads a release's copy.",
+        "text/markdown",
+    ),
+    (
         "lakeloom://assets/{fqn}/context.md",
         "asset_context",
         "Everything known about an asset as Markdown; percent-encode the table FQN.",
@@ -105,7 +112,7 @@ def _mcp_error(error: LakeloomError) -> MCPError:
     return MCPError(code=code, message=error.message, data=error.to_dict())
 
 
-Kind = Literal["models", "ontology", "shapes", "context", "asset"]
+Kind = Literal["models", "ontology", "shapes", "context", "asset", "deliverable"]
 
 
 class LakeloomMCP(MCPServer[Any]):
@@ -318,6 +325,19 @@ class LakeloomMCP(MCPServer[Any]):
                 return "context", lambda: model_context_artifact(
                     deps.models, slug, version=version, releases=deps.reader, git=deps.git_links
                 )
+            if name.startswith("deliverables/"):
+                from lakeloom.core.deliverables import DELIVERABLES
+                from lakeloom.server.deliverables import serve_deliverable
+
+                filename = name[len("deliverables/") :]
+                d = next((x for x in DELIVERABLES if x.filename == filename), None)
+                if d is None:
+                    raise LakeloomError(
+                        "validation_error",
+                        f"unknown deliverable {filename!r}",
+                        "use one of: " + ", ".join(x.filename for x in DELIVERABLES),
+                    )
+                return "deliverable", serve_deliverable(deps, slug, d, version=version)
         if head == "assets" and tail.endswith("/context.md"):
             fqn = unquote(tail[: -len("/context.md")])
             return "asset", lambda: _asset(deps, fqn, version)

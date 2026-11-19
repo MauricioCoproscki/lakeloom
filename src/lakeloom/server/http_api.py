@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from lakeloom.core.deliverables import DELIVERABLES
 from lakeloom.core.sparql import FORMATS, MEDIA, ResultFormat
 from lakeloom.errors import ErrorCode, LakeloomError, RateLimited
 from lakeloom.metrics import RATE_LIMITED
@@ -43,6 +44,7 @@ from lakeloom.publish.artifacts import (
 )
 from lakeloom.publish.negotiation import MediaType, choose
 from lakeloom.server.auth import Principal
+from lakeloom.server.deliverables import serve_deliverable
 from lakeloom.server.ratelimit import principal_key
 
 if TYPE_CHECKING:
@@ -431,6 +433,32 @@ def create_router(deps: "AppDeps") -> APIRouter:
             )
 
         return await serve(request, SHAPES_TYPES, build)
+
+    @router.get(
+        "/models/{slug}/deliverables/{filename}",
+        summary="A stage deliverable: glossary, data dictionary, taxonomy, synonyms",
+        description="File names: "
+        + ", ".join(d.filename for d in DELIVERABLES)
+        + ". `latest` renders the current model; `version` reads a release's copy.",
+        response_class=Response,
+        responses=_responses(("text/markdown", "text/csv", "text/plain")),
+    )
+    async def get_model_deliverable(
+        request: Request,
+        slug: str,
+        filename: str,
+        version: VersionQuery = None,
+        scan_id: Annotated[
+            str | None, Query(description="data dictionary only: the scan to describe")
+        ] = None,
+    ) -> Response:
+        d = next((x for x in DELIVERABLES if x.filename == filename), None)
+        if d is None:
+            names = ", ".join(x.filename for x in DELIVERABLES)
+            return error_response("not_found", f"Unknown deliverable {filename!r}", f"use {names}")
+        media = cast("MediaType", d.media_type)
+        build = serve_deliverable(deps, slug, d, version=version, scan_id=scan_id)
+        return await serve(request, (media,), lambda _: build())
 
     @router.get(
         "/models/{slug}/context.jsonld",

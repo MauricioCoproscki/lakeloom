@@ -15,6 +15,8 @@ MediaType = Literal[
     "application/n-triples",
     "text/markdown",
     "application/json",
+    "text/csv",
+    "text/plain",
 ]
 
 FORMAT_BY_MEDIA: dict[MediaType, ExportFormat] = {

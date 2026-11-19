@@ -18,7 +18,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
@@ -33,7 +33,7 @@ from lakeloom.core.context import (
 from lakeloom.core.models import ModelInfo, ModelService
 from lakeloom.errors import LakeloomError
 from lakeloom.gitstore.links import commit_url, tag_url
-from lakeloom.gitstore.release_reader import ReleaseInfo, ReleaseReader
+from lakeloom.gitstore.release_reader import ReleaseFile, ReleaseInfo, ReleaseReader
 from lakeloom.om.client import OMClient
 from lakeloom.publish.negotiation import FORMAT_BY_MEDIA, MediaType
 from lakeloom.publish.shacl_gen import ShapesMedia
@@ -424,3 +424,39 @@ async def asset_context_artifact(
     om_url = models.om_url
     links = [] if om_url is None else [table_link(om_url, ctx.asset.table_fqn)]
     return _make(body, media, modified, links)
+
+
+async def deliverable_artifact(
+    models: ModelService,
+    slug: str,
+    filename: str,
+    media_type: str,
+    render_latest: Callable[[], Awaitable[bytes]],
+    *,
+    version: str | None,
+    releases: ReleaseReader | None = None,
+    git: GitLinks | None = None,
+) -> Artifact:
+    """A stage deliverable (glossary, taxonomy, synonyms, data dictionary).
+
+    ``latest`` renders the current effective model; a release serves the file its tag
+    carries under ``deliverables/`` (releases made before deliverables existed have none:
+    ``not_found``)."""
+    rel = await resolve_version(releases, slug, version)
+    if rel is not None and releases is not None:
+        try:
+            name = cast("ReleaseFile", f"deliverables/{filename}")
+            body = await releases.file(slug, rel.version, name)
+        except LakeloomError as exc:
+            if exc.code != "not_found":
+                raise
+            raise LakeloomError(
+                "not_found",
+                f"release {rel.version} of {slug!r} has no {filename}",
+                "releases made before stage deliverables have none; use version latest",
+            ) from None
+        return _release_artifact(body, media_type, rel, git)
+    info = await models.get_model(slug)
+    body = await render_latest()
+    modified, links = await _model_stamp(models, info, git)
+    return _make(body, media_type, modified, links)

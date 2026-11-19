@@ -1807,6 +1807,370 @@
         ]
       }
     },
+    "/v1/models/{slug}/deliverables/{filename}": {
+      "get": {
+        "description": "File names: glossary.md, glossary.csv, data-dictionary.md, data-dictionary.csv, taxonomy.md, taxonomy.mmd, taxonomy.csv, synonyms.txt, synonyms.csv, deprecations.csv. `latest` renders the current model; `version` reads a release's copy.",
+        "operationId": "get_model_deliverable_v1_models__slug__deliverables__filename__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "filename",
+            "required": true,
+            "schema": {
+              "title": "Filename",
+              "type": "string"
+            }
+          },
+          {
+            "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "latest (default) or a release MAJOR.MINOR.PATCH (see /versions)",
+              "title": "Version"
+            }
+          },
+          {
+            "description": "data dictionary only: the scan to describe",
+            "in": "query",
+            "name": "scan_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "data dictionary only: the scan to describe",
+              "title": "Scan Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {},
+              "text/markdown": {},
+              "text/plain": {}
+            },
+            "description": "The artefact in the negotiated media type",
+            "headers": {
+              "ETag": {
+                "description": "Strong validator: sha256 of the body.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Last-Modified": {
+                "description": "latest: when the source changed in OpenMetadata; a release: its tag date.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Link": {
+                "description": "latest: the OpenMetadata entity (rel=\"via\") and the last Git publication (rel=\"related\"); a release: its Git tag and commit (rel=\"via\").",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not modified (If-None-Match matched)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "406": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "conflict",
+                            "forbidden",
+                            "not_found",
+                            "rate_limited",
+                            "upstream_unavailable",
+                            "validation_error"
+                          ],
+                          "type": "string"
+                        },
+                        "hint": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "hint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Typed error"
+          }
+        },
+        "summary": "A stage deliverable: glossary, data dictionary, taxonomy, synonyms",
+        "tags": [
+          "publication"
+        ]
+      }
+    },
     "/v1/models/{slug}/shapes": {
       "get": {
         "operationId": "get_model_shapes_v1_models__slug__shapes_get",

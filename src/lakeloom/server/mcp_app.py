@@ -34,6 +34,7 @@ from lakeloom.server.resources import LakeloomMCP
 from lakeloom.server.server_info import ServerInfo, build_server_info, summarize
 from lakeloom.server.tools_analytics import register_analytics_tools
 from lakeloom.server.tools_common import READ_SCOPE, guarded, tool_error
+from lakeloom.server.tools_deliverables import register_deliverable_tools
 from lakeloom.server.tools_guide import register_guide_tools
 from lakeloom.server.tools_import import register_import_tools
 from lakeloom.server.tools_linking import register_linking_tools
@@ -145,6 +146,7 @@ def create_mcp(deps: AppDeps) -> LakeloomMCP:
     register_map_tools(mcp, deps)
     register_linking_tools(mcp, deps)
     register_analytics_tools(mcp, deps)
+    register_deliverable_tools(mcp, deps)
     register_guide_tools(mcp, deps)
     register_import_tools(mcp, deps)
     register_prompts(mcp)
