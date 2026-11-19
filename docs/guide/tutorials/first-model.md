@@ -130,8 +130,7 @@ related link has its reverse and that the hierarchy has no cycles.
   "client" now finds "customer", and a deprecated term redirects to its replacement.
 - `expand_query` turns a question into the terms a search or a RAG retriever should use.
   For example, *"late purchase"* gives *Order* (matched through its synonym) plus its
-  synonyms, narrower terms and
-  related terms.
+  synonyms, narrower terms and related terms.
 
 > **Tip.** At any point, ask *"What can I already hand out?"*. `get_next_steps` lists every
 > deliverable as ready, partial or unavailable. See
