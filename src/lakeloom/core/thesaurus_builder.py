@@ -13,25 +13,25 @@ Stage 4 of the Ontology Pipeline (ANSI Z39.19 / ISO 25964):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from rdflib import Graph, URIRef
-from rdflib.namespace import OWL, SKOS
+from rdflib.namespace import SKOS
 
 __all__ = [
     "IssueLevel",
+    "RelatedSuggestion",
     "ThesaurusIssue",
     "ThesaurusReport",
-    "RelatedSuggestion",
+    "suggest_related_from_cooccurrence",
+    "validate_ansi_z39",
     "validate_bt_nt_cycles",
     "validate_rt_symmetry",
     "validate_scope_notes",
-    "validate_ansi_z39",
-    "suggest_related_from_cooccurrence",
 ]
 
 
-class IssueLevel(str, Enum):
+class IssueLevel(StrEnum):
     ERROR = "error"
     WARNING = "warning"
     INFO = "info"
@@ -56,7 +56,7 @@ class ThesaurusReport:
     concepts_with_definition: int = 0
     total_bt_nt_pairs: int = 0
     total_rt_pairs: int = 0
-    issues: list[ThesaurusIssue] = field(default_factory=list)
+    issues: list[ThesaurusIssue] = field(default_factory=list["ThesaurusIssue"])
 
     @property
     def errors(self) -> list[ThesaurusIssue]:
@@ -70,8 +70,8 @@ class ThesaurusReport:
         lines = [
             "## Thesaurus Validation Report",
             "",
-            f"| Metric | Value |",
-            f"|---|---|",
+            "| Metric | Value |",
+            "|---|---|",
             f"| Total concepts | {self.total_concepts} |",
             f"| With definition | {self.concepts_with_definition} |",
             f"| With scope note | {self.concepts_with_scope_note} |",
@@ -128,7 +128,7 @@ def validate_bt_nt_cycles(graph: Graph) -> list[ThesaurusIssue]:
 
     def dfs(node: URIRef, path: list[URIRef]) -> None:
         if node in in_stack:
-            cycle = path[path.index(node) :] + [node]
+            cycle = [*path[path.index(node) :], node]
             cycle_str = " → ".join(_label(n, graph) for n in cycle)
             issues.append(
                 ThesaurusIssue(
@@ -220,12 +220,10 @@ def validate_ansi_z39(graph: Graph) -> ThesaurusReport:
         if any(True for _ in graph.objects(c, SKOS.scopeNote)):
             report.concepts_with_scope_note += 1
 
-    report.total_bt_nt_pairs = sum(
-        1 for _ in graph.triples((None, SKOS.broader, None))
-    )
-    report.total_rt_pairs = sum(
-        1 for _ in graph.triples((None, SKOS.related, None))
-    ) // 2  # each pair counted twice
+    report.total_bt_nt_pairs = sum(1 for _ in graph.triples((None, SKOS.broader, None)))
+    report.total_rt_pairs = (
+        sum(1 for _ in graph.triples((None, SKOS.related, None))) // 2
+    )  # each pair counted twice
 
     report.issues.extend(validate_bt_nt_cycles(graph))
     report.issues.extend(validate_rt_symmetry(graph))

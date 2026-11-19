@@ -4,12 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-
 from lakeloom.core.map_builder import (
-    ColumnEntry,
     MapProfile,
-    TableMapEntry,
     build_map,
     export_map_json,
     export_map_markdown,
@@ -18,7 +14,6 @@ from lakeloom.core.map_builder import (
 from lakeloom.sources.models import ColumnInfo, TableDescription, TableVersion
 from lakeloom.sources.models import TableRef as SourceTableRef
 from lakeloom.state.scans import ScannedTable, ScanRecord
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -173,9 +168,7 @@ class TestValidateMap:
         assert any(i.rule == "MAP-03" for i in report.issues)
 
     def test_coverage_ratio(self) -> None:
-        scan = _scan(
-            _table("orders", [_col("id"), _col("status")], om_fqn="svc.sales.orders")
-        )
+        scan = _scan(_table("orders", [_col("id"), _col("status")], om_fqn="svc.sales.orders"))
         realizations = {"retail.Order": ["svc.sales.orders.id"]}
         profile = build_map(scan, model_slug="retail", realizations=realizations)
         report = validate_map(profile)

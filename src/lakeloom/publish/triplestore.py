@@ -252,7 +252,9 @@ class SinkWorker:
         if not highest:
             return  # <base>latest, <base>shapes, <base>skos belong to the highest release
         await self._sink.replace_graph(_join(base, "latest"), ontology)
-        shapes_on = policy.shapes if policy.shapes is not None else self._settings.triplestore_shapes
+        shapes_on = (
+            policy.shapes if policy.shapes is not None else self._settings.triplestore_shapes
+        )
         if shapes_on:
             try:
                 shapes = await self._reader.file(rel.model, rel.version, "shapes.ttl")

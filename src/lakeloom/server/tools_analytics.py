@@ -8,7 +8,9 @@ Two READ tools (scope ``lakeloom:read``, read_only_hint=True):
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass, field
 from typing import Annotated
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -16,6 +18,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 from rdflib import Graph
 
+from lakeloom.core.concepts import AssetRef
 from lakeloom.core.graph_analytics import (
     ConceptStats,
     CoverageStats,
@@ -29,7 +32,13 @@ from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
 from lakeloom.server.tools_common import READ_SCOPE, guarded
 
-__all__ = ["register_analytics_tools"]
+__all__ = [
+    "MAX_CONCEPTS_SCANNED",
+    "RealizationIndex",
+    "load_graph_and_realizations",
+    "load_realization_index",
+    "register_analytics_tools",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -97,35 +106,66 @@ class CoverageResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def load_graph_and_realizations(
-    deps: AppDeps,
-    model: str,
-) -> tuple[Graph, dict[str, list[str]]]:
-    """Return (rdflib Graph, realization index) for ``model``."""
+MAX_CONCEPTS_SCANNED = 2000
+_LOAD_CONCURRENCY = 8
+
+
+@dataclass
+class RealizationIndex:
+    """A model graph plus the assets realizing each concept (keyed by concept IRI).
+
+    ``truncated`` is set when the model has more than :data:`MAX_CONCEPTS_SCANNED`
+    concepts or a concept's asset list was capped: statistics then undercount.
+    """
+
+    graph: Graph
+    assets: dict[str, list[AssetRef]] = field(default_factory=dict[str, list[AssetRef]])
+    truncated: bool = False
+
+    @property
+    def realizations(self) -> dict[str, list[str]]:
+        """``{iri: [table_fqn or table_fqn.column]}`` for concepts with any asset."""
+        return {
+            iri: [f"{a.fqn}.{a.column}" if a.column else a.fqn for a in items]
+            for iri, items in self.assets.items()
+            if items
+        }
+
+    def tables(self) -> dict[str, set[str]]:
+        """``{iri: {table_fqn}}``: column realizations collapse onto their table."""
+        return {iri: {a.fqn for a in items} for iri, items in self.assets.items() if items}
+
+
+async def load_realization_index(deps: AppDeps, model: str) -> RealizationIndex:
+    """Load ``model``'s graph and the realizations of up to MAX_CONCEPTS_SCANNED concepts."""
     from rdflib.namespace import RDF
     from rdflib.namespace import SKOS as _SKOS
 
     from lakeloom.core.concepts import find_assets_for_concept
 
     graph = await deps.models.graph(model)
-    concept_iris = [str(s) for s in graph.subjects(RDF.type, _SKOS.Concept)]
+    iris = sorted(str(s) for s in graph.subjects(RDF.type, _SKOS.Concept))
+    out = RealizationIndex(graph, truncated=len(iris) > MAX_CONCEPTS_SCANNED)
+    sem = asyncio.Semaphore(_LOAD_CONCURRENCY)
 
-    realizations: dict[str, list[str]] = {}
-    for iri in concept_iris[:500]:
-        try:
+    async def one(iri: str) -> None:
+        async with sem:
             page = await find_assets_for_concept(deps.models, deps.om, iri, limit=200)
-            if page.items:
-                keys: list[str] = []
-                for asset in page.items:
-                    if asset.column:
-                        keys.append(f"{asset.fqn}.{asset.column}")
-                    else:
-                        keys.append(asset.fqn)
-                realizations[iri] = keys
-        except Exception:
-            pass
+        out.assets[iri] = list(page.items)
+        if page.truncated or page.next_cursor:
+            out.truncated = True
 
-    return graph, realizations
+    await asyncio.gather(*(one(i) for i in iris[:MAX_CONCEPTS_SCANNED]))
+    return out
+
+
+async def load_graph_and_realizations(
+    deps: AppDeps,
+    model: str,
+) -> tuple[Graph, dict[str, list[str]]]:
+    """Return (rdflib Graph, realization index) for ``model``."""
+    index = await load_realization_index(deps, model)
+    return index.graph, index.realizations
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +238,8 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
             pct = round(cov.coverage_ratio * 100, 1)
             lines = [
                 f"## Realization Coverage — {model}",
-                f"**{cov.concepts_with_realizations}/{cov.total_concepts} concepts realized ({pct}%)**",
+                f"**{cov.concepts_with_realizations}/{cov.total_concepts} concepts realized "
+                f"({pct}%)**",
                 f"- Without realizations: {cov.concepts_without_realizations}",
             ]
             if cov.top_realized:

@@ -24,11 +24,11 @@ from rdflib import Graph, URIRef
 from rdflib.namespace import RDF, SKOS
 
 __all__ = [
-    "CoverageModel",
-    "TopicMatch",
     "CoverageGap",
-    "DepthViolation",
+    "CoverageModel",
     "CoverageReport",
+    "DepthViolation",
+    "TopicMatch",
     "assess_coverage",
     "hierarchy_depth",
 ]
@@ -59,7 +59,7 @@ class CoverageModel:
         depth: int,
         granularity: Literal["coarse", "medium", "fine"],
         exclusions: list[str] | None = None,
-    ) -> "CoverageModel":
+    ) -> CoverageModel:
         return cls(
             topics=tuple(topics),
             depth=depth,
@@ -102,10 +102,10 @@ class CoverageReport:
     total_concepts: int = 0
     actual_max_depth: int = 0
     declared_max_depth: int = 0
-    root_concepts: list[str] = field(default_factory=list)
-    matched_topics: list[TopicMatch] = field(default_factory=list)
-    gaps: list[CoverageGap] = field(default_factory=list)
-    depth_violations: list[DepthViolation] = field(default_factory=list)
+    root_concepts: list[str] = field(default_factory=list[str])
+    matched_topics: list[TopicMatch] = field(default_factory=list["TopicMatch"])
+    gaps: list[CoverageGap] = field(default_factory=list["CoverageGap"])
+    depth_violations: list[DepthViolation] = field(default_factory=list["DepthViolation"])
 
     @property
     def coverage_ratio(self) -> float:
@@ -116,8 +116,8 @@ class CoverageReport:
         lines = [
             "## Coverage Assessment Report",
             "",
-            f"| Metric | Value |",
-            f"|---|---|",
+            "| Metric | Value |",
+            "|---|---|",
             f"| Total concepts | {self.total_concepts} |",
             f"| Actual max depth | {self.actual_max_depth} |",
             f"| Declared max depth | {self.declared_max_depth} |",
@@ -175,8 +175,7 @@ def hierarchy_depth(graph: Graph) -> dict[URIRef, int]:
     URIRef to its depth.  Cycles are handled by capping at the number of concepts.
     """
     concepts: set[URIRef] = {
-        s for s, _, _ in graph.triples((None, RDF.type, SKOS.Concept))
-        if isinstance(s, URIRef)
+        s for s, _, _ in graph.triples((None, RDF.type, SKOS.Concept)) if isinstance(s, URIRef)
     }
     # Build parent map: concept → set of its broader concepts.
     broader: dict[URIRef, set[URIRef]] = {c: set() for c in concepts}
@@ -212,14 +211,14 @@ def _simple_match_score(topic: str, label: str) -> float:
     word overlap, 0.0 for no overlap.
     """
     t = topic.casefold()
-    l = label.casefold()
-    if t == l:
+    lbl = label.casefold()
+    if t == lbl:
         return 1.0
-    if t in l or l in t:
+    if t in lbl or lbl in t:
         return 0.8
     # Word overlap (Jaccard on word sets).
     t_words = set(re.split(r"\W+", t)) - {""}
-    l_words = set(re.split(r"\W+", l)) - {""}
+    l_words = set(re.split(r"\W+", lbl)) - {""}
     if not t_words or not l_words:
         return 0.0
     intersection = t_words & l_words

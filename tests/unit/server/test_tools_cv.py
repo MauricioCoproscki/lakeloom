@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from kit import AuthKit, DepsFactory, mcp_session
 from test_tools_proposals import FakeProposals, proposal
 from test_tools_semantic import fake_deps, structured, text
@@ -124,7 +123,9 @@ async def test_write_tools_are_not_read_only(make_deps: DepsFactory) -> None:
 
 async def test_list_cv_candidates_normalises_tags(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_read(
-        make_deps, kit, "list_cv_candidates",
+        make_deps,
+        kit,
+        "list_cv_candidates",
         {"tags": ["PII.Email", "Domain.Order_Management", "!!!"]},
         scope=READ,
     )
@@ -136,11 +137,11 @@ async def test_list_cv_candidates_normalises_tags(make_deps: DepsFactory, kit: A
     assert "Order Management" in names
 
 
-async def test_list_cv_candidates_frequency_map_sorts(
-    make_deps: DepsFactory, kit: AuthKit
-) -> None:
+async def test_list_cv_candidates_frequency_map_sorts(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_read(
-        make_deps, kit, "list_cv_candidates",
+        make_deps,
+        kit,
+        "list_cv_candidates",
         {
             "tags": ["PII.Email", "Domain.Order"],
             "frequency_map": {"PII.Email": 5, "Domain.Order": 20},
@@ -151,12 +152,12 @@ async def test_list_cv_candidates_frequency_map_sorts(
     assert data["candidates"][0]["name"] == "Order"
 
 
-async def test_list_cv_candidates_requires_read_scope(
-    make_deps: DepsFactory, kit: AuthKit
-) -> None:
+async def test_list_cv_candidates_requires_read_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
     # Token with no scope at all → forbidden
     result = await call_read(
-        make_deps, kit, "list_cv_candidates",
+        make_deps,
+        kit,
+        "list_cv_candidates",
         {"tags": ["PII.Email"]},
         scope=None,  # drops the scope claim
     )
@@ -171,7 +172,9 @@ async def test_list_cv_candidates_requires_read_scope(
 
 async def test_validate_thesaurus_ok(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_read(
-        make_deps, kit, "validate_thesaurus",
+        make_deps,
+        kit,
+        "validate_thesaurus",
         {"model": "retail"},
         scope=READ,
     )
@@ -183,7 +186,9 @@ async def test_validate_thesaurus_ok(make_deps: DepsFactory, kit: AuthKit) -> No
 
 async def test_validate_thesaurus_missing_model(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_read(
-        make_deps, kit, "validate_thesaurus",
+        make_deps,
+        kit,
+        "validate_thesaurus",
         {"model": "no-such-model"},
         scope=READ,
     )
@@ -198,7 +203,9 @@ async def test_validate_thesaurus_missing_model(make_deps: DepsFactory, kit: Aut
 
 async def test_assess_taxonomy_coverage(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_read(
-        make_deps, kit, "assess_taxonomy_coverage",
+        make_deps,
+        kit,
+        "assess_taxonomy_coverage",
         {"model": "retail", "topics": ["Order", "Customer"]},
         scope=READ,
     )
@@ -214,7 +221,9 @@ async def test_assess_taxonomy_coverage(make_deps: DepsFactory, kit: AuthKit) ->
 
 async def test_propose_add_term_creates_draft(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_write(
-        make_deps, kit, "propose_add_term",
+        make_deps,
+        kit,
+        "propose_add_term",
         {
             "model": "retail",
             "terms": [{"name": "Invoice", "definition": "A billing document."}],
@@ -232,7 +241,9 @@ async def test_propose_add_term_requires_propose_scope(
 ) -> None:
     # Read scope is not enough for a write tool.
     result = await call_write(
-        make_deps, kit, "propose_add_term",
+        make_deps,
+        kit,
+        "propose_add_term",
         {"model": "retail", "terms": [{"name": "Invoice"}]},
         scope=READ,
     )
@@ -242,7 +253,9 @@ async def test_propose_add_term_requires_propose_scope(
 
 async def test_propose_add_term_multiple_terms(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_write(
-        make_deps, kit, "propose_add_term",
+        make_deps,
+        kit,
+        "propose_add_term",
         {
             "model": "retail",
             "terms": [
@@ -263,7 +276,9 @@ async def test_propose_add_term_multiple_terms(make_deps: DepsFactory, kit: Auth
 
 async def test_propose_add_hierarchy(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_write(
-        make_deps, kit, "propose_add_hierarchy",
+        make_deps,
+        kit,
+        "propose_add_hierarchy",
         {
             "model": "retail",
             "parent_name": "PaymentMethod",
@@ -281,11 +296,11 @@ async def test_propose_add_hierarchy(make_deps: DepsFactory, kit: AuthKit) -> No
 # ---------------------------------------------------------------------------
 
 
-async def test_propose_add_scope_note_missing_concept(
-    make_deps: DepsFactory, kit: AuthKit
-) -> None:
+async def test_propose_add_scope_note_missing_concept(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_write(
-        make_deps, kit, "propose_add_scope_note",
+        make_deps,
+        kit,
+        "propose_add_scope_note",
         {
             "model": "retail",
             "concept": "NonExistentConcept9999",
@@ -295,3 +310,116 @@ async def test_propose_add_scope_note_missing_concept(
     )
     data = structured(result)
     assert data["error"]["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Real resolution paths (audit fixes): exact FQNs, no silent zero results
+# ---------------------------------------------------------------------------
+
+
+class _Recording(_ExtendedFakeProposals):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[list[Any], dict[str, Any]]] = []
+
+    async def propose_operations(self, model: str, operations: Any, **kw: Any) -> Any:
+        self.calls.append((list(operations), kw))
+        return await super().propose_operations(model, operations, **kw)
+
+
+async def call_recorded(
+    make_deps: DepsFactory, kit: AuthKit, tool: str, args: dict[str, Any]
+) -> tuple[Any, _Recording]:
+    deps = fake_deps(make_deps)
+    rec = _Recording()
+    deps.proposals = rec  # pyright: ignore[reportAttributeAccessIssue]
+    async with mcp_session(create_server_app(deps), kit.token(scope=PROPOSE)) as session:
+        return await session.call_tool(tool, args), rec
+
+
+async def test_suggest_related_terms_finds_cooccurring_concepts(
+    make_deps: DepsFactory, kit: AuthKit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lakeloom.core.concepts import AssetRef
+    from lakeloom.server import tools_analytics
+    from lakeloom.server.tools_analytics import RealizationIndex
+
+    real = tools_analytics.load_realization_index
+
+    async def overlapping(deps: Any, model: str) -> RealizationIndex:
+        index = await real(deps, model)  # the real graph and OM asset lookups
+        t = "svc.retail.sales.orders"
+        for name in ("OrderDate", "MonetaryAmount"):  # column realizations on the same table
+            iri = f"http://x/ontology/retail/{name}"
+            index.assets[iri] = [AssetRef(fqn=t, type="table", column=name.lower())]
+        return index
+
+    monkeypatch.setattr(tools_analytics, "load_realization_index", overlapping)
+    result = await call_read(
+        make_deps, kit, "suggest_related_terms", {"model": "retail", "min_shared": 1}, scope=READ
+    )
+    data = structured(result)
+    assert "error" not in data, data
+    assert data["total_suggestions"] > 0
+    body = text(result)
+    assert "`OrderDate`" in body or "`MonetaryAmount`" in body  # labels, not IRIs
+    assert "http" not in body.split("Next:")[0]
+
+
+async def test_deprecate_resolves_concept_and_successor_fqns(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    args = {"model": "retail", "concept": "OrderDate", "reason": "r", "successor": "MonetaryAmount"}
+    result, rec = await call_recorded(make_deps, kit, "propose_deprecate", args)
+    assert "error" not in structured(result), structured(result)
+    (op,), kw = rec.calls[0]
+    assert (op.fqn, op.successor) == ("retail.OrderDate", "retail.MonetaryAmount")
+    assert kw["recheck_pending"] is True
+
+
+async def test_deprecate_rejects_unknown_successor_and_self(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    base = {"model": "retail", "concept": "retail.OrderDate", "reason": "r"}
+    result, _ = await call_recorded(
+        make_deps, kit, "propose_deprecate", {**base, "successor": "Nope"}
+    )
+    assert structured(result)["error"]["code"] == "not_found"
+    result, _ = await call_recorded(
+        make_deps, kit, "propose_deprecate", {**base, "successor": "OrderDate"}
+    )
+    assert structured(result)["error"]["code"] == "validation_error"
+
+
+async def test_scope_note_uses_the_exact_fqn(make_deps: DepsFactory, kit: AuthKit) -> None:
+    result, rec = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_scope_note",
+        {"model": "retail", "concept": "retail.Order.OrderStatus", "note": "n"},
+    )
+    assert "error" not in structured(result), structured(result)
+    assert rec.calls[0][0][0].concept_fqn == "retail.Order.OrderStatus"
+
+
+async def test_hierarchy_reuses_an_existing_parent(make_deps: DepsFactory, kit: AuthKit) -> None:
+    result, rec = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_hierarchy",
+        {"model": "retail", "parent_name": "Order", "children": ["Refund"]},
+    )
+    assert "error" not in structured(result), structured(result)
+    ops = rec.calls[0][0]
+    assert [(o.name, o.parent) for o in ops] == [("Refund", "retail.Order")]
+
+
+async def test_hierarchy_creates_a_new_parent(make_deps: DepsFactory, kit: AuthKit) -> None:
+    _, rec = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_hierarchy",
+        {"model": "retail", "parent_name": "Shipment", "children": ["Parcel"]},
+    )
+    ops = rec.calls[0][0]
+    assert [(o.name, o.parent) for o in ops] == [("Shipment", None), ("Parcel", "Shipment")]

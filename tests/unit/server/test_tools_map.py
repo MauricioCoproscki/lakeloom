@@ -14,12 +14,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
-
 from kit import AuthKit, DepsFactory, mcp_session
-from test_tools_semantic import fake_deps, structured, text
+from test_tools_semantic import fake_deps, structured
 
-from lakeloom.core.map_builder import build_map as _build_map
 from lakeloom.server.mcp_app import create_mcp, create_server_app
 from lakeloom.sources.models import ColumnInfo, TableDescription, TableVersion
 from lakeloom.sources.models import TableRef as SourceTableRef
@@ -124,11 +121,11 @@ async def test_map_tools_read_only(make_deps: DepsFactory) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_build_map_from_scan_returns_profile(
-    make_deps: DepsFactory, kit: AuthKit
-) -> None:
+async def test_build_map_from_scan_returns_profile(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call(
-        make_deps, kit, "build_map_from_scan",
+        make_deps,
+        kit,
+        "build_map_from_scan",
         {"scan_id": "scan-1", "model": "retail"},
         scope=READ,
     )
@@ -141,11 +138,11 @@ async def test_build_map_from_scan_returns_profile(
     assert "implementation_layer" in data
 
 
-async def test_build_map_from_scan_unknown_scan(
-    make_deps: DepsFactory, kit: AuthKit
-) -> None:
+async def test_build_map_from_scan_unknown_scan(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call(
-        make_deps, kit, "build_map_from_scan",
+        make_deps,
+        kit,
+        "build_map_from_scan",
         {"scan_id": "no-such-scan", "model": "retail"},
         scope=READ,
     )
@@ -157,7 +154,9 @@ async def test_build_map_from_scan_requires_read_scope(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
     result = await call(
-        make_deps, kit, "build_map_from_scan",
+        make_deps,
+        kit,
+        "build_map_from_scan",
         {"scan_id": "scan-1", "model": "retail"},
         scope=None,
     )
@@ -172,7 +171,9 @@ async def test_build_map_from_scan_requires_read_scope(
 
 async def test_validate_map_returns_report(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call(
-        make_deps, kit, "validate_map",
+        make_deps,
+        kit,
+        "validate_map",
         {"scan_id": "scan-1", "model": "retail"},
         scope=READ,
     )
@@ -185,7 +186,9 @@ async def test_validate_map_returns_report(make_deps: DepsFactory, kit: AuthKit)
 
 async def test_validate_map_unknown_model(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call(
-        make_deps, kit, "validate_map",
+        make_deps,
+        kit,
+        "validate_map",
         {"scan_id": "scan-1", "model": "no-such-model"},
         scope=READ,
     )
@@ -200,7 +203,9 @@ async def test_validate_map_unknown_model(make_deps: DepsFactory, kit: AuthKit) 
 
 async def test_export_map_markdown(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call(
-        make_deps, kit, "export_map",
+        make_deps,
+        kit,
+        "export_map",
         {"scan_id": "scan-1", "model": "retail", "format": "markdown"},
         scope=READ,
     )
@@ -214,7 +219,9 @@ async def test_export_map_json(make_deps: DepsFactory, kit: AuthKit) -> None:
     import json
 
     result = await call(
-        make_deps, kit, "export_map",
+        make_deps,
+        kit,
+        "export_map",
         {"scan_id": "scan-1", "model": "retail", "format": "json"},
         scope=READ,
     )

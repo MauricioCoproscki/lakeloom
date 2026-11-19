@@ -34,10 +34,8 @@ from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
 from lakeloom.server.tools_common import (
     READ_SCOPE,
-    client_name,
     guarded,
 )
-from lakeloom.untrusted import code_span as _code
 
 __all__ = ["register_map_tools"]
 
@@ -142,35 +140,11 @@ async def _build_profile(
     model: str,
 ) -> MapProfile:
     """Collect live data and produce a :class:`MapProfile`."""
-    from rdflib.namespace import RDF
-    from rdflib.namespace import SKOS as _SKOS
+    from lakeloom.server.tools_analytics import load_realization_index
 
-    from lakeloom.core.concepts import find_assets_for_concept
-
-    # 1. Physical schema from the scan record.
     scan_record = await deps.scans.get(scan_id)
-
-    # 2. All concept IRIs from the SKOS graph.
-    graph = await deps.models.graph(model)
-    concept_iris = [str(s) for s in graph.subjects(RDF.type, _SKOS.Concept)]
-
-    # 3. Realization index: concept_iri → list of asset_fqn strings.
-    realizations: dict[str, list[str]] = {}
-    for iri in concept_iris[:500]:
-        try:
-            page = await find_assets_for_concept(deps.models, deps.om, iri, limit=200)
-            if page.items:
-                realizations[iri] = []
-                for asset in page.items:
-                    if asset.column:
-                        realizations[iri].append(f"{asset.fqn}.{asset.column}")
-                    else:
-                        realizations[iri].append(asset.fqn)
-        except Exception:
-            pass
-
-    # 4. Build MAP.
-    return build_map(scan_record, model_slug=model, realizations=realizations)
+    index = await load_realization_index(deps, model)
+    return build_map(scan_record, model_slug=model, realizations=index.realizations)
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +165,7 @@ def register_map_tools(mcp: MCPServer, deps: AppDeps) -> None:
             Field(
                 description=(
                     "ID of the completed scan (returned by ``scan_lake_source`` or "
-                    "``list_scans``)."
+                    "the proposals made from it)."
                 )
             ),
         ],

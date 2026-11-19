@@ -23,6 +23,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 
+from lakeloom.core.annotations import applied_operations
 from lakeloom.rdf.skos import skos_projection
 from lakeloom.rdf.skos_enrichment import enrich_graph_from_ops
 from lakeloom.server.auth import Principal
@@ -43,9 +44,9 @@ EXPORT_SKOS_DESCRIPTION = f"""\
 Export a semantic model as a SKOS Turtle file enriched with annotation \
 predicates that are stored in Lakeloom's proposal log but not in OpenMetadata:
 
-- **skos:scopeNote** — scope constraints added via ``annotate_concept``
-- **skos:historyNote** — editorial history added via ``annotate_concept``
-- **owl:deprecated true** — concepts flagged via ``deprecate_concept``
+- **skos:scopeNote** — scope constraints added via ``propose_add_scope_note``
+- **skos:historyNote** — editorial history added via ``propose_change`` (``add_history_note``)
+- **owl:deprecated true** — concepts flagged via ``propose_deprecate``
 
 The export runs ``skos_projection`` on the enriched graph so only SKOS \
 triples appear in the output.  Read-only, no side effects.  Unknown model → \
@@ -117,20 +118,12 @@ async def _enriched_graph(deps: AppDeps, model: str):
     # 1. base graph from OM
     graph: Graph = await deps.models.graph(model)
 
-    # 2. collect all annotation ops from applied proposals
-    ops = []
-    cursor = None
-    for _ in range(20):  # safety cap: at most 20 pages of 200
-        page, cursor = await deps.proposals._repo.list_by_status(
-            ["applied"], model, cursor, _PAGE_LIMIT
-        )
-        for proposal in page:
-            ops.extend(proposal.operations)
-        if cursor is None:
-            break
+    # 2. every annotation op of the model's applied proposals, in application order
+    ops = await applied_operations(deps.proposal_repo, model)
 
     # 3. enrich in-place (copy so we don't mutate the shared cached graph)
     import copy
+
     enriched = copy.deepcopy(graph)
     return enrich_graph_from_ops(enriched, ops)
 
@@ -161,16 +154,11 @@ def register_skos_tools(mcp: MCPServer, deps: AppDeps) -> None:
 
             # Count annotation triples in the enriched graph (before projection filters).
             from rdflib.namespace import RDF
+
             concepts_set = set(enriched.subjects(RDF.type, SKOS.Concept))
-            scope_notes = sum(
-                1 for c in concepts_set if (c, SKOS.scopeNote, None) in enriched
-            )
-            history_notes = sum(
-                1 for c in concepts_set if (c, SKOS.historyNote, None) in enriched
-            )
-            deprecated = sum(
-                1 for c in concepts_set if (c, OWL.deprecated, None) in enriched
-            )
+            scope_notes = sum(1 for c in concepts_set if (c, SKOS.scopeNote, None) in enriched)
+            history_notes = sum(1 for c in concepts_set if (c, SKOS.historyNote, None) in enriched)
+            deprecated = sum(1 for c in concepts_set if (c, OWL.deprecated, None) in enriched)
 
             data = ExportSkosResult(
                 model=model,
@@ -256,7 +244,6 @@ def register_skos_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ctx: Context,
     ) -> Annotated[CallToolResult, DeprecatedListResult]:
         async def body(_: Principal) -> CallToolResult:
-            from rdflib import Literal
             from rdflib.namespace import OWL, RDF, SKOS
 
             enriched = await _enriched_graph(deps, model)

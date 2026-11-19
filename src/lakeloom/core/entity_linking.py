@@ -19,23 +19,25 @@ Terminology:
 
 from __future__ import annotations
 
-import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal
+from dataclasses import dataclass
+from typing import Any, cast
 
 from pydantic import AnyUrl, BaseModel, Field
 
 from lakeloom.core.operations import AddMapping, MappingKind, ProposalOperation
 
+_log = logging.getLogger(__name__)
+
 __all__ = [
     "MappingCandidate",
-    "WikidataMatch",
     "SchemaOrgMatch",
+    "WikidataMatch",
     "candidates_to_ops",
-    "lookup_wikidata",
     "lookup_schema_org",
+    "lookup_wikidata",
 ]
 
 # Type alias for an async "fetch JSON" callable.
@@ -59,12 +61,12 @@ class WikidataMatch:
     """One Wikidata entity candidate for a local concept."""
 
     concept_name: str
-    entity_id: str           # e.g. "Q5"
-    entity_uri: str          # e.g. "http://www.wikidata.org/entity/Q5"
+    entity_id: str  # e.g. "Q5"
+    entity_uri: str  # e.g. "http://www.wikidata.org/entity/Q5"
     label: str
     description: str
-    match_score: float       # 0.0–1.0; 1.0 = exact label match
-    kind: MappingKind        # suggested SKOS mapping kind
+    match_score: float  # 0.0-1.0; 1.0 = exact label match
+    kind: MappingKind  # suggested SKOS mapping kind
 
 
 @dataclass(frozen=True)
@@ -72,8 +74,8 @@ class SchemaOrgMatch:
     """One schema.org type or property candidate."""
 
     concept_name: str
-    type_id: str             # e.g. "schema:Person"
-    type_uri: str            # e.g. "https://schema.org/Person"
+    type_id: str  # e.g. "schema:Person"
+    type_uri: str  # e.g. "https://schema.org/Person"
     label: str
     description: str
     match_score: float
@@ -140,7 +142,7 @@ async def lookup_wikidata(
     lang:
         BCP 47 language code for labels (default ``"en"``).
     limit:
-        Maximum API results to request (1–50).
+        Maximum API results to request (1-50).
     """
     params = {
         "action": "wbsearchentities",
@@ -186,34 +188,39 @@ async def lookup_wikidata(
 
 # Lightweight static index of schema.org types built from the JSON-LD context.
 # Populated lazily by _schema_org_types(); cleared on demand (tests).
-_SCHEMA_ORG_CACHE: dict[str, dict[str, str]] | None = None  # label.lower() → {id, uri, desc}
+# label.lower() → {id, uri, description}; one slot, filled on the first successful download
+_schema_org: dict[str, dict[str, dict[str, str]]] = {}
+
+
+def _text(value: object) -> str:
+    """A JSON-LD literal: a plain value or ``{"@value": ...}``."""
+    if isinstance(value, dict):
+        return str(cast("dict[str, object]", value).get("@value", ""))
+    return "" if value is None else str(value)
 
 
 def _parse_schema_org(jsonld: dict[str, Any]) -> dict[str, dict[str, str]]:
     """Extract type name → {id, uri, description} from a schema.org JSON-LD graph."""
     index: dict[str, dict[str, str]] = {}
-    for item in jsonld.get("@graph", []):
+    items: list[dict[str, Any]] = jsonld.get("@graph", [])
+    for item in items:
         type_id = item.get("@id", "")
         if not type_id.startswith("schema:"):
             continue
         # Only types (rdfs:Class) and properties (rdf:Property).
-        item_type = item.get("@type", "")
-        if isinstance(item_type, list):
-            item_type = item_type[0] if item_type else ""
-        if item_type not in ("rdfs:Class", "rdf:Property"):
+        raw_type: object = item.get("@type", "")
+        types = cast("list[object]", raw_type) if isinstance(raw_type, list) else [raw_type]
+        if not {"rdfs:Class", "rdf:Property"} & {str(t) for t in types}:
             continue
-        label_raw = item.get("rdfs:label", "")
-        label = label_raw.get("@value", label_raw) if isinstance(label_raw, dict) else label_raw
+        label = _text(item.get("rdfs:label"))
         if not label:
             continue
-        comment_raw = item.get("rdfs:comment", "")
-        comment = (
-            comment_raw.get("@value", comment_raw)
-            if isinstance(comment_raw, dict)
-            else comment_raw
-        )
         uri = f"https://schema.org/{type_id.removeprefix('schema:')}"
-        index[str(label).lower()] = {"id": type_id, "uri": uri, "description": str(comment)}
+        index[label.lower()] = {
+            "id": type_id,
+            "uri": uri,
+            "description": _text(item.get("rdfs:comment")),
+        }
     return index
 
 
@@ -237,18 +244,16 @@ async def lookup_schema_org(
     limit:
         Maximum results to return.
     """
-    global _SCHEMA_ORG_CACHE  # noqa: PLW0603
-
-    if _SCHEMA_ORG_CACHE is None:
+    index = _schema_org.get("index")
+    if index is None:
         try:
-            jsonld = await fetch(_SCHEMA_ORG_URL, {})
-            _SCHEMA_ORG_CACHE = _parse_schema_org(jsonld)
-        except Exception:
-            _SCHEMA_ORG_CACHE = {}
-
-    index = _SCHEMA_ORG_CACHE
+            index = _parse_schema_org(await fetch(_SCHEMA_ORG_URL, {}))
+        except Exception as exc:  # a failed download is retried on the next call, not cached
+            _log.warning("schema.org download failed: %s", type(exc).__name__)
+            return []
+        _schema_org["index"] = index
     results: list[SchemaOrgMatch] = []
-    for label_lower, entry in index.items():
+    for entry in index.values():
         label = entry["id"].removeprefix("schema:")
         score = _match_score(term_name, label)
         if score < 0.1:
@@ -271,8 +276,7 @@ async def lookup_schema_org(
 
 def clear_schema_org_cache() -> None:
     """Clear the in-process schema.org cache (used in tests)."""
-    global _SCHEMA_ORG_CACHE  # noqa: PLW0603
-    _SCHEMA_ORG_CACHE = None
+    _schema_org.clear()
 
 
 # ---------------------------------------------------------------------------

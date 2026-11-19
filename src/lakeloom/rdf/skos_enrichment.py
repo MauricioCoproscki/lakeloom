@@ -16,7 +16,10 @@ The module also exports :func:`concept_iri_index`, a helper that builds a
 Supported ops:
   ``add_scope_note``   → ``skos:scopeNote``
   ``add_history_note`` → ``skos:historyNote``
-  ``deprecate_concept`` →  ``owl:deprecated true``  +  ``skos:hiddenLabel`` (pref label)
+  ``deprecate_concept`` →  ``owl:deprecated true``, ``skos:changeNote`` (reason) and, with a
+                          successor, ``dct:isReplacedBy`` plus the deprecated prefLabel as the
+                          successor's ``skos:hiddenLabel`` (never on the concept itself: a
+                          prefLabel that is also a hiddenLabel violates SKOS S13)
   ``add_mapping``      → ``skos:exactMatch`` / ``skos:closeMatch`` / …
                          (already written by OM but kept here for completeness)
 """
@@ -24,7 +27,7 @@ Supported ops:
 from __future__ import annotations
 
 from rdflib import OWL, Graph, Literal, URIRef
-from rdflib.namespace import RDF, SKOS, XSD
+from rdflib.namespace import DCTERMS, RDF, SKOS, XSD
 
 from lakeloom.core.operations import (
     AddHistoryNote,
@@ -36,6 +39,7 @@ from lakeloom.core.operations import (
 
 __all__ = [
     "concept_iri_index",
+    "concept_labels",
     "enrich_graph_from_ops",
 ]
 
@@ -48,34 +52,51 @@ _MAPPING_PRED: dict[str, URIRef] = {
 }
 
 
-def concept_iri_index(graph: Graph) -> dict[str, URIRef]:
-    """Return ``{local_name: URIRef}`` for every ``skos:Concept`` in ``graph``.
+OM_FQN = URIRef("https://open-metadata.org/ontology/fullyQualifiedName")
 
-    The local name is the last path / fragment segment of the IRI, URL-decoded.
-    If the concept has a ``skos:prefLabel`` its value is also indexed.
+
+def concept_iri_index(graph: Graph) -> dict[str, URIRef]:
+    """Return ``{key: URIRef}`` for every ``skos:Concept`` in ``graph``.
+
+    Keys are the concept's OpenMetadata FQN (exact, always unique) and, only when they
+    identify a single concept, its IRI local name and its prefLabels. An ambiguous short
+    key is dropped rather than guessed, so an annotation never lands on the wrong concept.
     """
     from urllib.parse import unquote
 
-    index: dict[str, URIRef] = {}
+    exact: dict[str, URIRef] = {}
+    short: dict[str, set[URIRef]] = {}
     for s in graph.subjects(RDF.type, SKOS.Concept):
         if not isinstance(s, URIRef):
             continue
-        raw = str(s)
-        # Last path segment (handles both /path/Name and /path/Name#fragment).
-        local = raw.rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1]
-        index[unquote(local)] = s
-        # Also index by prefLabel for fuzzy FQN matching.
+        fqn = graph.value(s, OM_FQN)
+        if fqn is not None:
+            exact[str(fqn)] = s
+        local = unquote(str(s).rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1])
+        short.setdefault(local, set()).add(s)
         for label in graph.objects(s, SKOS.prefLabel):
-            index[str(label)] = s
+            short.setdefault(str(label), set()).add(s)
+    index = {k: next(iter(v)) for k, v in short.items() if len(v) == 1}
+    index.update(exact)
     return index
 
 
+def concept_labels(graph: Graph) -> dict[str, str]:
+    """``{concept IRI: prefLabel}``, preferring an untagged or English label."""
+    out: dict[str, str] = {}
+    for s, o in graph.subject_objects(SKOS.prefLabel):
+        if isinstance(o, Literal) and (str(s) not in out or o.language in (None, "en")):
+            out[str(s)] = str(o)
+    return out
+
+
 def _resolve_fqn(fqn: str, index: dict[str, URIRef]) -> URIRef | None:
-    """Return the IRI for ``fqn``, trying the full FQN then its last segment."""
+    """The IRI for ``fqn``: the exact FQN, an IRI, or else an unambiguous last segment."""
     if fqn in index:
         return index[fqn]
-    local = fqn.rsplit(".", 1)[-1]
-    return index.get(local)
+    if "://" in fqn:
+        return next((v for v in index.values() if str(v) == fqn), None)
+    return index.get(fqn.rsplit(".", 1)[-1])
 
 
 def enrich_graph_from_ops(
@@ -119,13 +140,15 @@ def enrich_graph_from_ops(
             if iri is None:
                 continue
             graph.add((iri, OWL.deprecated, Literal(True, datatype=XSD.boolean)))
-            # Collect the preferred label(s) as hidden labels so the concept
-            # stays findable but is flagged as deprecated.
-            for label in list(graph.objects(iri, SKOS.prefLabel)):
-                graph.add((iri, SKOS.hiddenLabel, label))
-            # Record reason as a changeNote.
             if op.reason:
                 graph.add((iri, SKOS.changeNote, Literal(op.reason, lang=lang)))
+            successor = _resolve_fqn(op.successor, idx) if op.successor else None
+            if successor is not None and successor != iri:
+                graph.add((iri, DCTERMS.isReplacedBy, successor))
+                # The old name stays findable through its successor (SKOS S13-safe).
+                for label in list(graph.objects(iri, SKOS.prefLabel)):
+                    if label not in set(graph.objects(successor, SKOS.prefLabel)):
+                        graph.add((successor, SKOS.hiddenLabel, label))
 
         elif isinstance(op, AddMapping):
             iri = _resolve_fqn(str(op.concept), idx)

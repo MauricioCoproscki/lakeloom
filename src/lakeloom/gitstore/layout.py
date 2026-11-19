@@ -114,10 +114,10 @@ def _subject(p: Proposal) -> str:
 
 
 def _origin_trailers(p: Proposal) -> list[str]:
-    """``Lakeloom-Origin`` and ``Lakeloom-Import`` of import, Git and drift proposals
+    """``Lakeloom-Origin`` and ``Lakeloom-Import`` of import, Git, drift and direct proposals
     (FR-PRO-03); scan-origin messages are unchanged."""
     prov = p.provenance
-    if prov.origin not in ("import", "git", "drift"):
+    if prov.origin not in ("import", "git", "drift", "direct"):
         return []
     lines = [_trailer("Lakeloom-Origin", prov.origin)]
     doc = prov.source_document

@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from kit import AuthKit, DepsFactory, mcp_session
-from test_tools_semantic import fake_deps, structured, text
+from test_tools_semantic import fake_deps, structured
 
 from lakeloom.server.mcp_app import create_mcp, create_server_app
 

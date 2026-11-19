@@ -21,22 +21,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Annotated, Literal
-
-from pydantic import BaseModel, Field
+from typing import Literal
 
 from lakeloom.state.scans import ScanRecord
 
 __all__ = [
     "ColumnEntry",
-    "TableMapEntry",
-    "MapProfile",
     "MapIssue",
+    "MapProfile",
     "MapReport",
+    "TableMapEntry",
     "build_map",
-    "validate_map",
-    "export_map_markdown",
     "export_map_json",
+    "export_map_markdown",
+    "validate_map",
 ]
 
 # ---------------------------------------------------------------------------
@@ -60,7 +58,7 @@ class TableMapEntry:
     om_fqn: str
     local_name: str
     source: str
-    columns: list[ColumnEntry] = field(default_factory=list)
+    columns: list[ColumnEntry] = field(default_factory=list["ColumnEntry"])
     table_concept: str | None = None
 
     @property
@@ -88,7 +86,7 @@ class MapProfile:
     scan_id: str
     model_slug: str
     created_at: datetime
-    table_entries: list[TableMapEntry] = field(default_factory=list)
+    table_entries: list[TableMapEntry] = field(default_factory=list["TableMapEntry"])
 
     # ---------------------------------------------------------------------------
     # Derived views
@@ -101,10 +99,8 @@ class MapProfile:
             if entry.table_concept:
                 result.setdefault(entry.table_concept, []).append(entry.om_fqn)
             for col in entry.mapped_columns:
-                assert col.concept_fqn is not None
-                result.setdefault(col.concept_fqn, []).append(
-                    f"{entry.om_fqn}.{col.name}"
-                )
+                if col.concept_fqn is not None:
+                    result.setdefault(col.concept_fqn, []).append(f"{entry.om_fqn}.{col.name}")
         return result
 
     def implementation_layer(self) -> dict[str, str]:
@@ -114,8 +110,8 @@ class MapProfile:
             if entry.table_concept:
                 result[entry.om_fqn] = entry.table_concept
             for col in entry.mapped_columns:
-                assert col.concept_fqn is not None
-                result[f"{entry.om_fqn}.{col.name}"] = col.concept_fqn
+                if col.concept_fqn is not None:
+                    result[f"{entry.om_fqn}.{col.name}"] = col.concept_fqn
         return result
 
     @property
@@ -158,7 +154,7 @@ class MapReport:
     mapped_tables: int = 0
     total_columns: int = 0
     mapped_columns: int = 0
-    issues: list[MapIssue] = field(default_factory=list)
+    issues: list[MapIssue] = field(default_factory=list["MapIssue"])
 
     @property
     def coverage_ratio(self) -> float:
@@ -311,7 +307,11 @@ def validate_map(profile: MapProfile) -> MapReport:
             )
         elif entry.unmapped_columns:
             unmapped = ", ".join(c.name for c in entry.unmapped_columns[:5])
-            extra = f" and {len(entry.unmapped_columns) - 5} more" if len(entry.unmapped_columns) > 5 else ""
+            extra = (
+                f" and {len(entry.unmapped_columns) - 5} more"
+                if len(entry.unmapped_columns) > 5
+                else ""
+            )
             issues.append(
                 MapIssue(
                     level="warning",

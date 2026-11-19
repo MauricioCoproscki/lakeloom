@@ -140,7 +140,7 @@ class GitPolicy(_Strict):
 
 
 class TriplestorePolicy(_Strict):
-    """Per-model triple-store sink (FR-TS); ``shapes``/``skos`` ``None`` defer to global settings."""
+    """Per-model triple-store sink (FR-TS); ``shapes``/``skos`` ``None`` defer to settings."""
 
     enabled: bool = True
     shapes: bool | None = None

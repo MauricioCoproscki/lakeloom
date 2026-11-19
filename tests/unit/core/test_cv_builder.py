@@ -1,11 +1,15 @@
 """Unit tests for cv_builder, thesaurus_builder and coverage modules (M5a)."""
 
 import pytest
-from rdflib import Graph, URIRef, Literal
+from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, SKOS
 
+from lakeloom.core.coverage import (
+    CoverageModel,
+    assess_coverage,
+    hierarchy_depth,
+)
 from lakeloom.core.cv_builder import (
-    FolksonomyCandidate,
     TermDraft,
     batch_to_ops,
     harvest_folksonomy,
@@ -26,12 +30,6 @@ from lakeloom.core.thesaurus_builder import (
     validate_bt_nt_cycles,
     validate_rt_symmetry,
 )
-from lakeloom.core.coverage import (
-    CoverageModel,
-    assess_coverage,
-    hierarchy_depth,
-)
-
 
 # ---------------------------------------------------------------------------
 # New operation types
@@ -77,7 +75,9 @@ class TestNewOps:
     def test_new_ops_return_empty_om_ops(self) -> None:
         from lakeloom.core.operations import OMContext, to_om
 
-        ctx = OMContext(glossary_name="retail", glossary_id="g-1", base_iri="http://x/", ontology_id="o-1")
+        ctx = OMContext(
+            glossary_name="retail", glossary_id="g-1", base_iri="http://x/", ontology_id="o-1"
+        )
         for op in [
             AddScopeNote(op="add_scope_note", concept_fqn="retail.X", note="n"),
             AddHistoryNote(op="add_history_note", concept_fqn="retail.X", note="n"),
@@ -207,31 +207,37 @@ C = URIRef("http://x/C")
 
 class TestValidateBtNtCycles:
     def test_no_cycle(self) -> None:
-        g = _make_graph([
-            (A, RDF.type, SKOS.Concept),
-            (B, RDF.type, SKOS.Concept),
-            (B, SKOS.broader, A),
-        ])
+        g = _make_graph(
+            [
+                (A, RDF.type, SKOS.Concept),
+                (B, RDF.type, SKOS.Concept),
+                (B, SKOS.broader, A),
+            ]
+        )
         issues = validate_bt_nt_cycles(g)
         assert issues == []
 
     def test_direct_cycle(self) -> None:
-        g = _make_graph([
-            (A, RDF.type, SKOS.Concept),
-            (B, RDF.type, SKOS.Concept),
-            (A, SKOS.broader, B),
-            (B, SKOS.broader, A),
-        ])
+        g = _make_graph(
+            [
+                (A, RDF.type, SKOS.Concept),
+                (B, RDF.type, SKOS.Concept),
+                (A, SKOS.broader, B),
+                (B, SKOS.broader, A),
+            ]
+        )
         issues = validate_bt_nt_cycles(g)
         assert any(i.level == IssueLevel.ERROR for i in issues)
 
 
 class TestValidateRtSymmetry:
     def test_symmetric(self) -> None:
-        g = _make_graph([
-            (A, SKOS.related, B),
-            (B, SKOS.related, A),
-        ])
+        g = _make_graph(
+            [
+                (A, SKOS.related, B),
+                (B, SKOS.related, A),
+            ]
+        )
         assert validate_rt_symmetry(g) == []
 
     def test_asymmetric(self) -> None:
@@ -243,13 +249,15 @@ class TestValidateRtSymmetry:
 
 class TestValidateAnsiZ39:
     def test_basic_report(self) -> None:
-        g = _make_graph([
-            (A, RDF.type, SKOS.Concept),
-            (A, SKOS.prefLabel, Literal("Alpha", lang="en")),
-            (A, SKOS.definition, Literal("Definition of Alpha", lang="en")),
-            (B, RDF.type, SKOS.Concept),
-            (B, SKOS.broader, A),
-        ])
+        g = _make_graph(
+            [
+                (A, RDF.type, SKOS.Concept),
+                (A, SKOS.prefLabel, Literal("Alpha", lang="en")),
+                (A, SKOS.definition, Literal("Definition of Alpha", lang="en")),
+                (B, RDF.type, SKOS.Concept),
+                (B, SKOS.broader, A),
+            ]
+        )
         report = validate_ansi_z39(g)
         assert report.total_concepts == 2
         assert report.total_bt_nt_pairs == 1
@@ -289,11 +297,13 @@ class TestHierarchyDepth:
         assert depths[A] == 1
 
     def test_child_depth_2(self) -> None:
-        g = _make_graph([
-            (A, RDF.type, SKOS.Concept),
-            (B, RDF.type, SKOS.Concept),
-            (B, SKOS.broader, A),
-        ])
+        g = _make_graph(
+            [
+                (A, RDF.type, SKOS.Concept),
+                (B, RDF.type, SKOS.Concept),
+                (B, SKOS.broader, A),
+            ]
+        )
         depths = hierarchy_depth(g)
         assert depths[A] == 1
         assert depths[B] == 2
@@ -342,3 +352,17 @@ class TestAssessCoverage:
         report = assess_coverage(self._graph(), model)
         # 2 matched, 1 gap → 2/3
         assert abs(report.coverage_ratio - 2 / 3) < 0.01
+
+
+def test_batch_orders_parents_before_children() -> None:
+    from lakeloom.core.cv_builder import TermDraft, batch_to_ops
+
+    ops = batch_to_ops(
+        [
+            TermDraft(name="Puppy", broader="Dog"),
+            TermDraft(name="Dog", broader="Animal", authority_source="AKC"),
+            TermDraft(name="Animal"),
+        ]
+    )
+    assert [o.name for o in ops] == ["Animal", "Dog", "Puppy"]  # type: ignore[attr-defined]
+    assert ops[1].evidence[0].detail == "authority: AKC"

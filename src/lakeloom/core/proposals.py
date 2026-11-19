@@ -231,7 +231,7 @@ class SourceDocument(BaseModel):
     git_commit: str | None = None
 
 
-Origin = Literal["scan", "agent", "import", "git", "drift"]
+Origin = Literal["scan", "agent", "import", "git", "drift", "direct"]
 
 
 class Provenance(BaseModel):

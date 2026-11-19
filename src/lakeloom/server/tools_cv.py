@@ -33,11 +33,9 @@ from lakeloom.core.cv_builder import (
     TermDraft,
     batch_to_ops,
     harvest_folksonomy,
-    normalize_term_name,
 )
 from lakeloom.core.operations import (
     AddConcept,
-    AddRelation,
     AddScopeNote,
     DeprecateConcept,
     ProposalOperation,
@@ -50,6 +48,7 @@ from lakeloom.core.thesaurus_builder import (
     validate_ansi_z39,
 )
 from lakeloom.errors import LakeloomError
+from lakeloom.rdf.skos_enrichment import concept_labels
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
 from lakeloom.server.tools_common import (
@@ -58,7 +57,7 @@ from lakeloom.server.tools_common import (
     client_name,
     guarded,
 )
-from lakeloom.server.tools_proposals import NEXT_STEP, ProposalResult, with_line
+from lakeloom.server.tools_proposals import NEXT_STEP, ProposalResult
 from lakeloom.untrusted import code_span as _code
 
 __all__ = ["register_cv_tools"]
@@ -68,6 +67,15 @@ _log = logging.getLogger(__name__)
 MAX_TERMS_PER_CALL = 500
 MAX_TAGS = 1000
 MAX_TOPICS = 50
+
+
+async def _resolve_in_model(deps: AppDeps, model: str, concept: str) -> str:
+    """The FQN of ``concept`` (IRI, FQN or unambiguous name) within ``model`` only."""
+    from lakeloom.core.concepts import resolve_concept
+
+    ref = await resolve_concept(deps.models, deps.om, concept, within=[model])
+    return ref.fqn
+
 
 READ_ONLY = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
@@ -244,9 +252,7 @@ def _result(text: str, data: BaseModel) -> CallToolResult:
     )
 
 
-def _proposal_result(
-    p: Proposal, deps: AppDeps, *, next_step: bool = True
-) -> CallToolResult:
+def proposal_result(p: Proposal, deps: AppDeps, *, next_step: bool = True) -> CallToolResult:
     summary = deps.proposals.summary_markdown(p)
     text = f"{summary}\n{NEXT_STEP}\n" if next_step and p.status == "draft" else summary
     data = ProposalResult(
@@ -377,46 +383,33 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
         limit: Annotated[int, Field(ge=1, le=200, description="Maximum pairs returned.")] = 20,
     ) -> Annotated[CallToolResult, RelatedSuggestionsResult]:
         async def body(_: Principal) -> CallToolResult:
-            from rdflib.namespace import RDF, SKOS as _SKOS
+            from lakeloom.server.tools_analytics import load_realization_index
 
-            from lakeloom.core.concepts import find_assets_for_concept
-
-            # Enumerate all concept IRIs from the SKOS graph (avoids empty-query restriction).
-            graph = await deps.models.graph(model)
-            concept_iris = [
-                str(s) for s in graph.subjects(RDF.type, _SKOS.Concept)
-            ]
-            # Build realization map: concept_iri → set of asset FQNs (sample, ≤200 concepts).
-            realization_map: dict[str, set[str]] = {}
-            for iri in concept_iris[:200]:
-                try:
-                    assets_page = await find_assets_for_concept(
-                        deps.models, deps.om, iri, limit=500
-                    )
-                    realization_map[iri] = {a.table_fqn for a in assets_page.items}
-                except Exception:
-                    pass
-
+            index = await load_realization_index(deps, model)
+            labels = concept_labels(index.graph)
             suggestions = suggest_related_from_cooccurrence(
-                realization_map,
+                index.tables(),
                 min_shared=min_shared,
                 min_score=min_score,
                 max_suggestions=limit,
             )
             lines = [f"**{len(suggestions)} RT suggestion(s)** for model {_code(model)}.", ""]
             for s in suggestions[:10]:
-                a = s.concept_a_fqn.rsplit(".", 1)[-1]
-                b = s.concept_b_fqn.rsplit(".", 1)[-1]
+                a = labels.get(s.concept_a_fqn, s.concept_a_fqn)
+                b = labels.get(s.concept_b_fqn, s.concept_b_fqn)
                 lines.append(
-                    f"- `{a}` ↔ `{b}` "
+                    f"- {_code(a)} ↔ {_code(b)} "
                     f"({s.shared_asset_count} shared assets, score {s.overlap_score:.2f})"
                 )
             if len(suggestions) > 10:
                 lines.append(f"… and {len(suggestions) - 10} more.")
+            if index.truncated:
+                lines.append("\n_Large model: only part of the realizations were read._")
             if suggestions:
                 lines.append(
-                    "\nNext: pass the pairs you agree with to `propose_add_relation` "
-                    "with `relation_type=related`."
+                    "\nNext: for each pair the user agrees with, call `propose_change` with an "
+                    "`add_relation` operation of type `related` (or `propose_add_relation` once "
+                    "available)."
                 )
             data = RelatedSuggestionsResult(
                 model=model,
@@ -458,14 +451,14 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
             Field(description="Intended taxonomy granularity."),
         ] = "medium",
         exclusions: Annotated[
-            list[str],
+            list[str] | None,
             Field(max_length=50, description="Topics explicitly out of scope."),
-        ] = [],
+        ] = None,
     ) -> Annotated[CallToolResult, CoverageReportResult]:
         async def body(_: Principal) -> CallToolResult:
             graph = await deps.models.graph(model)
             coverage_model = CoverageModel.from_lists(
-                topics, depth=depth, granularity=granularity, exclusions=list(exclusions)
+                topics, depth=depth, granularity=granularity, exclusions=list(exclusions or [])
             )
             report = assess_coverage(graph, coverage_model)
             data = CoverageReportResult(
@@ -512,7 +505,9 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ctx: Context,
         note: Annotated[
             str | None,
-            Field(max_length=1000, description="Rationale for this batch (recorded in provenance)."),
+            Field(
+                max_length=1000, description="Rationale for this batch (recorded in provenance)."
+            ),
         ] = None,
     ) -> Annotated[CallToolResult, ProposalResult]:
         async def body(principal: Principal) -> CallToolResult:
@@ -530,7 +525,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 warnings=warnings,
                 recheck_pending=True,
             )
-            return _proposal_result(p, deps)
+            return proposal_result(p, deps)
 
         return await guarded(
             "propose_add_term", ctx, PROPOSE_SCOPE, body, audited=True, audit=deps.audit
@@ -586,9 +581,15 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
             from lakeloom.untrusted import UntrustedText
 
             ops: list[ProposalOperation] = []
-            parent_bare = parent_name.rsplit(".", 1)[-1]  # strip FQN prefix if given
-            # Create parent only when it looks like a bare name (no dot = not an FQN).
-            if "." not in parent_name:
+            parent = parent_name
+            try:  # an existing parent (by FQN, IRI or unique name) is reused, never recreated
+                parent = await _resolve_in_model(deps, model, parent_name)
+                exists = True
+            except LakeloomError as exc:
+                if exc.code != "not_found" or "." in parent_name:
+                    raise
+                exists = False
+            if not exists:
                 ops.append(
                     AddConcept(
                         op="add_concept",
@@ -606,7 +607,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
                     AddConcept(
                         op="add_concept",
                         name=child,
-                        parent=parent_name,
+                        parent=parent,
                         rule_ids=["R-CV-DIRECT"],
                     )
                 )
@@ -623,7 +624,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 warnings=warnings,
                 recheck_pending=True,
             )
-            return _proposal_result(p, deps)
+            return proposal_result(p, deps)
 
         return await guarded(
             "propose_add_hierarchy", ctx, PROPOSE_SCOPE, body, audited=True, audit=deps.audit
@@ -663,22 +664,20 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ] = None,
     ) -> Annotated[CallToolResult, ProposalResult]:
         async def body(principal: Principal) -> CallToolResult:
-            from lakeloom.core.concepts import find_concepts
-
-            page = await find_concepts(deps.models, deps.om, concept, model=model, limit=5)
-            match = next((c for c in page.items if c.name == concept.rsplit(".", 1)[-1]), None)
-            if match is None:
+            fqn = await _resolve_in_model(deps, model, concept)
+            successor_fqn = await _resolve_in_model(deps, model, successor) if successor else None
+            if successor_fqn == fqn:
                 raise LakeloomError(
-                    "not_found",
-                    f"concept {concept!r} not found in model {_code(model)}",
-                    "use find_concepts to look up the exact name or FQN",
+                    "validation_error",
+                    "a concept cannot be its own successor",
+                    "pass a different concept as successor, or none",
                 )
             op = DeprecateConcept(
                 op="deprecate_concept",
-                fqn=match.fqn,
-                base_version="1",  # lakeloom-native op; OM version not needed
+                fqn=fqn,
+                base_version="1",  # lakeloom-native op: never applied to OM, no version check
                 reason=reason,
-                successor=successor,
+                successor=successor_fqn,
                 rule_ids=["R-CV-DIRECT"],
             )
             p = await deps.proposals.propose_operations(
@@ -690,7 +689,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 tool="propose_deprecate",
                 recheck_pending=True,
             )
-            return _proposal_result(p, deps)
+            return proposal_result(p, deps)
 
         return await guarded(
             "propose_deprecate", ctx, PROPOSE_SCOPE, body, audited=True, audit=deps.audit
@@ -710,9 +709,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
 
     async def propose_add_scope_note(
         model: Annotated[str, Field(description="Model slug.")],
-        concept: Annotated[
-            str, Field(description="Name or FQN of the existing concept.")
-        ],
+        concept: Annotated[str, Field(description="Name or FQN of the existing concept.")],
         note: Annotated[
             str,
             Field(min_length=1, max_length=2000, description="The scope note text."),
@@ -724,19 +721,9 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ] = "en",
     ) -> Annotated[CallToolResult, ProposalResult]:
         async def body(principal: Principal) -> CallToolResult:
-            from lakeloom.core.concepts import find_concepts
-
-            page = await find_concepts(deps.models, deps.om, concept, model=model, limit=5)
-            match = next((c for c in page.items if c.name == concept.rsplit(".", 1)[-1]), None)
-            if match is None:
-                raise LakeloomError(
-                    "not_found",
-                    f"concept {concept!r} not found in model {_code(model)}",
-                    "use find_concepts to look up the exact name or FQN",
-                )
             op = AddScopeNote(
                 op="add_scope_note",
-                concept_fqn=match.fqn,
+                concept_fqn=await _resolve_in_model(deps, model, concept),
                 note=note,
                 lang=lang,
                 rule_ids=["R-CV-DIRECT"],
@@ -750,7 +737,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 tool="propose_add_scope_note",
                 recheck_pending=True,
             )
-            return _proposal_result(p, deps)
+            return proposal_result(p, deps)
 
         return await guarded(
             "propose_add_scope_note", ctx, PROPOSE_SCOPE, body, audited=True, audit=deps.audit

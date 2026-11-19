@@ -1666,6 +1666,15 @@ async def test_propose_operations_creates_draft_with_origin(make) -> None:
     assert [(r.tool, r.result, r.proposal_id) for r in rows] == [("import_model", "ok", p.id)]
 
 
+async def test_propose_operations_direct_origin_is_valid(make) -> None:
+    """The CV/thesaurus and entity-linking tools propose with origin "direct"."""
+    kit = make()
+    p = await kit.service.propose_operations(
+        "shop", _imported(1), origin="direct", principal=AGENT, client=None, tool="propose_add_term"
+    )
+    assert (await kit.repo.get(p.id)).provenance.origin == "direct"
+
+
 async def test_propose_operations_empty_is_nothing_to_propose(make) -> None:
     kit = make()
     with pytest.raises(NothingToPropose):

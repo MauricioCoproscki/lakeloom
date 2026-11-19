@@ -30,6 +30,7 @@ from typing import Literal, cast
 from pydantic import BaseModel
 
 from lakeloom.config import Settings
+from lakeloom.core.annotations import applied_operations
 from lakeloom.core.audit import AuditContext, AuditRecord, current_audit, record
 from lakeloom.core.callers import Caller
 from lakeloom.core.confirm import ConfirmTokens
@@ -622,18 +623,11 @@ class ReleaseService:
             message="",
         )
         # Collect applied ops so fill_exports can produce an enriched skos.ttl (M8).
-        applied_ops = None
-        if self._proposal_repo is not None:
-            applied_ops = []
-            cursor = None
-            for _ in range(20):
-                page, cursor = await self._proposal_repo.list_by_status(
-                    ["applied"], model, cursor, 200
-                )
-                for p in page:
-                    applied_ops.extend(p.operations)
-                if cursor is None:
-                    break
+        applied_ops = (
+            await applied_operations(self._proposal_repo, model)
+            if self._proposal_repo is not None
+            else None
+        )
         try:
             snap = await fill_exports(self._models, self._om, base, ops=applied_ops)
         except RuntimeError as exc:  # the model moved between the version reads

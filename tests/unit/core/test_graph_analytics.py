@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, SKOS
 
 from lakeloom.core.graph_analytics import (
-    CoverageStats,
-    ConceptStats,
-    HierarchyReport,
     analytics_markdown,
     concept_stats,
     hierarchy_report,

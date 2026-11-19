@@ -11,14 +11,12 @@ from lakeloom.core.entity_linking import (
     _kind_from_score,
     _match_score,
     _parse_schema_org,
-    _word_overlap,
     candidates_to_ops,
     clear_schema_org_cache,
     lookup_schema_org,
     lookup_wikidata,
 )
 from lakeloom.core.operations import AddMapping
-
 
 # ---------------------------------------------------------------------------
 # Score helpers

@@ -15,20 +15,19 @@ Public API:
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from rdflib import Graph, URIRef
 from rdflib.namespace import RDF, SKOS
 
 __all__ = [
     "ConceptStats",
-    "HierarchyReport",
     "CoverageStats",
+    "HierarchyReport",
+    "analytics_markdown",
     "concept_stats",
     "hierarchy_report",
     "realization_coverage",
-    "analytics_markdown",
 ]
 
 
@@ -42,22 +41,22 @@ class ConceptStats:
     """Structural statistics about concept count and graph depth."""
 
     total_concepts: int
-    total_relations: int        # all skos:broader + skos:narrower + skos:related
-    avg_depth: float            # mean BFS depth from root concepts
+    total_relations: int  # all skos:broader + skos:narrower + skos:related
+    avg_depth: float  # mean BFS depth from root concepts
     max_depth: int
-    isolated_concepts: int      # no BT, NT or RT
-    hub_concepts: list[str]     # IRIs with ≥ 5 outgoing broader/narrower/related
+    isolated_concepts: int  # no BT, NT or RT
+    hub_concepts: list[str]  # IRIs with ≥ 5 outgoing broader/narrower/related
 
 
 @dataclass(frozen=True)
 class HierarchyReport:
     """Shape of the broader/narrower hierarchy."""
 
-    roots: list[str]            # concepts with no skos:broader
-    leaves: list[str]           # concepts with no skos:narrower
+    roots: list[str]  # concepts with no skos:broader
+    leaves: list[str]  # concepts with no skos:narrower
     polyhierarchy_nodes: list[str]  # concepts with ≥ 2 distinct broader parents
     orphan_concepts: list[str]  # concepts completely disconnected (no BT/NT/RT)
-    total_top_concepts: int     # skos:topConceptOf / scheme has topConcept
+    total_top_concepts: int  # skos:topConceptOf / scheme has topConcept
 
 
 @dataclass(frozen=True)
@@ -67,8 +66,8 @@ class CoverageStats:
     total_concepts: int
     concepts_with_realizations: int
     concepts_without_realizations: int
-    coverage_ratio: float          # 0.0–1.0
-    top_realized: list[str]        # top-10 concept IRIs by realization count
+    coverage_ratio: float  # 0.0-1.0
+    top_realized: list[str]  # top-10 concept IRIs by realization count
 
 
 # ---------------------------------------------------------------------------
@@ -169,10 +168,8 @@ def concept_stats(graph: Graph) -> ConceptStats:
     avg_depth = sum(all_depths) / n if n else 0.0
     max_depth = max(all_depths, default=0)
 
-    concept_set = set(concepts)
     isolated = [
-        c for c in concepts
-        if not broader.get(c) and not narrower.get(c) and not related.get(c)
+        c for c in concepts if not broader.get(c) and not narrower.get(c) and not related.get(c)
     ]
 
     degree: dict[URIRef, int] = defaultdict(int)
@@ -212,14 +209,13 @@ def hierarchy_report(graph: Graph) -> HierarchyReport:
     leaves = [str(c) for c in concepts if not narrower.get(c)]
     polyhierarchy = [str(c) for c in concepts if len(broader.get(c, ())) >= 2]
     orphans = [
-        str(c) for c in concepts
+        str(c)
+        for c in concepts
         if not broader.get(c) and not narrower.get(c) and not related.get(c)
     ]
 
     # Count scheme-level top concepts.
-    top_count = sum(
-        1 for _ in graph.subject_objects(SKOS.topConceptOf)
-    ) + sum(
+    top_count = sum(1 for _ in graph.subject_objects(SKOS.topConceptOf)) + sum(
         1 for _ in graph.subject_objects(SKOS.hasTopConcept)
     )
 

@@ -78,7 +78,7 @@ async def fill_exports(
         skos_bytes = await asyncio.to_thread(serialize, graph, "skos", prefixes=dict(info.prefixes))
         skos_text = skos_bytes.decode("utf-8")
 
-    exports: dict = {
+    exports: dict[str, str] = {
         "ontology.ttl": ttl.decode("utf-8"),
         "ontology.jsonld": jsonld.decode("utf-8"),
         "ontology.owl": owl.decode("utf-8"),

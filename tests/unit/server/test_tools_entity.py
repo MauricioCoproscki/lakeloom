@@ -11,14 +11,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from kit import AuthKit, DepsFactory, mcp_session
 from test_tools_proposals import FakeProposals, proposal
-from test_tools_semantic import fake_deps, structured, text
+from test_tools_semantic import fake_deps, structured
 
 from lakeloom.core.audit import current_audit
-from lakeloom.core.entity_linking import clear_schema_org_cache
 from lakeloom.server.mcp_app import create_mcp, create_server_app
 
 READ = "lakeloom:read"
@@ -95,6 +92,7 @@ async def call_suggest(
 ) -> Any:
     # Patch the aiohttp fetch with the fake.
     import lakeloom.server.tools_entity as te
+
     original = te._aiohttp_fetch
     te._aiohttp_fetch = _fake_wikidata_fetch  # type: ignore[assignment]
     try:
@@ -149,7 +147,8 @@ async def test_propose_is_not_read_only(make_deps: DepsFactory) -> None:
 
 async def test_suggest_returns_candidates(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_suggest(
-        make_deps, kit,
+        make_deps,
+        kit,
         {"model": "retail", "concepts": "all", "external_kg": "wikidata"},
         scope=READ,
     )
@@ -163,7 +162,8 @@ async def test_suggest_returns_candidates(make_deps: DepsFactory, kit: AuthKit) 
 
 async def test_suggest_requires_read_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_suggest(
-        make_deps, kit,
+        make_deps,
+        kit,
         {"model": "retail", "concepts": "all"},
         scope=None,
     )
@@ -175,7 +175,8 @@ async def test_suggest_unknown_model_returns_not_found(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
     result = await call_suggest(
-        make_deps, kit,
+        make_deps,
+        kit,
         {"model": "no-such-model", "concepts": "all"},
         scope=READ,
     )
@@ -185,12 +186,25 @@ async def test_suggest_unknown_model_returns_not_found(
 
 async def test_suggest_specific_concepts(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_suggest(
-        make_deps, kit,
-        {"model": "retail", "concepts": ["retail.Customer"], "external_kg": "wikidata"},
+        make_deps,
+        kit,
+        {"model": "retail", "concepts": ["retail.Order"], "external_kg": "wikidata"},
         scope=READ,
     )
     data = structured(result)
     assert "error" not in data, data.get("error")
+    # the FQN filter matches (it used to compare FQNs against IRIs and find nothing) and the
+    # search uses the prefLabel; the candidate carries the real FQN
+    assert data["total_concepts_searched"] == 1
+    assert [c["concept_fqn"] for c in data["candidates"]] == ["retail.Order"]
+    assert data["candidates"][0]["label"] == "Order"
+
+
+async def test_suggest_unknown_concept_is_not_found(make_deps: DepsFactory, kit: AuthKit) -> None:
+    result = await call_suggest(
+        make_deps, kit, {"model": "retail", "concepts": ["retail.Nope"]}, scope=READ
+    )
+    assert structured(result)["error"]["code"] == "not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +214,8 @@ async def test_suggest_specific_concepts(make_deps: DepsFactory, kit: AuthKit) -
 
 async def test_propose_creates_draft(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_propose(
-        make_deps, kit,
+        make_deps,
+        kit,
         {
             "model": "retail",
             "mappings": [
@@ -221,7 +236,8 @@ async def test_propose_creates_draft(make_deps: DepsFactory, kit: AuthKit) -> No
 
 async def test_propose_multiple_mappings(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_propose(
-        make_deps, kit,
+        make_deps,
+        kit,
         {
             "model": "retail",
             "mappings": [
@@ -246,7 +262,8 @@ async def test_propose_multiple_mappings(make_deps: DepsFactory, kit: AuthKit) -
 
 async def test_propose_requires_propose_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call_propose(
-        make_deps, kit,
+        make_deps,
+        kit,
         {
             "model": "retail",
             "mappings": [
@@ -261,3 +278,25 @@ async def test_propose_requires_propose_scope(make_deps: DepsFactory, kit: AuthK
     )
     data = structured(result)
     assert data["error"]["code"] == "forbidden"
+
+
+async def test_propose_external_mappings_is_audited_and_rechecked(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class Rec(_ExtendedFakeProposals):
+        async def propose_operations(self, model: str, operations: Any, **kw: Any) -> Any:
+            seen.update(kw)
+            return await super().propose_operations(model, operations, **kw)
+
+    deps = fake_deps(make_deps)
+    deps.proposals = Rec()  # pyright: ignore[reportAttributeAccessIssue]
+    args = {
+        "model": "retail",
+        "mappings": [{"concept_fqn": "retail.Order", "target_uri": "http://x.org/Q1"}],
+    }
+    async with mcp_session(create_server_app(deps), kit.token(scope=PROPOSE)) as session:
+        result = await session.call_tool("propose_external_mappings", args)
+    assert "error" not in structured(result)
+    assert seen["recheck_pending"] is True

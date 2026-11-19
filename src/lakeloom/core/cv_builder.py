@@ -11,7 +11,7 @@ Stage 1 of the Ontology Pipeline (ANSI Z39.19 / ISO 25964):
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Annotated
 
 from pydantic import BaseModel, Field
@@ -19,9 +19,7 @@ from pydantic import BaseModel, Field
 from lakeloom.core.operations import (
     AddConcept,
     AddHistoryNote,
-    AddRealization,
     AddScopeNote,
-    AddSynonym,
     ProposalOperation,
 )
 from lakeloom.untrusted import UntrustedText
@@ -29,8 +27,8 @@ from lakeloom.untrusted import UntrustedText
 __all__ = [
     "MAX_CANDIDATES",
     "MAX_TERMS_PER_BATCH",
-    "TermDraft",
     "FolksonomyCandidate",
+    "TermDraft",
     "batch_to_ops",
     "harvest_folksonomy",
     "normalize_term_name",
@@ -132,6 +130,26 @@ def harvest_folksonomy(
     return sorted(seen.values(), key=lambda c: (-c.frequency, c.name))
 
 
+def _parents_first(terms: list[TermDraft]) -> list[TermDraft]:
+    """Stable order in which a term whose ``broader`` is in the batch follows that parent."""
+    by_name = {t.name: t for t in terms}
+    out: list[TermDraft] = []
+    seen: set[str] = set()
+
+    def visit(t: TermDraft, path: frozenset[str]) -> None:
+        if t.name in seen:
+            return
+        parent = by_name.get(t.broader or "")
+        if parent is not None and parent.name not in path:  # a cycle is left to validation
+            visit(parent, path | {t.name})
+        seen.add(t.name)
+        out.append(t)
+
+    for t in terms:
+        visit(t, frozenset())
+    return out
+
+
 def batch_to_ops(
     terms: list[TermDraft],
     *,
@@ -152,60 +170,43 @@ def batch_to_ops(
             "split into smaller batches"
         )
 
+    from lakeloom.core.operations import Evidence  # local import avoids circularity
+
     concepts: list[ProposalOperation] = []
     enrichments: list[ProposalOperation] = []
+    rules = [rule_id] if rule_id else []
 
-    for draft in terms:
-        evidence_detail = (
-            f"authority: {draft.authority_source}" if draft.authority_source else None
+    for draft in _parents_first(terms):
+        evidence = (
+            [
+                Evidence(
+                    kind="agent", ref="cv_builder", detail=f"authority: {draft.authority_source}"
+                )
+            ]
+            if draft.authority_source
+            else []
         )
         description = (
             UntrustedText(text=draft.definition, source="user") if draft.definition else None
         )
-        op = AddConcept(
-            op="add_concept",
-            name=draft.name,
-            description=description,
-            parent=draft.broader or None,
-            synonyms=list(draft.synonyms),
-            rule_ids=[rule_id] if rule_id else [],
-        )
-        if evidence_detail:
-            op = op.model_copy(
-                update={
-                    "evidence": [
-                        *op.evidence,
-                        # reuse the "agent" kind to record the authority source
-                        type(op.evidence[0]) if op.evidence else None,
-                    ]
-                }
-            )
-            # Pydantic frozen model: rebuild cleanly
-            from lakeloom.core.operations import Evidence  # local import avoids circularity
-
-            op = AddConcept(
+        concepts.append(
+            AddConcept(
                 op="add_concept",
                 name=draft.name,
                 description=description,
                 parent=draft.broader or None,
-                synonyms=list(draft.synonyms),
-                rule_ids=[rule_id] if rule_id else [],
-                evidence=[Evidence(kind="agent", ref="cv_builder", detail=evidence_detail)],
+                synonyms=list(draft.synonyms),  # new concepts carry synonyms inline
+                rule_ids=rules,
+                evidence=evidence,
             )
-        concepts.append(op)
-
-        for syn in draft.synonyms:
-            # AddConcept already carries synonyms; AddSynonym is for enriching existing ones.
-            # For new concepts, the synonyms are embedded above.  Skip here.
-            pass
-
+        )
         if draft.scope_note:
             enrichments.append(
                 AddScopeNote(
                     op="add_scope_note",
                     concept_fqn=draft.name,
                     note=draft.scope_note,
-                    rule_ids=[rule_id] if rule_id else [],
+                    rule_ids=rules,
                 )
             )
         if draft.history_note:
@@ -214,7 +215,7 @@ def batch_to_ops(
                     op="add_history_note",
                     concept_fqn=draft.name,
                     note=draft.history_note,
-                    rule_ids=[rule_id] if rule_id else [],
+                    rule_ids=rules,
                 )
             )
 

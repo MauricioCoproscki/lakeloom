@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from kit import AuthKit, DepsFactory, mcp_session
 from test_tools_semantic import fake_deps, structured, text
 
@@ -105,7 +103,9 @@ async def test_export_skos_requires_read_scope(make_deps: DepsFactory, kit: Auth
 # ---------------------------------------------------------------------------
 
 
-async def test_skos_annotation_stats_returns_structured(make_deps: DepsFactory, kit: AuthKit) -> None:
+async def test_skos_annotation_stats_returns_structured(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
     result = await call(make_deps, kit, "skos_annotation_stats", {"model": "retail"}, scope=READ)
     data = structured(result)
     assert "error" not in data, data.get("error")
@@ -131,9 +131,7 @@ async def test_skos_annotation_stats_unknown_model(make_deps: DepsFactory, kit: 
 async def test_skos_annotation_stats_requires_read_scope(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
-    result = await call(
-        make_deps, kit, "skos_annotation_stats", {"model": "retail"}, scope=None
-    )
+    result = await call(make_deps, kit, "skos_annotation_stats", {"model": "retail"}, scope=None)
     data = structured(result)
     assert data["error"]["code"] == "forbidden"
 
@@ -143,7 +141,9 @@ async def test_skos_annotation_stats_requires_read_scope(
 # ---------------------------------------------------------------------------
 
 
-async def test_skos_deprecated_list_returns_structured(make_deps: DepsFactory, kit: AuthKit) -> None:
+async def test_skos_deprecated_list_returns_structured(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
     result = await call(make_deps, kit, "skos_deprecated_list", {"model": "retail"}, scope=READ)
     data = structured(result)
     assert "error" not in data, data.get("error")
@@ -164,9 +164,7 @@ async def test_skos_deprecated_list_unknown_model(make_deps: DepsFactory, kit: A
 async def test_skos_deprecated_list_requires_read_scope(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
-    result = await call(
-        make_deps, kit, "skos_deprecated_list", {"model": "retail"}, scope=None
-    )
+    result = await call(make_deps, kit, "skos_deprecated_list", {"model": "retail"}, scope=None)
     data = structured(result)
     assert data["error"]["code"] == "forbidden"
 

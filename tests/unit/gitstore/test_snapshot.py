@@ -7,7 +7,7 @@ from lakeloom.gitstore.snapshot import fill_exports
 _TTL = (
     "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n"
     "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n"
-    '<https://x.example/concepts/Revenue> a skos:Concept ;\n'
+    "<https://x.example/concepts/Revenue> a skos:Concept ;\n"
     '    skos:prefLabel "Revenue"@en .\n'
 )
 

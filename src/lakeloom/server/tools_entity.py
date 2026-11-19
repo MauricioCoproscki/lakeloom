@@ -5,13 +5,15 @@ Two tools:
 READ tools (scope ``lakeloom:read``, read_only_hint=True):
   - ``suggest_external_mappings`` — search Wikidata / schema.org for concept matches
 
-WRITE tools (scope ``lakeloom:write``, read_only_hint=False):
+WRITE tools (scope ``lakeloom:propose``, read_only_hint=False):
   - ``propose_external_mappings`` — turn approved candidates into AddMapping proposals
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -22,12 +24,12 @@ from pydantic import BaseModel, Field
 from lakeloom.core.entity_linking import (
     ApprovedMapping,
     MappingCandidate,
-    SchemaOrgMatch,
     WikidataMatch,
     candidates_to_ops,
     lookup_schema_org,
     lookup_wikidata,
 )
+from lakeloom.rdf.skos_enrichment import concept_labels
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
 from lakeloom.server.tools_common import (
@@ -36,7 +38,8 @@ from lakeloom.server.tools_common import (
     client_name,
     guarded,
 )
-from lakeloom.server.tools_proposals import NEXT_STEP, ProposalResult
+from lakeloom.server.tools_cv import proposal_result
+from lakeloom.server.tools_proposals import ProposalResult
 
 __all__ = ["register_entity_tools"]
 
@@ -61,14 +64,14 @@ SKOS mapping kinds (exactMatch, closeMatch, relatedMatch) for human review.
 ``concepts``: list of concept FQNs to look up, or ``"all"`` to search every concept in the model.
 ``external_kg``: ``"wikidata"`` (default) or ``"schema.org"``.
 ``lang``: BCP 47 language code for Wikidata labels (default ``"en"``).
-``limit_per_concept``: max candidates per concept (1–10, default 3).
+``limit_per_concept``: max candidates per concept (1-10, default 3).
 
 Returns a list of candidates.  Read-only, no side effects.  Unknown model → ``not_found``.
 
 {_SCOPE_READ}"""
 
-PROPOSE_DESCRIPTION = f"""\
-Create a proposal that adds SKOS external-mapping triples for a list of approved concept–URI \
+PROPOSE_DESCRIPTION = """\
+Create a proposal that adds SKOS external-mapping triples for a list of approved concept-URI \
 pairs.  Each entry becomes an ``AddMapping`` operation stored in a new draft proposal.
 
 ``model``: model slug.
@@ -80,13 +83,34 @@ Returns a ProposalResult.  Requires human approval before changes are applied to
 Requires scope `lakeloom:propose`."""
 
 
+MAX_CONCEPTS_PER_CALL = 100
+_FETCH_CONCURRENCY = 4
+_CACHE_TTL = 3600.0
+_CACHE_MAX = 2048
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
+_cache_lock = asyncio.Lock()
+
+
 # ---------------------------------------------------------------------------
 # aiohttp fetch helper
 # ---------------------------------------------------------------------------
 
 
 async def _aiohttp_fetch(url: str, params: dict[str, str]) -> Any:
-    """Fetch JSON from ``url`` with optional query ``params`` via httpx."""
+    """Fetch JSON from ``url`` via httpx; answers are cached for an hour per URL+params."""
+    key = (url, repr(sorted((params or {}).items())))
+    hit = _cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL:
+        return hit[1]
+    data = await _fetch_uncached(url, params)
+    async with _cache_lock:
+        if len(_cache) >= _CACHE_MAX:
+            _cache.pop(next(iter(_cache)))
+        _cache[key] = (time.monotonic(), data)
+    return data
+
+
+async def _fetch_uncached(url: str, params: dict[str, str]) -> Any:
     async with httpx.AsyncClient(
         headers={"User-Agent": "lakeloom-entity-linker/1.0"},
         timeout=10.0,
@@ -117,6 +141,7 @@ class SuggestResult(BaseModel):
     external_kg: str
     total_concepts_searched: int
     candidates: list[MappingCandidateResult]
+    truncated: bool = False
 
 
 class ProposeMappingsResult(BaseModel):
@@ -158,42 +183,49 @@ def register_entity_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ] = "en",
         limit_per_concept: Annotated[
             int,
-            Field(description="Max candidates per concept (1–10, default 3).", ge=1, le=10),
+            Field(description="Max candidates per concept (1-10, default 3).", ge=1, le=10),
         ] = 3,
     ) -> Annotated[CallToolResult, SuggestResult]:
         async def body(_: Principal) -> CallToolResult:
             from rdflib.namespace import RDF
             from rdflib.namespace import SKOS as _SKOS
 
-            # Enumerate concept names from SKOS graph.
+            from lakeloom.core.concepts import OM_FQN, resolve_concept
+
             graph = await deps.models.graph(model)
-            concept_iris = [str(s) for s in graph.subjects(RDF.type, _SKOS.Concept)]
-
-            # Determine which concepts to search.
+            labels = concept_labels(graph)
+            fqns = {
+                str(c): str(graph.value(c, OM_FQN) or c)
+                for c in graph.subjects(RDF.type, _SKOS.Concept)
+            }
             if concepts == "all":
-                search_iris = concept_iris[:100]  # safety cap
+                wanted = sorted(fqns, key=lambda i: fqns[i])
             else:
-                # Accept FQNs; find matching IRIs by suffix.
-                fqn_set = set(concepts)
-                search_iris = [
-                    iri for iri in concept_iris if any(iri.endswith(fqn) for fqn in fqn_set)
+                refs = [
+                    await resolve_concept(deps.models, deps.om, c, within=[model]) for c in concepts
                 ]
+                wanted = [r.iri for r in refs if r.iri]
+            truncated = len(wanted) > MAX_CONCEPTS_PER_CALL
+            search_iris = wanted[:MAX_CONCEPTS_PER_CALL]
+            sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
 
+            async def lookup(iri: str) -> list[MappingCandidate]:
+                name = labels.get(iri) or iri.rstrip("/").rsplit("/", 1)[-1]
+                async with sem:
+                    if external_kg == "wikidata":
+                        return list(
+                            await lookup_wikidata(
+                                name, fetch=_aiohttp_fetch, lang=lang, limit=limit_per_concept
+                            )
+                        )
+                    return list(
+                        await lookup_schema_org(name, fetch=_aiohttp_fetch, limit=limit_per_concept)
+                    )
+
+            found = await asyncio.gather(*(lookup(i) for i in search_iris))
             candidates: list[MappingCandidateResult] = []
-            for iri in search_iris:
-                # Derive a human-readable name from the IRI (last path segment).
-                name = iri.rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1]
-                concept_fqn = f"{model}.{name}"
-
-                if external_kg == "wikidata":
-                    matches: list[MappingCandidate] = await lookup_wikidata(
-                        name, fetch=_aiohttp_fetch, lang=lang, limit=limit_per_concept
-                    )
-                else:
-                    matches = await lookup_schema_org(
-                        name, fetch=_aiohttp_fetch, limit=limit_per_concept
-                    )
-
+            for iri, matches in zip(search_iris, found, strict=True):
+                concept_fqn = fqns.get(iri, iri)
                 for m in matches:
                     if isinstance(m, WikidataMatch):
                         candidates.append(
@@ -207,7 +239,7 @@ def register_entity_tools(mcp: MCPServer, deps: AppDeps) -> None:
                                 source="wikidata",
                             )
                         )
-                    elif isinstance(m, SchemaOrgMatch):
+                    else:
                         candidates.append(
                             MappingCandidateResult(
                                 concept_fqn=concept_fqn,
@@ -225,11 +257,17 @@ def register_entity_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 external_kg=external_kg,
                 total_concepts_searched=len(search_iris),
                 candidates=candidates,
+                truncated=truncated,
             )
             lines = [f"## External Mapping Candidates — {model} → {external_kg}"]
             lines.append(
                 f"Searched {len(search_iris)} concepts, found {len(candidates)} candidates.\n"
             )
+            if truncated:
+                lines.append(
+                    f"_Only the first {MAX_CONCEPTS_PER_CALL} of {len(wanted)} concepts were "
+                    "searched: pass `concepts` to search the rest._\n"
+                )
             for c in candidates:
                 lines.append(
                     f"- **{c.concept_fqn}** → [{c.label}]({c.candidate_uri}) "
@@ -276,6 +314,7 @@ def register_entity_tools(mcp: MCPServer, deps: AppDeps) -> None:
             ops = candidates_to_ops(mappings)
             if not ops:
                 from lakeloom.server.tools_common import tool_error
+
                 return tool_error("validation_error", "No mappings provided.", "")
 
             p = await deps.proposals.propose_operations(
@@ -285,23 +324,13 @@ def register_entity_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 principal=principal,
                 client=client_name(ctx),
                 tool="propose_external_mappings",
+                recheck_pending=True,
             )
-            summary = deps.proposals.summary_markdown(p)
-            text = f"{summary}\n{NEXT_STEP}\n" if p.status == "draft" else summary
-            data = ProposalResult(
-                proposal_id=p.id,
-                status=p.status,
-                summary=summary,
-                proposal=p,
-                matches=p.matches,
-                warnings=p.warnings,
-            )
-            return CallToolResult(
-                content=[TextContent(type="text", text=text)],
-                structured_content=data.model_dump(mode="json"),
-            )
+            return proposal_result(p, deps)
 
-        return await guarded("propose_external_mappings", ctx, PROPOSE_SCOPE, body)
+        return await guarded(
+            "propose_external_mappings", ctx, PROPOSE_SCOPE, body, audited=True, audit=deps.audit
+        )
 
     mcp.add_tool(
         propose_external_mappings,

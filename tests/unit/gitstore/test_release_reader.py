@@ -278,7 +278,7 @@ async def test_git_failures_are_upstream_unavailable(
 SKOS_TTL = (
     "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n"
     "@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n"
-    '<https://x.example/concepts/Revenue> a skos:Concept ;\n'
+    "<https://x.example/concepts/Revenue> a skos:Concept ;\n"
     '    skos:prefLabel "Revenue"@en ;\n'
     '    skos:scopeNote "Net of returns."@en .\n'
 )
@@ -311,14 +311,25 @@ async def test_ontology_skos_falls_back_to_projection_when_no_skos_ttl(
 
 async def test_skos_ttl_in_optional_exports() -> None:
     from lakeloom.gitstore.layout import OPTIONAL_EXPORTS
+
     assert "skos.ttl" in OPTIONAL_EXPORTS
 
 
 async def test_snapshot_exports_accepts_skos_ttl() -> None:
     from lakeloom.gitstore.layout import Snapshot
+
     snap = Snapshot(
-        model="retail", glossary_id="g", glossary_fqn="retail",
-        model_version="v1", exports={"ontology.ttl": "ttl", "ontology.jsonld": "{}", "ontology.owl": "<rdf/>", "skos.ttl": SKOS_TTL},
-        proposal_id="p1", message="m",
+        model="retail",
+        glossary_id="g",
+        glossary_fqn="retail",
+        model_version="v1",
+        exports={
+            "ontology.ttl": "ttl",
+            "ontology.jsonld": "{}",
+            "ontology.owl": "<rdf/>",
+            "skos.ttl": SKOS_TTL,
+        },
+        proposal_id="p1",
+        message="m",
     )
     assert "skos.ttl" in (snap.exports or {})
