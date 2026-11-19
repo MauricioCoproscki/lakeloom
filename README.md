@@ -21,6 +21,10 @@ lakehouse/warehouse platforms).
 - **There is no UI.** The interface is an MCP server (for agents), a small read-only HTTP API (for
   software), and a CLI (for operators and CI).
 
+**New here?** The [User Guide](docs/guide/README.md) explains the ontology pipeline in plain
+language, with tutorials for business users, a reviewer guide, an operator guide and the MCP
+reference. This README is the detailed technical reference.
+
 ## Architecture
 
 ```mermaid
