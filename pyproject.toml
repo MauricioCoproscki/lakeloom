@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lakeloom"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Agent-first ontologies for your lakehouse: link Delta Lake data products to OpenMetadata Ontology Studio, version them in Git, and serve them to AI agents over MCP."
 readme = "README.md"
 requires-python = ">=3.12"

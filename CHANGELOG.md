@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-19
+
+First public release (alpha). Highlights:
+
+- **Agent interface.** MCP server over Streamable HTTP and stdio, with 50+ tools, 5 workflow
+  prompts, resources, typed errors, confirm tokens for risky actions, per-principal rate
+  limits and OIDC authentication. There is also a read-only HTTP API and a CLI.
+- **Lake sources.** Delta, Unity Catalog (OSS and Databricks), Snowflake and upstream MCP
+  servers. Scans record versions and optional privacy-preserving profiles.
+- **Proposals and review.** Drafts are staged as OpenMetadata change sets. Humans review
+  them with their own identity, and agents never approve. Proposals can be rebased,
+  imported from RDF/SKOS files or Git, and checked for lake drift. Every write is audited.
+- **Publication.** Applied changes become Git commits or pull requests. Semantic-versioned
+  releases come with a CHANGELOG, SHACL shapes, a JSON-LD context, SKOS and RDF exports,
+  an optional triple-store sink with SKOS named graphs, and a SPARQL proxy.
+- **Ontology pipeline** (after Jessica Talisman's *Ontology Pipeline*):
+  - vocabulary harvesting and authoring;
+  - MAP (implementation layer);
+  - taxonomy tools with coverage checks;
+  - thesaurus tools: RT links, scope and history notes, deprecation with successor,
+    ANSI Z39.19 validation;
+  - entity linking to Wikidata and schema.org;
+  - analytics;
+  - `get_next_steps` guidance and the `build_ontology` prompt.
+- **Stage deliverables.** Glossary, data dictionary, taxonomy tree, search synonyms and
+  query expansion, available at every stage and stored with each release.
+- **Operations.** Background jobs with leases (Git outbox, triple-store sink,
+  reconciliation of direct OpenMetadata edits, scheduled drift). Prometheus metrics and
+  OpenTelemetry. A container image.
+- **Documentation.** A user guide for business users, reviewers, operators and agent
+  developers, a technical reference, and credits and licenses in THIRD_PARTY.md.
+
+Detailed changes:
+
 ### Added (stage deliverables)
 
 - Every pipeline stage hands out a file on its own:
@@ -279,3 +313,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Draft ids of new terms, native classes, properties, relations and axioms include the model,
   so two models proposing the same concept no longer collide on OpenMetadata's global ids
   (the second model's approve failed with "the name is already taken").
+
+[Unreleased]: https://github.com/elcioabrahao/lakeloom/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/elcioabrahao/lakeloom/releases/tag/v0.1.0
