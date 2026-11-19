@@ -65,6 +65,14 @@ confirmation) and calls `propose_add_concepts` again with the definition include
 is happy, the
 assistant calls `submit_proposal` and tells her that a reviewer still has to approve it.
 
+**Already a deliverable.** Once the terms are approved:
+
+> **Maria:** Can I share the glossary with my team?
+
+The assistant calls `export_glossary`. The result is a Markdown glossary for the team wiki,
+or CSV for a spreadsheet. Undefined terms are marked, and `structured.quality` says how
+complete the vocabulary is. Maria does not need a taxonomy or an ontology to use it.
+
 ## 2. Metadata profile: connect terms to the data
 
 After the reviewer approves, Maria asks *"what next?"* again. A typical step is *Map the
@@ -76,6 +84,10 @@ The assistant calls `build_map` with the latest scan. It shows, per table, the c
 carry a term and those that do not. For a column that clearly carries an existing term, the
 assistant proposes the link with `propose_realization`. A column that needs a new term goes
 back to step 1.
+
+**Deliverable:** `export_data_dictionary` turns the scan into a data dictionary, in Markdown
+or CSV. Each column comes with its type, business term and definition, and columns without
+a term are marked. Maria sends the CSV to the analysts.
 
 ## 3. Taxonomy: from broad to narrow
 
@@ -94,6 +106,9 @@ vocabulary should be finished first.
 `assess_taxonomy_coverage` compares the topics Maria lists with the taxonomy and reports
 the gaps. `get_next_steps` also flags a hierarchy that is too flat or too deep.
 
+**Deliverable:** `export_taxonomy(format="mermaid")` draws the tree for a slide, and
+`format="csv"` feeds a BI hierarchy or a portal menu.
+
 ## 4. Thesaurus: related terms and notes
 
 > **Maria:** Which terms go together?
@@ -109,6 +124,18 @@ Maria also asks for notes:
 
 `validate_thesaurus` then checks the structure against ANSI Z39.19, for example that every
 related link has its reverse and that the hierarchy has no cycles.
+
+**Deliverables:**
+- `export_synonyms` writes a synonym file for Elasticsearch or OpenSearch. Searching for
+  "client" now finds "customer", and a deprecated term redirects to its replacement.
+- `expand_query` turns a question into the terms a search or a RAG retriever should use.
+  For example, *"late purchase"* gives *Order* (matched through its synonym) plus its
+  synonyms, narrower terms and
+  related terms.
+
+> **Tip.** At any point, ask *"What can I already hand out?"*. `get_next_steps` lists every
+> deliverable as ready, partial or unavailable. See
+> [What you get at each stage](../concepts/deliverables.md).
 
 ## 5. Publish
 

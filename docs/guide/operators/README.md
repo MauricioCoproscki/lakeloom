@@ -169,7 +169,22 @@ cached for `LAKELOOM_MODEL_CACHE_TTL_SECONDS` (60).
   Reviewers act with their own identity.
 - Keep clocks in sync (NTP), because job leases depend on them.
 
-## 5. Observe
+## 5. Feeding other tools
+
+The stage deliverables are plain files over HTTP, so other systems can poll them with
+`If-None-Match` (each has an `ETag`):
+
+| Consumer | Endpoint |
+|----------|----------|
+| Wiki or documentation build | `GET /v1/models/{slug}/deliverables/glossary.md` |
+| Spreadsheet, BI or catalog import | `GET …/glossary.csv`, `…/data-dictionary.csv`, `…/taxonomy.csv` |
+| Elasticsearch / OpenSearch / Solr synonym filter | `GET …/synonyms.txt` |
+| Report migration | `GET …/deprecations.csv` |
+
+Every route needs a bearer token with `lakeloom:read`. Add `?version=1.4.0` to pin a
+release, and `?scan_id=` to pick the scan behind the data dictionary.
+
+## 6. Observe
 
 - `GET /healthz` reports that the process is up. `GET /readyz` reports that OpenMetadata,
   the database and Git are reachable.
@@ -181,7 +196,7 @@ cached for `LAKELOOM_MODEL_CACHE_TTL_SECONDS` (60).
 
 See [Observability](../../../README.md#observability).
 
-## 6. The CLI
+## 7. The CLI
 
 Operators have a CLI for the same operations:
 

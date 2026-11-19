@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (stage deliverables)
+
+- Every pipeline stage hands out a file on its own:
+  - `export_glossary` (Markdown/CSV, with a vocabulary quality score);
+  - `export_data_dictionary` (Markdown/CSV);
+  - `export_taxonomy` (Markdown, Mermaid, CSV);
+  - `export_synonyms` (Solr/Elasticsearch/OpenSearch rules, synonym CSV, deprecation map).
+- `expand_query` exposes the thesaurus as a search and RAG service.
+- The files are also served as `lakeloom://models/{slug}/deliverables/{filename}` and
+  `GET /v1/models/{slug}/deliverables/{filename}`.
+- `get_next_steps` rates each deliverable ready, partial or unavailable.
+- Releases store the glossary, taxonomy, synonym and deprecation files under
+  `deliverables/`.
+
+### Fixed
+
+- Asking an old release for a file only newer releases have returned 503 instead of
+  `not_found`.
+
 ### Changed
 
 - Project status promoted from pre-alpha to alpha (README, package classifier, security policy).

@@ -49,10 +49,10 @@ reference derived from the book; this table says what is implemented.
 
 | Stage | Implemented in lakeloom | Still open |
 |-------|-------------------------|------------|
-| 1 – Controlled Vocabulary | `harvest_vocabulary_candidates` (OM classification tags or given strings), `propose_add_concepts` (warns on missing definitions), `import_model`, dedupe and pending checks | NLP concept mining; per-term provenance/status model |
-| 2 – Metadata Schema / MAP | `build_map`, `validate_map`, `export_map`: the **implementation layer** (scanned column → concept), computed on demand | Canonical layer (elements, obligations), crosswalks, persisted and versioned MAP documents |
-| 3 – Taxonomy | `propose_add_hierarchy`, `propose_add_relation(relation="broader")`, `assess_taxonomy_coverage`, hierarchy signals in `get_next_steps` | Persisted coverage model; polyhierarchy (OM terms have one parent) |
-| 4 – Thesaurus | `validate_thesaurus` (ANSI Z39.19 checks), `suggest_related_terms` (asset co-occurrence), `propose_add_relation` (RT as OM `relatedTo`, symmetric), `propose_add_scope_note`, `propose_add_history_note`, `propose_deprecate_concept` (`owl:deprecated` + `dct:isReplacedBy`) | Foreign-key and embedding-based RT mining |
+| 1 – Controlled Vocabulary | `harvest_vocabulary_candidates` (OM classification tags or given strings), `propose_add_concepts` (warns on missing definitions), `import_model`, dedupe and pending checks; deliverable `export_glossary` (Markdown/CSV, quality score) | NLP concept mining; per-term provenance/status model |
+| 2 – Metadata Schema / MAP | `build_map`, `validate_map`, `export_map`: the **implementation layer** (scanned column → concept), computed on demand; deliverable `export_data_dictionary` (Markdown/CSV) | Canonical layer (elements, obligations), crosswalks, persisted and versioned MAP documents |
+| 3 – Taxonomy | `propose_add_hierarchy`, `propose_add_relation(relation="broader")`, `assess_taxonomy_coverage`, hierarchy signals in `get_next_steps`; deliverable `export_taxonomy` (Markdown, Mermaid, CSV) | Persisted coverage model; polyhierarchy (OM terms have one parent) |
+| 4 – Thesaurus | `validate_thesaurus` (ANSI Z39.19 checks), `suggest_related_terms` (asset co-occurrence), `propose_add_relation` (RT as OM `relatedTo`, symmetric), `propose_add_scope_note`, `propose_add_history_note`, `propose_deprecate_concept` (`owl:deprecated` + `dct:isReplacedBy`); deliverables `export_synonyms` (search synonym file, deprecation map) and `expand_query` (search/RAG) | Foreign-key and embedding-based RT mining |
 | 5 – Ontology | OWL/SKOS via OpenMetadata + rdflib; `propose_change`, `validate_model`, SHACL shapes, `export_model` (all formats; `skos` carries the governance annotations) | Reasoner integration |
 | 6 – Knowledge Graph | Releases in Git, triple-store sink (Fuseki, GraphDB, RDF4J) with SKOS named graphs, `suggest_external_mappings` / `propose_external_mappings` (Wikidata, schema.org) | SPARQL query templates as MCP tools |
 
@@ -60,7 +60,9 @@ Governance annotations (scope notes, history notes, deprecations) are lakeloom-n
 live in the proposal log and every read path (`explain_concept`, `find_concepts`,
 `export_model`, analytics, `get_next_steps`) shows the **effective graph**, i.e. the
 OpenMetadata graph plus those annotations. `get_next_steps` reads the model's state and
-recommends the next step; the `build_ontology` prompt walks a non-expert through the stages.
+recommends the next step and lists the deliverables each stage can already hand out. The
+`build_ontology` prompt walks a non-expert through the stages. See
+[What you get at each stage](guide/concepts/deliverables.md).
 
 ---
 
@@ -598,7 +600,8 @@ The CLI workflow above is the book-inspired design; agents run the pipeline thro
 
 | Stage | Read | Write (draft proposals, human review) |
 |-------|------|---------------------------------------|
-| Guidance | `get_next_steps`, prompt `build_ontology` | — |
+| Guidance | `get_next_steps` (with deliverable readiness), prompt `build_ontology` | — |
+| Deliverables | `export_glossary` (1), `export_data_dictionary` (2), `export_taxonomy` (3), `export_synonyms` and `expand_query` (4) | — |
 | 1 – Vocabulary | `harvest_vocabulary_candidates`, `find_concepts`, `explain_concept` | `propose_add_concepts`, `import_model` |
 | 2 – MAP | `build_map`, `validate_map`, `export_map` | `propose_realization` |
 | 3 – Taxonomy | `assess_taxonomy_coverage`, `get_model_stats` | `propose_add_hierarchy`, `propose_add_relation` (`broader`) |

@@ -599,7 +599,8 @@ Lakeloom never creates or seals OpenMetadata releases. Releases need Git publish
   higher than every existing release.
 - **What is committed.** One commit directly on `LAKELOOM_GIT_BRANCH`, in both Git modes. It
   holds the five exports, `manifest.yaml` with `release` and `released_at`, the regenerated
-  `README.md`, and `ontologies/<slug>/CHANGELOG.md` with the new section first. The section
+  `README.md`, and `ontologies/<slug>/CHANGELOG.md` with the new section first, and the stage deliverables
+under `ontologies/<slug>/deliverables/` (glossary, taxonomy, synonyms, deprecations). The section
   has Added, Changed and Removed terms and the approved proposals since the previous tag.
   The subject is `release(<slug>): v<version>`, with the trailers `Lakeloom-Release`,
   `Released-By`, `Lakeloom-Model-Version` and `Lakeloom-Release-Id`. Branch and tag are pushed
@@ -782,6 +783,29 @@ interval before its next attempt.
 - Not shared across replicas yet (M4a backlog): the per-model proposal lock, and releases and
   imports, which are serialised per process (the Git remote rejects the losing push).
 
+### Stage deliverables
+
+Every pipeline stage hands out a file people and ordinary tools can use, without RDF, a
+triple store or Git, and long before the model is a full ontology. All are read-only
+(`lakeloom:read`) and render the effective model, which includes the approved scope notes,
+history notes and deprecations.
+
+| Stage | Tool | Formats | Content |
+| --- | --- | --- | --- |
+| 1 Vocabulary | `export_glossary` | `markdown`, `csv` | Business glossary (term, definition, synonyms, scope notes, deprecated terms and their replacement), plus a quality score in `structured.quality` |
+| 2 MAP | `export_data_dictionary` | `markdown`, `csv` | Columns of a scan (`scan_id`, default the newest) with type, business term and definition; unmapped columns marked |
+| 3 Taxonomy | `export_taxonomy` | `markdown`, `mermaid`, `csv` | The broad-to-narrow tree |
+| 4 Thesaurus | `export_synonyms` | `solr`, `csv`, `deprecations` | Solr/Elasticsearch/OpenSearch synonym rules (`old => new` for deprecated terms), synonym list, deprecation map |
+| 4 Thesaurus | `expand_query` | — | The terms a text names, with synonyms, narrower (`depth`) and related terms, for search and RAG |
+
+`get_next_steps` lists each deliverable as `ready`, `partial` or `unavailable`, with the
+reason. The files are also MCP resources and HTTP routes (see below), with `?version=` for
+a release. Every release stores the glossary, taxonomy, synonym and deprecation files under
+`ontologies/<slug>/deliverables/`. The data dictionary depends on a scan and is always
+rendered live. In Markdown, untrusted text is folded to one line and escaped. CSV keeps the
+exact text, quoted per RFC 4180. See the
+[guide chapter](docs/guide/concepts/deliverables.md).
+
 ### Surfaces overview
 
 | Capability | MCP tool | MCP resource | HTTP route |
@@ -798,6 +822,8 @@ interval before its next attempt.
 | JSON-LD context | | `lakeloom://models/{slug}/context.jsonld` | `GET /v1/models/{slug}/context.jsonld` |
 | SHACL shapes | | `lakeloom://models/{slug}/shapes.ttl` | `GET /v1/models/{slug}/shapes` (`Accept`) |
 | Model validation | `validate_model` | | none (CLI `lakeloom validate`) |
+| Stage deliverables | `export_glossary`, `export_data_dictionary`, `export_taxonomy`, `export_synonyms` | `lakeloom://models/{slug}/deliverables/{filename}` | `GET /v1/models/{slug}/deliverables/{filename}` |
+| Query expansion | `expand_query` | | none |
 | Concept lookup | `explain_concept`, `find_concepts` | | `GET /v1/concepts/{concept}` (IRI, FQN, id or name, percent-encoded) |
 | Asset context | `get_asset_context` | `lakeloom://assets/{fqn}/context.md` | `GET /v1/assets/{fqn}/context` |
 
@@ -815,6 +841,7 @@ regenerate with `uv run python scripts/gen_openapi.py`).
 | `/v1/models/{slug}/versions` | `application/json` |
 | `/v1/models/{slug}/shapes` | `text/turtle`, `application/ld+json`, `application/n-triples` |
 | `/v1/models/{slug}/context.jsonld` | `application/ld+json` (the full context) |
+| `/v1/models/{slug}/deliverables/{filename}` (`scan_id` for the data dictionary) | the file's own type: `text/markdown` (`.md`), `text/csv` (`.csv`), `text/plain` (`.txt`, `.mmd`) |
 | `/v1/concepts/{iri-or-fqn-or-id-or-name}` | `text/markdown`, `application/json` |
 | `/v1/assets/{fqn}/context` (`max_tokens`) | `text/markdown`, `application/json`, `application/ld+json` |
 | `POST /v1/models/{slug}/sparql` | SELECT/ASK: `application/sparql-results+json`, `application/sparql-results+xml`, `text/csv`, `text/tab-separated-values`; CONSTRUCT/DESCRIBE: `text/turtle`, `application/ld+json`, `application/n-triples`, `application/rdf+xml` |
@@ -845,6 +872,7 @@ and readable with the `lakeloom:read` scope (`forbidden` without it):
 | `lakeloom://models/{slug}/ontology.{ext}` | `ttl` `text/turtle`, `jsonld` `application/ld+json`, `owl` `application/rdf+xml`, `nt` `application/n-triples` |
 | `lakeloom://models/{slug}/shapes.ttl` | `text/turtle`, the SHACL shapes |
 | `lakeloom://models/{slug}/context.jsonld` | `application/ld+json`, the full JSON-LD context |
+| `lakeloom://models/{slug}/deliverables/{filename}` | a stage deliverable: `glossary.md`/`.csv`, `data-dictionary.md`/`.csv`, `taxonomy.md`/`.mmd`/`.csv`, `synonyms.txt`/`.csv`, `deprecations.csv` |
 | `lakeloom://assets/{fqn}/context.md` | `text/markdown`; percent-encode the table FQN |
 
 `resources/list` names `lakeloom://models` and, for up to 100 models, their ontology, shapes and

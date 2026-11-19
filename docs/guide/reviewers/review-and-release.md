@@ -85,6 +85,11 @@ only review is human-only.
    and if the operator configured a triple store, the release is synced there with its SKOS
    graph.
 
+The release also stores the stage deliverables: glossary, taxonomy, synonym file and
+deprecation map, under `ontologies/<slug>/deliverables/`. Anyone can then fetch the
+glossary of version `1.4.0`, for example with `export_glossary(version="1.4.0")`. So a
+release is worth making even for a model that is still only a vocabulary.
+
 A release is refused when nothing changed, when the tag exists, or while an approval is
 still being published to Git.
 
@@ -94,6 +99,6 @@ still being published to Git.
 |---------|-------|
 | Weekly: what is waiting? | `get_next_steps(goal="maintain")`, `list_pending_reviews` |
 | Before a release | `validate_model`, `validate_thesaurus`, `get_next_steps(goal="publish")` |
-| Vocabulary health | `get_annotation_stats`, `list_deprecated_concepts`, `get_model_stats` |
+| Vocabulary health | `get_annotation_stats`, `list_deprecated_concepts`, `get_model_stats`, `export_glossary` (`structured.quality`) |
 | Data coverage | `assess_realization_coverage`, `build_map` |
 | Direct edits in OpenMetadata | The operator's reconciliation job reports them; see the [operator guide](../operators/README.md) |

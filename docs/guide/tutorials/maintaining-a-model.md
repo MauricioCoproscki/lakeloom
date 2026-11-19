@@ -36,6 +36,8 @@ The assistant calls `propose_deprecate_concept`:
 ```
 
 Once approved:
+- `export_synonyms` maps `Client => Customer` for search, and
+  `export_synonyms(format="deprecations")` gives the CSV for migrating reports;
 - `explain_concept("Client")` opens with **Deprecated. Use `Customer` instead.**;
 - `find_concepts` marks *Client* as deprecated;
 - the SKOS export records `owl:deprecated` and `dct:isReplacedBy`, and keeps "Client" as a
@@ -81,3 +83,5 @@ something.
 | Are there orphan terms, and is the hierarchy too deep or too flat? | `get_model_stats` |
 | Which columns have no term? | `build_map`, `validate_map` |
 | Do our terms match public vocabularies? | `suggest_external_mappings` |
+| Is the shared glossary up to date? | `export_glossary` (re-export after each approval) |
+| Do the search synonyms reflect the latest deprecations? | `export_synonyms`, `export_synonyms(format="deprecations")` |
