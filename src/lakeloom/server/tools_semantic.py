@@ -482,7 +482,12 @@ def register_semantic_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 data = await deps.reader.ontology(model, rel.version, format)
             else:  # latest: OM's model plus the governance annotations of the proposal log
                 info = await deps.models.get_model(model)
-                graph = await _effective(model)
+                graph = await effective_graph(
+                    deps.models,
+                    getattr(deps, "proposal_repo", None),
+                    model,
+                    related=format == "skos",  # the thesaurus view only in the SKOS export
+                )
                 data = await asyncio.to_thread(
                     serialize, graph, format, prefixes=dict(info.prefixes)
                 )

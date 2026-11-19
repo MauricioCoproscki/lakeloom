@@ -146,7 +146,9 @@ async def load_realization_index(deps: AppDeps, model: str) -> RealizationIndex:
 
     from lakeloom.core.concepts import find_assets_for_concept
 
-    graph = await effective_graph(deps.models, getattr(deps, "proposal_repo", None), model)
+    graph = await effective_graph(
+        deps.models, getattr(deps, "proposal_repo", None), model, related=True
+    )
     iris = sorted(str(s) for s in graph.subjects(RDF.type, _SKOS.Concept))
     out = RealizationIndex(graph, truncated=len(iris) > MAX_CONCEPTS_SCANNED)
     sem = asyncio.Semaphore(_LOAD_CONCURRENCY)

@@ -53,15 +53,20 @@ async def applied_operations(repo: ProposalLister, model: str) -> list[ProposalO
     return [op for p in applied for op in p.operations()]
 
 
-async def effective_graph(models: "ModelService", repo: ProposalLister | None, model: str) -> Graph:
+async def effective_graph(
+    models: "ModelService", repo: ProposalLister | None, model: str, *, related: bool = False
+) -> Graph:
     """``model``'s graph as users should see it: OpenMetadata's terms plus the scope notes,
-    history notes and deprecations of its applied proposals, and OM's ``relatedTo`` links as
-    ``skos:related``. The cached OM graph is never mutated."""
+    history notes and deprecations of its applied proposals. With ``related``, every
+    concept-to-concept link also shows as ``skos:related`` (the thesaurus view: deliverables,
+    validation, query expansion, SKOS export); exports leave it out so OWL stays as OM has it.
+    The cached OM graph is never mutated."""
     graph = await models.graph(model)
     ops = await applied_operations(repo, model) if repo is not None else []
 
     def build() -> Graph:
-        return enrich_graph_from_ops(derive_related(copy.deepcopy(graph)), ops)
+        out = enrich_graph_from_ops(copy.deepcopy(graph), ops)
+        return derive_related(out) if related else out
 
     return await asyncio.to_thread(build)
 

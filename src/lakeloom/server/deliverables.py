@@ -67,7 +67,7 @@ async def deliverable_bytes(
     deps: "AppDeps", model: str, d: Deliverable, *, scan_id: str | None = None
 ) -> bytes:
     """Deliverable ``d`` of ``model``'s current effective state."""
-    graph = await effective_graph(deps.models, deps.proposal_repo, model)
+    graph = await effective_graph(deps.models, deps.proposal_repo, model, related=True)
     entries = vocabulary_entries(graph)
     profile = await _profile(deps, model, scan_id) if d.needs_scan else None
     return render(d, entries, model, profile).encode("utf-8")

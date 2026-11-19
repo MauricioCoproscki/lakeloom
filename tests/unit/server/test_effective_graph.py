@@ -77,3 +77,30 @@ async def test_export_latest_includes_annotations(make_deps: DepsFactory, kit: A
     body = text(result)
     assert "owl:deprecated" in body and "Only paid orders." in body
     assert "isReplacedBy" in body
+
+
+async def test_tool_http_and_resource_serve_the_same_effective_bytes(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    """With governance annotations, export_model, GET /v1/models/{slug} and the ontology
+    resource must stay byte-identical (the contract test caught them drifting apart)."""
+    import httpx2
+
+    deps = annotated(make_deps)
+    app = create_server_app(deps)
+    async with mcp_session(app, kit.token(scope=READ)) as session:
+        p = proposal("applied", deps.seed).model_copy(update={"model": "retail"})
+        await deps.proposal_repo.add(p)
+        tool = await session.call_tool("export_model", {"model": "retail", "format": "turtle"})
+        res = await session.read_resource("lakeloom://models/retail/ontology.ttl")
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="https://lakeloom.test"
+        ) as http:
+            r = await http.get(
+                "/v1/models/retail",
+                headers={"Authorization": f"Bearer {kit.token()}", "Accept": "text/turtle"},
+            )
+    body = text(tool)
+    content = res.contents[0]
+    assert "owl:deprecated" in body  # the annotations are there
+    assert body.encode() == r.content == getattr(content, "text", "").encode()

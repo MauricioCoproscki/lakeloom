@@ -12,6 +12,7 @@ the body), ``Last-Modified`` and ``Link`` values.
   Git links need a web base (ADR 0015); web URLs never carry user info.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -22,6 +23,7 @@ from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
+from rdflib import Graph
 
 from lakeloom.core.concepts import concept_markdown, explain_concept, fetch_tables
 from lakeloom.core.context import (
@@ -37,6 +39,7 @@ from lakeloom.gitstore.release_reader import ReleaseFile, ReleaseInfo, ReleaseRe
 from lakeloom.om.client import OMClient
 from lakeloom.publish.negotiation import FORMAT_BY_MEDIA, MediaType
 from lakeloom.publish.shacl_gen import ShapesMedia
+from lakeloom.rdf.canonical import serialize
 from lakeloom.sources.base import LakeSource
 
 __all__ = [
@@ -233,8 +236,13 @@ async def model_artifact(
     version: str | None,
     releases: ReleaseReader | None = None,
     git: GitLinks | None = None,
+    effective: Callable[[str], Awaitable[Graph]] | None = None,
 ) -> Artifact:
-    """The model as an ontology: OpenMetadata's current state, or a release's tagged bytes."""
+    """The model as an ontology: OpenMetadata's current state, or a release's tagged bytes.
+
+    ``effective`` returns the model's effective graph (OM plus the governance annotations of
+    the proposal log); the MCP tool, the HTTP API and the resources pass the same one, so
+    the three serve identical bytes."""
     fmt = FORMAT_BY_MEDIA.get(media)
     if fmt is None:
         raise LakeloomError(
@@ -247,7 +255,11 @@ async def model_artifact(
     if rel is not None and releases is not None:
         return _release_artifact(await releases.ontology(slug, rel.version, fmt), media, rel, git)
     info = await models.get_model(slug)
-    body = await models.export(slug, fmt)  # loads (or reuses) the graph for loaded_at below
+    if effective is None:
+        body = await models.export(slug, fmt)  # loads (or reuses) the graph for loaded_at
+    else:
+        graph = await effective(slug)
+        body = await asyncio.to_thread(serialize, graph, fmt, prefixes=dict(info.prefixes))
     modified, links = await _model_stamp(models, info, git)
     return _make(body, media, modified, links)
 

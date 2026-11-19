@@ -304,6 +304,8 @@ class LakeloomMCP(MCPServer[Any]):
                         f"unknown ontology format {ext!r}",
                         "use one of: " + ", ".join(MEDIA_BY_EXT),
                     )
+                from lakeloom.core.annotations import effective_graph
+
                 return "ontology", lambda: model_artifact(
                     deps.models,
                     slug,
@@ -311,6 +313,7 @@ class LakeloomMCP(MCPServer[Any]):
                     version=version,
                     releases=deps.reader,
                     git=deps.git_links,
+                    effective=lambda s: effective_graph(deps.models, deps.proposal_repo, s),
                 )
             if name == "shapes.ttl":
                 return "shapes", lambda: shapes_artifact(

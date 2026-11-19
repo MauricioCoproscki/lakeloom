@@ -176,7 +176,7 @@ async def _existing_link(deps: AppDeps, model: str, a: str, b: str) -> str | Non
 
     from lakeloom.rdf.skos_enrichment import OM_FQN
 
-    graph = await effective_graph(deps.models, deps.proposal_repo, model)
+    graph = await effective_graph(deps.models, deps.proposal_repo, model, related=True)
     na = next(graph.subjects(OM_FQN, Literal(a)), None)
     nb = next(graph.subjects(OM_FQN, Literal(b)), None)
     if na is None or nb is None:
@@ -218,7 +218,7 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ctx: Context,
     ) -> Annotated[CallToolResult, ThesaurusReportResult]:
         async def body(_: Principal) -> CallToolResult:
-            graph = await effective_graph(deps.models, deps.proposal_repo, model)
+            graph = await effective_graph(deps.models, deps.proposal_repo, model, related=True)
             report: ThesaurusReport = validate_ansi_z39(graph)
             data = ThesaurusReportResult(
                 model=model,
@@ -581,7 +581,7 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
             from lakeloom.core.deliverables import expand_query as expand
             from lakeloom.core.deliverables import vocabulary_entries
 
-            graph = await effective_graph(deps.models, deps.proposal_repo, model)
+            graph = await effective_graph(deps.models, deps.proposal_repo, model, related=True)
             found = expand(vocabulary_entries(graph), text, depth=depth, related=related)
             terms: list[str] = []
             for x in found:

@@ -580,7 +580,7 @@ async def test_add_related_refuses_an_already_linked_pair(
     g.add((URIRef(b + "placedOn"), RDF.type, OWL.ObjectProperty))
     g.add((URIRef(b + "Order"), URIRef(b + "placedOn"), URIRef(b + "OrderDate")))
 
-    async def fake(models: Any, repo: Any, model: str) -> Graph:
+    async def fake(models: Any, repo: Any, model: str, **_: Any) -> Graph:
         return g
 
     monkeypatch.setattr(tools_thesaurus, "effective_graph", fake)

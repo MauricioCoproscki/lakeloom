@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from lakeloom.core.annotations import effective_graph
 from lakeloom.core.deliverables import DELIVERABLES
 from lakeloom.core.sparql import FORMATS, MEDIA, ResultFormat
 from lakeloom.errors import ErrorCode, LakeloomError, RateLimited
@@ -361,7 +362,13 @@ def create_router(deps: "AppDeps") -> APIRouter:
 
     def model(slug: str, media: MediaType, version: str | None) -> Awaitable[Artifact]:
         return model_artifact(
-            deps.models, slug, media, version=version, releases=deps.reader, git=deps.git_links
+            deps.models,
+            slug,
+            media,
+            version=version,
+            releases=deps.reader,
+            git=deps.git_links,
+            effective=lambda s: effective_graph(deps.models, deps.proposal_repo, s),
         )
 
     @router.get(
