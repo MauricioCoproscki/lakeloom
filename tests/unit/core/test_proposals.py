@@ -1800,3 +1800,42 @@ def test_old_rows_default_origin_scan() -> None:
     del stored["origin"], stored["source_document"]
     loaded = Provenance.model_validate(stored)
     assert loaded.origin == "scan" and loaded.source_document is None
+
+
+async def test_summary_renders_every_operation_kind(make) -> None:
+    """A kind missing from the summary tables either crashed it (KeyError) or vanished from
+    the reviewer's view: every operation must appear, governance ones included."""
+    import typing
+
+    from lakeloom.core.operations import (
+        AddHistoryNote,
+        AddScopeNote,
+        DeprecateConcept,
+        ProposalOperation,
+    )
+    from lakeloom.core.proposals import _TITLES  # pyright: ignore[reportPrivateUsage]
+
+    union = typing.get_args(typing.get_args(ProposalOperation)[0])
+    kinds = {typing.get_args(cls.model_fields["op"].annotation)[0] for cls in union}
+    assert kinds <= set(_TITLES), kinds - set(_TITLES)
+
+    ops = [
+        AddScopeNote(op="add_scope_note", concept_fqn="shop.Order", note="Paid only."),
+        AddHistoryNote(op="add_history_note", concept_fqn="shop.Order", note="Was Sale."),
+        DeprecateConcept(
+            op="deprecate_concept",
+            fqn="shop.Sale",
+            base_version="1",
+            reason="merged",
+            successor="shop.Order",
+        ),
+    ]
+    kit = make()
+    p = await kit.service.propose_operations(
+        "shop", ops, origin="direct", principal=AGENT, client=None, tool="t"
+    )
+    text = kit.service.summary_markdown(p)  # the real service path the tools use
+    assert "### Scope notes (1)" in text and "Paid only." in text
+    assert "### History notes (1)" in text
+    assert "## Changed" in text and "### Deprecations (1)" in text
+    assert "`shop.Sale`, use `shop.Order` instead" in text and "merged" in text

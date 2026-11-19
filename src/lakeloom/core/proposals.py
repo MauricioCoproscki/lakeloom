@@ -96,10 +96,13 @@ from lakeloom.core.operations import (
     AddAttribute,
     AddAxiom,
     AddConcept,
+    AddHistoryNote,
     AddMapping,
     AddRealization,
     AddRelation,
+    AddScopeNote,
     AddSynonym,
+    DeprecateConcept,
     Evidence,
     OMContext,
     OMOps,
@@ -683,8 +686,19 @@ _TITLES = {
     "remove_mapping": "Mappings",
     "remove_axiom": "Axioms",
     "remove_realization": "Realizations",
+    # lakeloom-native governance operations (never sent to OpenMetadata)
+    "add_scope_note": "Scope notes",
+    "add_history_note": "History notes",
+    "deprecate_concept": "Deprecations",
+    "set_coverage_model": "Coverage model",
 }
 _ORDER = list(dict.fromkeys(_TITLES.values()))
+# Which summary section each operation belongs to: what it adds, changes or removes.
+_SECTIONS = (
+    ("Added", ("add_",)),
+    ("Changed", ("update_", "deprecate_", "set_")),
+    ("Removed", ("remove_",)),
+)
 
 
 def _op_line(op: ProposalOperation) -> str:
@@ -708,6 +722,11 @@ def _op_line(op: ProposalOperation) -> str:
         case AddRealization() | RemoveRealization():
             column = f" column {code_span(op.column)}" if op.column else ""
             head = f"{code_span(op.concept)} by {code_span(op.asset_fqn)}{column}"
+        case AddScopeNote() | AddHistoryNote():
+            head = f"{code_span(op.concept_fqn)} ({code_span(op.lang)})"
+        case DeprecateConcept():
+            use = f", use {code_span(op.successor)} instead" if op.successor else ""
+            head = f"{code_span(op.fqn)}{use}"
         case _:
             head = code_span(op_key(op))
     rules = ", ".join(code_span(r) for r in op.rule_ids) or "none"
@@ -724,6 +743,10 @@ def _evidence_lines(op: ProposalOperation) -> list[str]:
         lines.append(_indent(quote_untrusted(description.text, source=description.source)))
     if op.rationale is not None:
         lines.append(_indent(quote_untrusted(op.rationale.text, source=op.rationale.source)))
+    if isinstance(op, AddScopeNote | AddHistoryNote):
+        lines.append(_indent(quote_untrusted(op.note, source="proposal author")))
+    if isinstance(op, DeprecateConcept) and op.reason:
+        lines.append(_indent(quote_untrusted(op.reason, source="proposal author")))
     for e in op.evidence:
         if e.detail:
             lines.append(_indent(quote_untrusted(e.detail, source=f"evidence {e.kind}")))
@@ -756,8 +779,8 @@ def summary_markdown(p: Proposal) -> str:
         ]
         held = "; ".join(sets) if sets else "no OM change set (realizations only)"
         lines.append(f"- Part {part.n} ({tables}): {len(part.operations)} operations; {held}")
-    for change, prefix in (("Added", "add_"), ("Changed", "update_"), ("Removed", "remove_")):
-        chosen = [op for op in ops if op.op.startswith(prefix)]
+    for change, prefixes in _SECTIONS:
+        chosen = [op for op in ops if op.op.startswith(prefixes)]
         if not chosen:
             continue
         lines += ["", f"## {change}"]
