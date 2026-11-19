@@ -49,7 +49,13 @@ File names are `glossary.md`, `glossary.csv`, `data-dictionary.md`, `data-dictio
 `deprecations.csv`.
 
 `version=latest` (the default) renders the current model. `version=1.2.0` reads the copy
-stored in that release. Only releases that include deliverables have one.
+stored in that release.
+
+Every release made with `create_release` stores the glossary, taxonomy, synonym and
+deprecation files under `ontologies/<slug>/deliverables/` in Git. So each version of the
+vocabulary is published with its release, even if the model has not reached the later
+stages. The data dictionary depends on a scan, not on a release, so it is always rendered
+live. Releases made before this feature have no deliverables.
 
 ## Safety
 

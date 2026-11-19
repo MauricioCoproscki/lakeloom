@@ -33,7 +33,20 @@ TRAILER_MAX = 200
 REQUIRED_EXPORTS = ("ontology.ttl", "ontology.jsonld", "ontology.owl")
 # written when present; queued payloads from before M3a carry only the required three
 # skos.ttl added in M8: releases enriched with annotation ops from proposals
-OPTIONAL_EXPORTS = ("shapes.ttl", "context.jsonld", "skos.ttl")
+OPTIONAL_EXPORTS = (
+    "shapes.ttl",
+    "context.jsonld",
+    "skos.ttl",
+    # stage deliverables of a release (a release needs no scan, so no data dictionary)
+    "deliverables/glossary.md",
+    "deliverables/glossary.csv",
+    "deliverables/taxonomy.md",
+    "deliverables/taxonomy.mmd",
+    "deliverables/taxonomy.csv",
+    "deliverables/synonyms.txt",
+    "deliverables/synonyms.csv",
+    "deliverables/deprecations.csv",
+)
 
 _SLUG = re.compile(SLUG_PATTERN)
 # characters YAML double-quoted scalars may not carry literally (JSON leaves them unescaped)

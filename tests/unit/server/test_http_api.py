@@ -668,3 +668,22 @@ def test_http_sparql_guards_once_and_logs_rejections(
     assert guarded == [SELECT, "DROP ALL"]
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert hashlib.sha256(b"DROP ALL").hexdigest() in logged
+
+
+def test_release_deliverable_is_served_from_the_tag(
+    make_deps: DepsFactory, tmp_path: Path, auth: dict[str, str]
+) -> None:
+    remote = Remote(tmp_path)
+    remote.release("1.0.0", D1)  # a release from before deliverables existed
+    glossary = remote.clone / "ontologies/retail/deliverables/glossary.md"
+    glossary.parent.mkdir(parents=True)
+    glossary.write_text("# Business glossary: retail\n")
+    remote.release("1.1.0", D1)
+    deps = git_deps(make_deps, remote)
+    with TestClient(create_server_app(deps), base_url="https://lakeloom.test") as c:
+        new = get(c, auth, "/v1/models/retail/deliverables/glossary.md?version=1.1.0")
+        old = get(c, auth, "/v1/models/retail/deliverables/glossary.md?version=1.0.0")
+    assert new.status_code == 200 and new.text == "# Business glossary: retail\n"
+    assert new.headers["content-type"].startswith("text/markdown")
+    assert old.status_code == 404, old.json()
+    assert "has no glossary.md" in old.json()["error"]["message"]

@@ -102,3 +102,38 @@ async def test_fill_exports_with_empty_ops_writes_skos_ttl() -> None:
     )
     assert snap.exports is not None
     assert "skos.ttl" in snap.exports
+
+
+async def test_fill_exports_with_ops_writes_stage_deliverables() -> None:
+    """A release carries the scan-independent deliverables under deliverables/."""
+    from lakeloom.core.operations import AddScopeNote
+    from lakeloom.gitstore.layout import export_files
+
+    op = AddScopeNote(op="add_scope_note", concept_fqn="Revenue", note="Net of returns.", lang="en")
+    snap = await fill_exports(
+        cast(Any, _Models(["v1"], ttl=_TTL.encode())),
+        cast(Any, _OM()),
+        _base(),
+        ops=[op],
+    )
+    exports = snap.exports or {}
+    names = {k for k in exports if k.startswith("deliverables/")}
+    assert names == {
+        "deliverables/glossary.md",
+        "deliverables/glossary.csv",
+        "deliverables/taxonomy.md",
+        "deliverables/taxonomy.mmd",
+        "deliverables/taxonomy.csv",
+        "deliverables/synonyms.txt",
+        "deliverables/synonyms.csv",
+        "deliverables/deprecations.csv",
+    }
+    files = export_files(snap)
+    assert f"ontologies/{snap.model}/deliverables/glossary.md" in files
+
+
+async def test_fill_exports_without_ops_has_no_deliverables() -> None:
+    snap = await fill_exports(
+        cast(Any, _Models(["v1"], ttl=_TTL.encode())), cast(Any, _OM()), _base()
+    )
+    assert not any(k.startswith("deliverables/") for k in snap.exports or {})

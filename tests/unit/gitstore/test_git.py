@@ -161,6 +161,11 @@ async def test_timeout_kills_process(
             "not_found",
         ),
         ("fatal: couldn't find remote ref main", "not_found"),
+        (
+            "fatal: path 'ontologies/m/deliverables/glossary.md' exists on disk, but not in "
+            "'1a2b3c'",
+            "not_found",
+        ),
         ("fatal: unable to access 'http://h/': Could not resolve host: h", "network"),
         ("fatal: unable to connect: Connection refused", "network"),
         ("CONFLICT (content): Merge conflict in a.ttl", "conflict"),

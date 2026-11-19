@@ -69,6 +69,7 @@ _RULES: tuple[tuple[GitErrorKind, tuple[str, ...]], ...] = (
             "couldn't find remote ref",
             "not found",
             "does not exist",
+            "exists on disk, but not in",  # git show of a path a later commit added
         ),
     ),
     (

@@ -21,6 +21,8 @@ from lakeloom.core.proposals import Proposal, ReviewRecord
 from lakeloom.errors import LakeloomError
 
 if TYPE_CHECKING:
+    from rdflib import Graph
+
     from lakeloom.core.operations import ProposalOperation
 from lakeloom.gitstore.layout import (
     Snapshot,
@@ -66,6 +68,7 @@ async def fill_exports(
     caps = await om.get_capabilities()
 
     skos_text: str | None = None
+    deliverables: dict[str, str] = {}
     if ops is not None:
         import asyncio
         import copy
@@ -77,6 +80,7 @@ async def fill_exports(
         graph = await asyncio.to_thread(enrich_graph_from_ops, copy.deepcopy(graph), ops)
         skos_bytes = await asyncio.to_thread(serialize, graph, "skos", prefixes=dict(info.prefixes))
         skos_text = skos_bytes.decode("utf-8")
+        deliverables = await asyncio.to_thread(_release_deliverables, graph, slug)
 
     exports: dict[str, str] = {
         "ontology.ttl": ttl.decode("utf-8"),
@@ -87,6 +91,7 @@ async def fill_exports(
     }
     if skos_text is not None:
         exports["skos.ttl"] = skos_text
+    exports.update(deliverables)
 
     return snapshot.model_copy(
         update={
@@ -163,3 +168,16 @@ async def exports_or_base(
         code = exc.code if isinstance(exc, LakeloomError) else type(exc).__name__
         _log.warning("%s: export for Git failed (%s)", what, code)
         return base
+
+
+def _release_deliverables(graph: "Graph", slug: str) -> dict[str, str]:
+    """The scan-independent stage deliverables of the effective graph, by export name."""
+    from lakeloom.core.deliverables import DELIVERABLES, render, vocabulary_entries
+    from lakeloom.rdf.skos_enrichment import derive_related
+
+    entries = vocabulary_entries(derive_related(graph))
+    return {
+        f"deliverables/{d.filename}": render(d, entries, slug)
+        for d in DELIVERABLES
+        if not d.needs_scan
+    }
