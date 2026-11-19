@@ -14,10 +14,11 @@ from typing import Annotated
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
+from rdflib import Graph
 
 from lakeloom.core.graph_analytics import (
-    CoverageStats,
     ConceptStats,
+    CoverageStats,
     HierarchyReport,
     analytics_markdown,
     concept_stats,
@@ -96,10 +97,10 @@ class CoverageResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _load_graph_and_realizations(
+async def load_graph_and_realizations(
     deps: AppDeps,
     model: str,
-) -> tuple[object, dict[str, list[str]]]:
+) -> tuple[Graph, dict[str, list[str]]]:
     """Return (rdflib Graph, realization index) for ``model``."""
     from rdflib.namespace import RDF
     from rdflib.namespace import SKOS as _SKOS
@@ -114,7 +115,7 @@ async def _load_graph_and_realizations(
         try:
             page = await find_assets_for_concept(deps.models, deps.om, iri, limit=200)
             if page.items:
-                keys = []
+                keys: list[str] = []
                 for asset in page.items:
                     if asset.column:
                         keys.append(f"{asset.fqn}.{asset.column}")
@@ -144,7 +145,7 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ctx: Context,
     ) -> Annotated[CallToolResult, GraphStatsResult]:
         async def body(_: Principal) -> CallToolResult:
-            graph, _ = await _load_graph_and_realizations(deps, model)
+            graph, _real = await load_graph_and_realizations(deps, model)
 
             stats: ConceptStats = concept_stats(graph)
             hier: HierarchyReport = hierarchy_report(graph)
@@ -191,7 +192,7 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ctx: Context,
     ) -> Annotated[CallToolResult, CoverageResult]:
         async def body(_: Principal) -> CallToolResult:
-            graph, realizations = await _load_graph_and_realizations(deps, model)
+            graph, realizations = await load_graph_and_realizations(deps, model)
             cov: CoverageStats = realization_coverage(graph, realizations)
 
             pct = round(cov.coverage_ratio * 100, 1)

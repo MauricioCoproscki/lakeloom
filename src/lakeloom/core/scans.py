@@ -57,6 +57,9 @@ class ScanService:
         self._om = om
         self._settings = settings
 
+    async def get(self, scan_id: str) -> ScanRecord:
+        return await self._repo.get(scan_id)
+
     async def _enumerate(
         self,
         src: LakeSource,

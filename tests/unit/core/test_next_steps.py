@@ -19,7 +19,6 @@ NOBODY = Caller(id="bob", can=frozenset())
 HEALTHY = ModelState(
     model="retail",
     concepts=100,
-    scans=1,
     latest_scan_id="scan_1",
     has_release=True,
     total_columns=50,
@@ -45,7 +44,6 @@ def test_healthy_model_has_no_steps_and_is_in_maintenance() -> None:
     ("change", "stage"),
     [
         ({"concepts": 0}, "bootstrap"),
-        ({"scans": 0}, "bootstrap"),
         ({"concepts": 10, "defined_concepts": 10, "realized_concepts": 10}, "vocabulary"),
         ({"defined_concepts": 40}, "vocabulary"),
         ({"orphan_concepts": 30}, "taxonomy"),
@@ -130,6 +128,8 @@ def test_s7_drift() -> None:
     assert step.id == "lake.drift" and step.reach == 3
     assert step.title == "The lake changed: 2 new, 1 removed tables"
     assert step.tool == "detect_drift"
+    (counted,) = next_steps(replace(HEALTHY, drift=DriftSummary(unclassified=4)), ME).steps
+    assert counted.title == "The lake changed: 4 drifted tables" and counted.reach == 4
 
 
 def test_s8_unmapped_columns_threshold_and_scan_arg() -> None:

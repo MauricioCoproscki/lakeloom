@@ -32,17 +32,18 @@ from lakeloom.server.mcp_sessions import SessionBindingMiddleware
 from lakeloom.server.prompts import register_prompts
 from lakeloom.server.resources import LakeloomMCP
 from lakeloom.server.server_info import ServerInfo, build_server_info, summarize
-from lakeloom.server.tools_common import READ_SCOPE, guarded, tool_error
 from lakeloom.server.tools_analytics import register_analytics_tools
-from lakeloom.server.tools_skos import register_skos_tools
+from lakeloom.server.tools_common import READ_SCOPE, guarded, tool_error
 from lakeloom.server.tools_cv import register_cv_tools
 from lakeloom.server.tools_entity import register_entity_tools
-from lakeloom.server.tools_map import register_map_tools
+from lakeloom.server.tools_guide import register_guide_tools
 from lakeloom.server.tools_import import register_import_tools
+from lakeloom.server.tools_map import register_map_tools
 from lakeloom.server.tools_proposals import register_proposal_tools
 from lakeloom.server.tools_release import register_release_tools
 from lakeloom.server.tools_review import register_review_tools
 from lakeloom.server.tools_semantic import register_semantic_tools
+from lakeloom.server.tools_skos import register_skos_tools
 from lakeloom.server.tools_sources import register_source_tools
 
 __all__ = ["MCP_PATH", "create_mcp", "create_server_app", "tool_error", "transport_security"]
@@ -130,6 +131,7 @@ def create_mcp(deps: AppDeps) -> LakeloomMCP:
     register_entity_tools(mcp, deps)
     register_analytics_tools(mcp, deps)
     register_skos_tools(mcp, deps)
+    register_guide_tools(mcp, deps)
     register_import_tools(mcp, deps)
     register_prompts(mcp)
     return mcp

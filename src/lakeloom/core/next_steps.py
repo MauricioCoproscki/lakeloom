@@ -70,10 +70,12 @@ class DriftSummary:
     added_tables: list[str] = field(default_factory=list[str])
     removed_tables: list[str] = field(default_factory=list[str])
     changed_tables: list[str] = field(default_factory=list[str])
+    unclassified: int = 0  # the scheduled drift run only keeps a count per model
 
     @property
     def total(self) -> int:
-        return len(self.added_tables) + len(self.removed_tables) + len(self.changed_tables)
+        named = len(self.added_tables) + len(self.removed_tables) + len(self.changed_tables)
+        return named + self.unclassified
 
 
 @dataclass(frozen=True)
@@ -82,7 +84,6 @@ class ModelState:
 
     model: str
     concepts: int = 0
-    scans: int = 0
     latest_scan_id: str | None = None
     structural_errors: list[str] = field(default_factory=list[str])  # S1
     changes_requested: list[ProposalRef] = field(default_factory=list[ProposalRef])  # S2
@@ -154,7 +155,7 @@ DEFAULT_THRESHOLDS = Thresholds()
 
 
 def detect_stage(s: ModelState, t: Thresholds = DEFAULT_THRESHOLDS) -> Stage:
-    if s.concepts == 0 or s.scans == 0:
+    if s.concepts == 0:  # models authored directly may never be scanned
         return "bootstrap"
     defined = _ratio(s.defined_concepts, s.concepts)
     if s.concepts < t.vocabulary_min_concepts or defined < t.vocabulary_defined:
@@ -302,6 +303,7 @@ def _s7_drift(s: ModelState, t: Thresholds, c: Caller) -> list[Step]:
         f"{len(d.added_tables)} new" if d.added_tables else "",
         f"{len(d.changed_tables)} changed" if d.changed_tables else "",
         f"{len(d.removed_tables)} removed" if d.removed_tables else "",
+        f"{d.unclassified} drifted" if d.unclassified else "",
     ]
     can = "propose" in c.can
     return [Step(
