@@ -1,11 +1,17 @@
 # Lakeloom
 
-> **Status: pre-alpha, milestone M1 complete.** Not ready for production use.
+> **Status: pre-alpha.** Not ready for production use; no public release yet.
 >
-> **M1 status:** M1 is complete: lake sources and scans (M1a), the semantic read path (M1b) and
-> the publication surfaces (M1c: HTTP API, MCP resources, stdio, OpenTelemetry). Proposals,
-> change sets and Git publishing arrive in M2; releases, SHACL shapes and the full JSON-LD
-> context in M3.
+> **Implemented:**
+> - lake sources and scans, and the semantic read path;
+> - proposals, human review and Git publishing;
+> - SHACL shapes, the JSON-LD context, releases, import, drift and SPARQL;
+> - background jobs, rate limits and connectors (Snowflake, Databricks, upstream MCP);
+> - ontology-pipeline tooling for vocabulary, MAP, taxonomy and thesaurus, with entity
+>   linking, analytics, SKOS export and triple-store sync, plus `get_next_steps` guidance.
+>
+> Several connectors and the triple-store sink are tested only against local fakes (see
+> the notes in each section).
 
 Lakeloom is an open-source, agent-first service that lets AI agents and domain specialists build
 and maintain **business ontologies for the data products in a Delta Lake** (and other
