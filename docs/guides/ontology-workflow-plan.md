@@ -6,6 +6,11 @@ direta via ferramentas MCP.
 
 Baseado em: *Ontology Pipeline* (ASIN B0HJ8QWJ5V) + análise da codebase em 2026-11-18.
 
+> **Status (2026-11-19):** plano executado em M5–M9 e revisado pela auditoria da pipeline.
+> Os nomes das ferramentas neste documento já seguem o padrão `verbo_objeto` adotado na
+> auditoria. O estado atual, por etapa, está na seção 2 de
+> [`ontology-pipeline-guide.md`](../ontology-pipeline-guide.md).
+
 ---
 
 ## Estado Atual
@@ -14,7 +19,7 @@ O lakeloom já tem:
 
 - **Ingestão lake→ontologia**: `scan` → `mapper.py` → `proposals.py` → OM change sets
 - **Engine RDF completa**: SKOS + OWL via OM Ontology Studio + rdflib
-- **MCP tools existentes**: `create_model`, `propose_scan`, `propose_change`, `submit_proposal`, `review_proposal`, `import_ontology`, `find_concepts`, `explain_concept`, `realizing_assets`
+- **MCP tools existentes**: `create_model`, `propose_from_scan`, `propose_change`, `submit_proposal`, `review_proposal`, `import_model`, `find_concepts`, `explain_concept`, `find_assets_for_concept`
 - **Publicação**: SHACL (`shacl_gen.py`), JSON-LD (`jsonld_context.py`), Turtle, Git store, triple-store sink
 
 O que falta são **workflows de construção direta** para os estágios 1-4 e melhoria do estágio 6.

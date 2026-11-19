@@ -38,19 +38,23 @@ be built on ambiguous, uncontrolled terms that break downstream reasoning.
 
 ## 2. Lakeloom's Current Position
 
-Lakeloom already implements significant parts of Stages 1 and 5–6:
+Status after the pipeline audit (2026-11-19). Sections 3–8 below remain the design
+reference derived from the book; this table says what is implemented.
 
-| Stage | Current lakeloom coverage |
-|-------|--------------------------|
-| 1 – Controlled Vocabulary | OpenMetadata glossaries expose SKOS terms; `import_terms.py`, `dedupe.py`, `pending.py` manage the term lifecycle |
-| 2 – Metadata Schema / MAP | `sources.py` + `scans.py` read lake metadata; no MAP creation layer yet |
-| 3 – Taxonomy | SKOS `broader`/`narrower` hierarchy is stored; no coverage-model or taxonomy-construction workflow |
-| 4 – Thesaurus | SKOS `related` and `altLabel`/`hiddenLabel` exist; no ANSI Z39.19 BT/NT/RT workflow |
-| 5 – Ontology | Full OWL/SKOS engine via OpenMetadata + rdflib; SPARQL, OBO, Turtle, JSON-LD |
-| 6 – Knowledge Graph | Optional triple-store sink (Fuseki, GraphDB, RDF4J); SPARQL read path |
+| Stage | Implemented in lakeloom | Still open |
+|-------|-------------------------|------------|
+| 1 – Controlled Vocabulary | `harvest_vocabulary_candidates` (OM classification tags or given strings), `propose_add_concepts` (warns on missing definitions), `import_model`, dedupe and pending checks | NLP concept mining; per-term provenance/status model |
+| 2 – Metadata Schema / MAP | `build_map`, `validate_map`, `export_map`: the **implementation layer** (scanned column → concept), computed on demand | Canonical layer (elements, obligations), crosswalks, persisted and versioned MAP documents |
+| 3 – Taxonomy | `propose_add_hierarchy`, `propose_add_relation(relation="broader")`, `assess_taxonomy_coverage`, hierarchy signals in `get_next_steps` | Persisted coverage model; polyhierarchy (OM terms have one parent) |
+| 4 – Thesaurus | `validate_thesaurus` (ANSI Z39.19 checks), `suggest_related_terms` (asset co-occurrence), `propose_add_relation` (RT as OM `relatedTo`, symmetric), `propose_add_scope_note`, `propose_add_history_note`, `propose_deprecate_concept` (`owl:deprecated` + `dct:isReplacedBy`) | Foreign-key and embedding-based RT mining |
+| 5 – Ontology | OWL/SKOS via OpenMetadata + rdflib; `propose_change`, `validate_model`, SHACL shapes, `export_model` (all formats; `skos` carries the governance annotations) | Reasoner integration |
+| 6 – Knowledge Graph | Releases in Git, triple-store sink (Fuseki, GraphDB, RDF4J) with SKOS named graphs, `suggest_external_mappings` / `propose_external_mappings` (Wikidata, schema.org) | SPARQL query templates as MCP tools |
 
-The main gaps are **Stage 2 (MAP creation)**, **Stage 3 (taxonomy construction workflow)**, and
-**Stage 4 (thesaurus-grade relationship building)**.
+Governance annotations (scope notes, history notes, deprecations) are lakeloom-native: they
+live in the proposal log and every read path (`explain_concept`, `find_concepts`,
+`export_model`, analytics, `get_next_steps`) shows the **effective graph**, i.e. the
+OpenMetadata graph plus those annotations. `get_next_steps` reads the model's state and
+recommends the next step; the `build_ontology` prompt walks a non-expert through the stages.
 
 ---
 
@@ -574,18 +578,22 @@ lakeloom kg sync <slug>
 lakeloom kg stats <slug>
 ```
 
-### MCP tools to expose for agents
+### MCP tools per stage (implemented)
 
-Agents using lakeloom should be able to run the pipeline via MCP. New tools to add:
+The CLI workflow above is the book-inspired design; agents run the pipeline through MCP:
 
-| Tool | Description |
-|------|-------------|
-| `harvest_candidate_terms` | Extract CV candidates from lake sources using NLP |
-| `get_coverage_model` | Return the coverage model for a taxonomy |
-| `mine_thesaurus_relationships` | Auto-discover BT/NT/RT from schema |
-| `validate_ontology` | Run SHACL validation against a model |
-| `query_knowledge_graph` | Execute a SPARQL query template |
-| `explain_concept` | Return full SKOS record + BT/NT/RT + examples for a concept |
+| Stage | Read | Write (draft proposals, human review) |
+|-------|------|---------------------------------------|
+| Guidance | `get_next_steps`, prompt `build_ontology` | — |
+| 1 – Vocabulary | `harvest_vocabulary_candidates`, `find_concepts`, `explain_concept` | `propose_add_concepts`, `import_model` |
+| 2 – MAP | `build_map`, `validate_map`, `export_map` | `propose_realization` |
+| 3 – Taxonomy | `assess_taxonomy_coverage`, `get_model_stats` | `propose_add_hierarchy`, `propose_add_relation` (`broader`) |
+| 4 – Thesaurus | `validate_thesaurus`, `suggest_related_terms`, `get_annotation_stats`, `list_deprecated_concepts` | `propose_add_relation` (`related`), `propose_add_scope_note`, `propose_add_history_note`, `propose_deprecate_concept` |
+| 5 – Ontology | `validate_model`, `export_model` | `propose_from_scan`, `propose_change` |
+| 6 – Knowledge Graph | `assess_realization_coverage`, `list_releases`, `diff_releases`, `suggest_external_mappings` | `create_release`, `propose_external_mappings` |
+
+Every write tool creates a draft proposal; `submit_proposal` sends it to review and
+`review_proposal` (a human, with their own sign-in) applies it.
 
 ---
 
@@ -629,6 +637,11 @@ Design every ontology artifact for dual audiences:
 
 ## 11. File and Module Map
 
+> Planning table from before M5; kept for history. The implemented modules are
+> `core/vocabulary.py`, `core/map_profile.py`, `core/taxonomy.py`, `core/thesaurus.py`,
+> `core/entity_linking.py`, `core/graph_analytics.py`, `core/annotations.py`,
+> `core/next_steps.py` and the matching `server/tools_*.py` (see section 2).
+
 | Book concept | Lakeloom location | Action |
 |-------------|------------------|--------|
 | CV governance lifecycle | `core/pending.py`, `core/review.py` | Extend status model; add provenance |
@@ -651,6 +664,9 @@ Design every ontology artifact for dual audiences:
 ---
 
 ## 12. Prioritized Roadmap
+
+> Original roadmap, kept for history. M5–M9 delivered most of items 2–7 and 9; the open
+> items are listed in the "Still open" column of section 2.
 
 ### M4c (recommended next milestone)
 

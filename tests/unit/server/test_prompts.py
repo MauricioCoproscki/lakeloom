@@ -137,3 +137,47 @@ async def test_drift_check_prompt_registered(make_deps: DepsFactory, kit: AuthKi
     assert order == sorted(order), "tools appear in the order they are to be called"
     assert "rename" in body.lower() and "agree" in body.lower()
     assert "\n# SYSTEM" not in body
+
+
+async def test_build_ontology_prompt_walks_the_stages(make_deps: DepsFactory, kit: AuthKit) -> None:
+    from lakeloom.server.prompts import ONTOLOGY_STEPS
+
+    app = create_server_app(make_deps())
+    async with mcp_session(app, kit.token()) as session:
+        listed = {p.name: p for p in (await session.list_prompts()).prompts}
+        args = [(a.name, a.required) for a in listed["build_ontology"].arguments or []]
+        assert args == [("model", True), ("goal", False)]
+        got = await session.get_prompt("build_ontology", {"model": HOSTILE, "goal": "evil"})
+        registered = {t.name for t in (await session.list_tools()).tools}
+    content = got.messages[0].content
+    assert content.type == "text"
+    body = content.text
+    order = [body.index(t) for t in ONTOLOGY_STEPS]
+    assert order == sorted(order), "tools appear in the order of the pipeline"
+    assert set(ONTOLOGY_STEPS) <= registered
+    assert "`auto`" in body  # an unknown goal is not echoed
+    assert "\n# SYSTEM" not in body
+
+
+async def test_instructions_and_prompts_name_only_real_tools(make_deps: DepsFactory) -> None:
+    """Renamed or removed tools must not linger in what the server tells agents."""
+    import re
+
+    from lakeloom.server import prompts
+    from lakeloom.server.mcp_app import create_mcp
+
+    mcp = create_mcp(make_deps())
+    registered = {t.name for t in await mcp.list_tools()}
+    text = mcp.instructions or ""
+    named = {w for w in re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", text)}
+    prompt_names = {"build_ontology", "bootstrap_data_product", "explain_table"}
+    prompt_names |= {"review_with_specialist", "drift_check"}
+    assert named - prompt_names <= registered, named - prompt_names - registered
+    steps = (
+        prompts.BOOTSTRAP_STEPS
+        + prompts.EXPLAIN_STEPS
+        + prompts.REVIEW_STEPS
+        + prompts.DRIFT_STEPS
+        + prompts.ONTOLOGY_STEPS
+    )
+    assert set(steps) <= registered, set(steps) - registered
