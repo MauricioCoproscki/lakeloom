@@ -23,9 +23,8 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 
-from lakeloom.core.annotations import applied_operations
+from lakeloom.core.annotations import effective_graph
 from lakeloom.rdf.skos import skos_projection
-from lakeloom.rdf.skos_enrichment import enrich_graph_from_ops
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
 from lakeloom.server.tools_common import READ_SCOPE, guarded
@@ -113,19 +112,8 @@ class DeprecatedListResult(BaseModel):
 
 async def _enriched_graph(deps: AppDeps, model: str):
     """Return an rdflib Graph enriched with annotation ops from applied proposals."""
-    from rdflib import Graph
 
-    # 1. base graph from OM
-    graph: Graph = await deps.models.graph(model)
-
-    # 2. every annotation op of the model's applied proposals, in application order
-    ops = await applied_operations(deps.proposal_repo, model)
-
-    # 3. enrich in-place (copy so we don't mutate the shared cached graph)
-    import copy
-
-    enriched = copy.deepcopy(graph)
-    return enrich_graph_from_ops(enriched, ops)
+    return await effective_graph(deps.models, deps.proposal_repo, model)
 
 
 # ---------------------------------------------------------------------------

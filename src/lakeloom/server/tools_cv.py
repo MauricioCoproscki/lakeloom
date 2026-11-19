@@ -27,6 +27,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 
+from lakeloom.core.annotations import effective_graph
 from lakeloom.core.coverage import CoverageModel, assess_coverage
 from lakeloom.core.cv_builder import (
     FolksonomyCandidate,
@@ -342,7 +343,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ctx: Context,
     ) -> Annotated[CallToolResult, ThesaurusReportResult]:
         async def body(_: Principal) -> CallToolResult:
-            graph = await deps.models.graph(model)
+            graph = await effective_graph(deps.models, deps.proposal_repo, model)
             report: ThesaurusReport = validate_ansi_z39(graph)
             data = ThesaurusReportResult(
                 model=model,
@@ -456,7 +457,7 @@ def register_cv_tools(mcp: MCPServer, deps: AppDeps) -> None:
         ] = None,
     ) -> Annotated[CallToolResult, CoverageReportResult]:
         async def body(_: Principal) -> CallToolResult:
-            graph = await deps.models.graph(model)
+            graph = await effective_graph(deps.models, deps.proposal_repo, model)
             coverage_model = CoverageModel.from_lists(
                 topics, depth=depth, granularity=granularity, exclusions=list(exclusions or [])
             )

@@ -8,13 +8,16 @@ estimate and ``truncated`` flag of a context always come from the renderer that 
 the payload (FR-CTX-06).
 """
 
+import asyncio
 import hashlib
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
+from rdflib import Graph
 
+from lakeloom.core.annotations import deprecated_concepts, effective_graph, governance_of
 from lakeloom.core.concepts import (
     MORE_ASSETS_LINE,
     AssetPage,
@@ -39,7 +42,7 @@ from lakeloom.core.tokens import token_estimate
 from lakeloom.core.validation import ValidationReport, validation_markdown
 from lakeloom.errors import LakeloomError
 from lakeloom.publish.artifacts import resolve_version
-from lakeloom.rdf.canonical import MEDIA_TYPES, ExportFormat
+from lakeloom.rdf.canonical import MEDIA_TYPES, ExportFormat, serialize
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
 from lakeloom.server.tools_common import READ_SCOPE, guarded
@@ -294,14 +297,17 @@ def _models_text(page: Page[ModelInfo]) -> str:
     return "\n".join([*lines, *_more(page)])
 
 
-def _matches_text(query: str, page: Page[ConceptMatch]) -> str:
+def _matches_text(query: str, page: Page[ConceptMatch], deprecated: set[str] | None = None) -> str:
     lines = [f"**{len(page.items)} concept(s)** matching {_code(query)}"]
     for m in page.items:
         c = m.concept
+        flag = " **(deprecated)**" if deprecated and c.iri in deprecated else ""
         lines.append(
             f"- {_code(c.label)} ({_code(c.fqn)}), model {_code(c.model)}: "
-            f"{m.matched_on}, score {m.score:.2f}"
+            f"{m.matched_on}, score {m.score:.2f}{flag}"
         )
+    if deprecated and any(m.concept.iri in deprecated for m in page.items):
+        lines.append("\nDeprecated concepts: call explain_concept for the replacement.")
     return "\n".join([*lines, *_more(page)])
 
 
@@ -316,6 +322,9 @@ def _assets_text(concept: str, page: AssetPage) -> str:
 
 def register_semantic_tools(mcp: MCPServer, deps: AppDeps) -> None:
     """Register the seven semantic read tools on ``mcp``."""
+
+    async def _effective(slug: str) -> Graph:
+        return await effective_graph(deps.models, getattr(deps, "proposal_repo", None), slug)
 
     async def list_models(
         ctx: Context,
@@ -357,7 +366,10 @@ def register_semantic_tools(mcp: MCPServer, deps: AppDeps) -> None:
             page = await find_concepts(
                 deps.models, deps.om, query, model=model, cursor=cursor, limit=limit
             )
-            return _text(_matches_text(query, page), page)
+            deprecated: set[str] = set()
+            for slug in sorted({m.concept.model for m in page.items}):
+                deprecated |= deprecated_concepts(await _effective(slug))
+            return _text(_matches_text(query, page, deprecated), page)
 
         return await guarded("find_concepts", ctx, READ_SCOPE, body)
 
@@ -371,6 +383,9 @@ def register_semantic_tools(mcp: MCPServer, deps: AppDeps) -> None:
         async def body(_: Principal) -> CallToolResult:
             _check_max_tokens(max_tokens)
             detail = await explain_concept(deps.models, deps.om, concept)
+            if detail.concept.iri:
+                graph = await _effective(detail.concept.model)
+                detail.governance = governance_of(graph, detail.concept.iri, detail.concept.model)
             text, truncated = concept_markdown(detail, max_tokens=max_tokens)
             if truncated:
                 detail = _trim_detail(detail, text)
@@ -465,8 +480,12 @@ def register_semantic_tools(mcp: MCPServer, deps: AppDeps) -> None:
             rel = await resolve_version(deps.reader, model, version)
             if rel is not None and deps.reader is not None:
                 data = await deps.reader.ontology(model, rel.version, format)
-            else:
-                data = await deps.models.export(model, format)
+            else:  # latest: OM's model plus the governance annotations of the proposal log
+                info = await deps.models.get_model(model)
+                graph = await _effective(model)
+                data = await asyncio.to_thread(
+                    serialize, graph, format, prefixes=dict(info.prefixes)
+                )
             if len(data) > MAX_EXPORT_BYTES:
                 raise LakeloomError(
                     "validation_error",

@@ -18,6 +18,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 from rdflib import Graph
 
+from lakeloom.core.annotations import effective_graph
 from lakeloom.core.concepts import AssetRef
 from lakeloom.core.graph_analytics import (
     ConceptStats,
@@ -143,7 +144,7 @@ async def load_realization_index(deps: AppDeps, model: str) -> RealizationIndex:
 
     from lakeloom.core.concepts import find_assets_for_concept
 
-    graph = await deps.models.graph(model)
+    graph = await effective_graph(deps.models, getattr(deps, "proposal_repo", None), model)
     iris = sorted(str(s) for s in graph.subjects(RDF.type, _SKOS.Concept))
     out = RealizationIndex(graph, truncated=len(iris) > MAX_CONCEPTS_SCANNED)
     sem = asyncio.Semaphore(_LOAD_CONCURRENCY)

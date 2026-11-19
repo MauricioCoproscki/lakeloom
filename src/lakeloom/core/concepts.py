@@ -42,6 +42,7 @@ __all__ = [
     "AttributeInfo",
     "ConceptBundle",
     "ConceptDetail",
+    "ConceptGovernance",
     "ConceptMatch",
     "ConceptRef",
     "ConceptSummary",
@@ -139,6 +140,16 @@ class ConceptSummary(BaseModel):
     parents: list[ConceptRef] = []
 
 
+class ConceptGovernance(BaseModel):
+    """Lakeloom-native annotations of a concept (from applied proposals, not OM)."""
+
+    deprecated: bool = False
+    replaced_by: ConceptRef | None = None
+    scope_notes: list[UntrustedText] = []
+    history_notes: list[UntrustedText] = []
+    change_notes: list[UntrustedText] = []
+
+
 class ConceptDetail(BaseModel):
     concept: ConceptRef
     definition: UntrustedText | None = None
@@ -149,6 +160,7 @@ class ConceptDetail(BaseModel):
     attributes: list[AttributeInfo] = []
     mappings: list[MappingInfo] = []
     realizations: Page[AssetRef]
+    governance: ConceptGovernance | None = None
 
 
 # --- graph access -------------------------------------------------------------------------
@@ -965,6 +977,14 @@ def concept_markdown(detail: ConceptDetail, *, max_tokens: int | None = None) ->
         head.append(f"- IRI: {code_span(c.iri)}")
     head += [f"- FQN: {code_span(c.fqn)}", f"- Model: {code_span(c.model)}"]
     sections = ["\n".join(head)]
+    gov = detail.governance
+    if gov is not None and gov.deprecated:
+        use = (
+            f" Use {code_span(gov.replaced_by.label)} ({code_span(gov.replaced_by.fqn)}) instead."
+            if gov.replaced_by
+            else " No replacement was named."
+        )
+        sections.append(f"> **Deprecated.**{use}")
     if detail.definition is not None:
         sections.append(
             "## Definition\n\n"
@@ -975,6 +995,16 @@ def concept_markdown(detail: ConceptDetail, *, max_tokens: int | None = None) ->
             "## Synonyms\n\n"
             + quote_untrusted("\n".join(s.text for s in detail.synonyms), source=source)
         )
+    if gov is not None:
+        for title, notes in (
+            ("Scope notes", gov.scope_notes),
+            ("History", gov.history_notes + gov.change_notes),
+        ):
+            if notes:
+                sections.append(
+                    f"## {title}\n\n"
+                    + quote_untrusted("\n".join(n.text for n in notes), source=notes[0].source)
+                )
     if detail.parents or detail.children:
         lines = [_ref_line("Parent", p) for p in detail.parents]
         lines += [_ref_line("Child", ch) for ch in detail.children]
