@@ -1059,3 +1059,14 @@ def test_cli_sources_bare_still_lists(monkeypatch: pytest.MonkeyPatch, tmp_path:
     result = CliRunner().invoke(app, ["sources"])
     assert result.exit_code == 0, result.output
     assert result.output == "lake\tdelta\tavailable\n"
+
+
+def test_cli_releases_carry_annotations_and_deliverables() -> None:
+    """The CLI's release service must read the proposal log like the server's, or its
+    releases lack skos.ttl and the stage deliverables (found in the pipeline demo)."""
+    import inspect
+
+    import lakeloom.cli as cli
+
+    source = inspect.getsource(cli._open_releases)  # pyright: ignore[reportPrivateUsage]
+    assert "proposal_repo=ProposalRepository(engine)" in source

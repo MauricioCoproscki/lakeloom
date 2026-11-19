@@ -872,6 +872,7 @@ async def _open_releases(
     from lakeloom.server.http_app import load_config
     from lakeloom.state.audit import AuditRepository
     from lakeloom.state.db import create_engine, upgrade
+    from lakeloom.state.proposals import ProposalRepository
     from lakeloom.state.publications import PublicationRepository
     from lakeloom.state.releases import ReleaseRepository
 
@@ -903,6 +904,8 @@ async def _open_releases(
                 ConfirmTokens(key, settings.confirm_ttl_seconds),
                 AuditRepository(engine),
                 config.models,
+                # the proposal log feeds skos.ttl and the stage deliverables, as on the server
+                proposal_repo=ProposalRepository(engine),
             )
             yield service, reader
     finally:
