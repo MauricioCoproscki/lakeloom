@@ -559,3 +559,37 @@ async def test_add_broader_reparents_with_the_term_version(
         "retail.Order",
         "0.4",
     )
+
+
+async def test_add_related_refuses_an_already_linked_pair(
+    make_deps: DepsFactory, kit: AuthKit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OM keeps one relationship per pair: an RT on a pair a typed link (placedBy) already
+    joins would be applied as a no-op, so it is refused when proposed."""
+    from rdflib import Graph, Literal, URIRef
+    from rdflib.namespace import OWL, RDF, SKOS
+
+    from lakeloom.rdf.skos_enrichment import OM_FQN
+    from lakeloom.server import tools_thesaurus
+
+    g = Graph()
+    b = "http://x/ontology/retail/"
+    for name in ("Order", "OrderDate"):
+        g.add((URIRef(b + name), RDF.type, SKOS.Concept))
+        g.add((URIRef(b + name), OM_FQN, Literal(f"retail.{name}")))
+    g.add((URIRef(b + "placedOn"), RDF.type, OWL.ObjectProperty))
+    g.add((URIRef(b + "Order"), URIRef(b + "placedOn"), URIRef(b + "OrderDate")))
+
+    async def fake(models: Any, repo: Any, model: str) -> Graph:
+        return g
+
+    monkeypatch.setattr(tools_thesaurus, "effective_graph", fake)
+    result, rec = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_relation",
+        {"model": "retail", "source": "Order", "target": "OrderDate"},
+    )
+    err = structured(result)["error"]
+    assert err["code"] == "validation_error" and "already linked (placedOn)" in err["message"]
+    assert rec.recorded == []

@@ -272,3 +272,17 @@ def test_derive_related_makes_om_related_to_symmetric() -> None:
     g.add((_c("A"), OM_RELATED_TO, _c("B")))
     derive_related(g)
     assert (_c("A"), SKOS.related, _c("B")) in g and (_c("B"), SKOS.related, _c("A")) in g
+
+
+def test_derive_related_counts_typed_links_between_concepts() -> None:
+    """OM keeps one relationship per pair; a typed one (placedBy) is the pair's RT."""
+    from rdflib import OWL as _OWL
+
+    from lakeloom.rdf.skos_enrichment import derive_related
+
+    g = _graph("Customer", "Order")
+    placed_by = URIRef(f"{_NS}placedBy")
+    g.add((placed_by, RDF.type, _OWL.ObjectProperty))
+    g.add((_c("Customer"), placed_by, _c("Order")))
+    derive_related(g)
+    assert (_c("Order"), SKOS.related, _c("Customer")) in g

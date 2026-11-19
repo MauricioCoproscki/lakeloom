@@ -169,6 +169,25 @@ class ExpandQueryResult(BaseModel):
     terms: list[str]
 
 
+async def _existing_link(deps: AppDeps, model: str, a: str, b: str) -> str | None:
+    """How concepts ``a`` and ``b`` (FQNs) are already linked, or ``None``."""
+    from rdflib import Literal
+    from rdflib.namespace import SKOS
+
+    from lakeloom.rdf.skos_enrichment import OM_FQN
+
+    graph = await effective_graph(deps.models, deps.proposal_repo, model)
+    na = next(graph.subjects(OM_FQN, Literal(a)), None)
+    nb = next(graph.subjects(OM_FQN, Literal(b)), None)
+    if na is None or nb is None:
+        return None
+    for s, o in ((na, nb), (nb, na)):
+        for p in graph.predicates(s, o):
+            if p != SKOS.related:
+                return str(p).rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+    return "related" if (na, SKOS.related, nb) in graph else None
+
+
 class ThesaurusReportResult(BaseModel):
     model: str
     total_concepts: int
@@ -431,6 +450,15 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 )
             op: ProposalOperation
             if relation == "related":
+                existing = await _existing_link(deps, model, src, dst)
+                if existing is not None:
+                    raise LakeloomError(
+                        "validation_error",
+                        f"{src} and {dst} are already linked ({existing}); OpenMetadata keeps "
+                        "one relationship per pair of terms, so a related-term link would "
+                        "change nothing",
+                        "the existing link already counts as related; nothing to propose",
+                    )
                 op = AddRelation(
                     op="add_relation",
                     source=src,

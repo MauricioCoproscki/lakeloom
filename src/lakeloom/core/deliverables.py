@@ -182,7 +182,7 @@ def vocabulary_entries(graph: Graph) -> list[ConceptEntry]:
         return tuple(sorted(fqn[o] for o in found if isinstance(o, URIRef)))
 
     narrower_of: dict[URIRef, set[URIRef]] = {}
-    for child, parent in graph.subject_objects(SKOS.narrower):
+    for parent, child in graph.subject_objects(SKOS.narrower):  # parent skos:narrower child
         if isinstance(child, URIRef) and isinstance(parent, URIRef):
             narrower_of.setdefault(parent, set()).add(child)
 

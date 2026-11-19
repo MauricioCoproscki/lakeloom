@@ -58,13 +58,21 @@ OM_RELATED_TO = URIRef("https://open-metadata.org/ontology/relatedTo")
 
 
 def derive_related(graph: Graph) -> Graph:
-    """Add ``skos:related`` for every OM glossary ``relatedTo`` link between concepts, both
-    ways: OM exports the thesaurus RT under its own predicate, and SKOS requires symmetry."""
+    """Add ``skos:related``, both ways, for every associative link between two concepts.
+
+    OpenMetadata keeps one glossary relationship per pair of terms: a thesaurus RT
+    (``relatedTo``) and a typed relation (``placedBy``, ``billsFor``) are the same link, and
+    the export shows the typed one as an object property. In thesaurus terms each such link
+    is associative, so all of them count; SKOS requires the symmetry.
+    """
     concepts = set(graph.subjects(RDF.type, SKOS.Concept))
-    for s, _, o in list(graph.triples((None, OM_RELATED_TO, None))):
-        if s in concepts and o in concepts and s != o:
-            graph.add((s, SKOS.related, o))
-            graph.add((o, SKOS.related, s))
+    props = {p for p in graph.subjects(RDF.type, OWL.ObjectProperty) if isinstance(p, URIRef)}
+    props = {p for p in props if not str(p).startswith(str(SKOS))} | {OM_RELATED_TO}
+    for p in props:
+        for s, o in list(graph.subject_objects(p)):
+            if s in concepts and o in concepts and s != o:
+                graph.add((s, SKOS.related, o))
+                graph.add((o, SKOS.related, s))
     return graph
 
 

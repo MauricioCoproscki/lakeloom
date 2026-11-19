@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moving an existing concept to a new parent is refused when it is proposed. OpenMetadata
   2.1.0-rc1 applies a parent change by re-inserting the term and fails on a duplicate key.
   Imports report such moves instead of proposing them.
+- `lakeloom release create` (CLI) now includes `skos.ttl` and the stage deliverables, like
+  releases made over MCP.
+- Taxonomy deliverables read `skos:narrower` the right way round. A parent could show up as
+  broader than itself.
+- Typed links between concepts (OpenMetadata keeps one relationship per pair of terms) count
+  as related terms. `propose_add_relation(related)` refuses a pair that is already linked,
+  instead of proposing a link that would change nothing.
 
 ## [0.1.0] - 2026-11-19
 

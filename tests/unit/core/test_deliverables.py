@@ -186,3 +186,17 @@ def test_expand_query_prefers_the_longest_phrase() -> None:
 
     got = expand_query(vocabulary_entries(model()), "account holder")
     assert [x.label for x in got] == ["Customer"]
+
+
+def test_narrower_only_hierarchy_is_read_the_right_way_round() -> None:
+    """OpenMetadata exports some hierarchies as ``parent skos:narrower child`` only."""
+    g = Graph()
+    for name, fqn in (("Order", "retail.Order"), ("OrderStatus", "retail.Order.OrderStatus")):
+        g.add((c(name), RDF.type, SKOS.Concept))
+        g.add((c(name), SKOS.prefLabel, Literal(name, lang="en")))
+        g.add((c(name), OM_FQN, Literal(fqn)))
+    g.add((c("Order"), SKOS.narrower, c("OrderStatus")))
+    by = {e.label: e for e in vocabulary_entries(g)}
+    assert by["OrderStatus"].broader == ("retail.Order",)
+    assert by["Order"].broader == ()
+    assert "- **Order**\n  - **OrderStatus**" in taxonomy_markdown(list(by.values()), "m")
