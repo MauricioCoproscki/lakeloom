@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Lakeloom is pre-alpha. Only the latest release on the `main` branch receives security fixes.
+Lakeloom is alpha. Only the latest release on the `main` branch receives security fixes.
 
 | Version        | Supported |
 | -------------- | --------- |

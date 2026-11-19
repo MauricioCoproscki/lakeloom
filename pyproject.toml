@@ -13,7 +13,7 @@ license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Elcio Abrahão" }]
 keywords = ["ontology", "delta-lake", "lakehouse", "openmetadata", "mcp", "semantic-web", "owl", "skos", "ai-agents"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",

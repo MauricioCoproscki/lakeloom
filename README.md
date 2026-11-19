@@ -1,6 +1,7 @@
 # Lakeloom
 
-> **Status: pre-alpha.** Not ready for production use; no public release yet.
+> **Status: alpha.** Usable for evaluation and pilots, not yet for production. APIs and tool
+> names may still change, and there is no public release yet.
 >
 > **Implemented:**
 > - lake sources and scans, and the semantic read path;

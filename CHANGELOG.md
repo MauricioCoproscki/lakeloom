@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Project status promoted from pre-alpha to alpha (README, package classifier, security policy).
+
 ### Added
 
 - Repository skeleton, tooling (uv, ruff, pyright, pytest) and community files.
