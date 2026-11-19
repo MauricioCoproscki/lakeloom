@@ -31,6 +31,7 @@ from lakeloom.server.tools_authoring import (
     proposal_result,
     resolve_in_model,
     tool_result,
+    vocabulary_gap_warning,
 )
 from lakeloom.server.tools_common import (
     PROPOSE_SCOPE,
@@ -213,7 +214,7 @@ def register_taxonomy_tools(mcp: MCPServer, deps: AppDeps) -> None:
                         rule_ids=["R-CV-DIRECT"],
                     )
                 )
-            warnings: list[str] = []
+            warnings = await vocabulary_gap_warning(deps, model, "building the taxonomy")
             if note:
                 warnings.append(f"Author note: {note}")
             p = await deps.proposals.propose_operations(

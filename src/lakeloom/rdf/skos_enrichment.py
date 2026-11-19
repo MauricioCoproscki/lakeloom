@@ -40,6 +40,7 @@ from lakeloom.core.operations import (
 __all__ = [
     "concept_iri_index",
     "concept_labels",
+    "derive_related",
     "enrich_graph_from_ops",
 ]
 
@@ -53,6 +54,18 @@ _MAPPING_PRED: dict[str, URIRef] = {
 
 
 OM_FQN = URIRef("https://open-metadata.org/ontology/fullyQualifiedName")
+OM_RELATED_TO = URIRef("https://open-metadata.org/ontology/relatedTo")
+
+
+def derive_related(graph: Graph) -> Graph:
+    """Add ``skos:related`` for every OM glossary ``relatedTo`` link between concepts, both
+    ways: OM exports the thesaurus RT under its own predicate, and SKOS requires symmetry."""
+    concepts = set(graph.subjects(RDF.type, SKOS.Concept))
+    for s, _, o in list(graph.triples((None, OM_RELATED_TO, None))):
+        if s in concepts and o in concepts and s != o:
+            graph.add((s, SKOS.related, o))
+            graph.add((o, SKOS.related, s))
+    return graph
 
 
 def concept_iri_index(graph: Graph) -> dict[str, URIRef]:

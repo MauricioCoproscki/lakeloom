@@ -32,7 +32,7 @@ READ_TOOLS = {
 WRITE_TOOLS = {
     "propose_add_concepts",
     "propose_add_hierarchy",
-    "propose_deprecate_concept_concept",
+    "propose_deprecate_concept",
     "propose_add_scope_note",
 }
 ALL_CV_TOOLS = READ_TOOLS | WRITE_TOOLS
@@ -370,7 +370,7 @@ async def test_deprecate_resolves_concept_and_successor_fqns(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
     args = {"model": "retail", "concept": "OrderDate", "reason": "r", "successor": "MonetaryAmount"}
-    result, rec = await call_recorded(make_deps, kit, "propose_deprecate_concept_concept", args)
+    result, rec = await call_recorded(make_deps, kit, "propose_deprecate_concept", args)
     assert "error" not in structured(result), structured(result)
     (op,), kw = rec.calls[0]
     assert (op.fqn, op.successor) == ("retail.OrderDate", "retail.MonetaryAmount")
@@ -382,11 +382,11 @@ async def test_deprecate_rejects_unknown_successor_and_self(
 ) -> None:
     base = {"model": "retail", "concept": "retail.OrderDate", "reason": "r"}
     result, _ = await call_recorded(
-        make_deps, kit, "propose_deprecate_concept_concept", {**base, "successor": "Nope"}
+        make_deps, kit, "propose_deprecate_concept", {**base, "successor": "Nope"}
     )
     assert structured(result)["error"]["code"] == "not_found"
     result, _ = await call_recorded(
-        make_deps, kit, "propose_deprecate_concept_concept", {**base, "successor": "OrderDate"}
+        make_deps, kit, "propose_deprecate_concept", {**base, "successor": "OrderDate"}
     )
     assert structured(result)["error"]["code"] == "validation_error"
 
@@ -423,3 +423,139 @@ async def test_hierarchy_creates_a_new_parent(make_deps: DepsFactory, kit: AuthK
     )
     ops = rec.calls[0][0]
     assert [(o.name, o.parent) for o in ops] == [("Shipment", None), ("Parcel", "Shipment")]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: relations, history notes, harvesting, definition and stage warnings
+# ---------------------------------------------------------------------------
+
+
+async def test_add_related_is_a_glossary_only_related_to(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    result, rec = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_relation",
+        {"model": "retail", "source": "OrderDate", "target": "MonetaryAmount"},
+    )
+    assert "error" not in structured(result), structured(result)
+    ((op,), kw) = rec.calls[0]
+    assert (op.op, op.source, op.relation_type, op.target, op.glossary_only) == (
+        "add_relation",
+        "retail.OrderDate",
+        "relatedTo",
+        "retail.MonetaryAmount",
+        True,
+    )
+    assert kw["recheck_pending"] is True
+
+
+async def test_add_broader_refuses_self_and_cycles(make_deps: DepsFactory, kit: AuthKit) -> None:
+    base = {"model": "retail", "relation": "broader"}
+    result, _ = await call_recorded(
+        make_deps, kit, "propose_add_relation", {**base, "source": "Order", "target": "Order"}
+    )
+    assert structured(result)["error"]["code"] == "validation_error"
+    result, _ = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_relation",
+        {**base, "source": "Order", "target": "retail.Order.OrderStatus"},
+    )
+    assert "cycle" in structured(result)["error"]["message"]
+
+
+async def test_add_history_note_uses_the_exact_fqn(make_deps: DepsFactory, kit: AuthKit) -> None:
+    result, rec = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_history_note",
+        {"model": "retail", "concept": "OrderDate", "note": "Was OrderTimestamp until v2."},
+    )
+    assert "error" not in structured(result), structured(result)
+    op = rec.calls[0][0][0]
+    assert (op.op, op.concept_fqn) == ("add_history_note", "retail.OrderDate")
+
+
+async def test_add_concepts_warns_about_missing_definitions(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    terms = [{"name": "Refund", "definition": "Money returned."}, {"name": "Voucher"}]
+    _, rec = await call_recorded(
+        make_deps, kit, "propose_add_concepts", {"model": "retail", "terms": terms}
+    )
+    warnings = rec.calls[0][1]["warnings"]
+    assert any("1 concept(s) have no definition (Voucher)" in w for w in warnings)
+
+
+async def test_hierarchy_warns_when_the_vocabulary_is_undefined(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    # the retail fixture defines 1 of its 6 concepts
+    _, rec = await call_recorded(
+        make_deps,
+        kit,
+        "propose_add_hierarchy",
+        {"model": "retail", "parent_name": "Order", "children": ["Refund"]},
+    )
+    assert any("finishes the controlled vocabulary" in w for w in rec.calls[0][1]["warnings"])
+
+
+async def test_harvest_without_tags_reads_om_classifications(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    from lakeloom.om.models import OMPage, OMTag
+
+    deps = fake_deps(make_deps)
+
+    async def list_tags(*, after: str | None = None, limit: int = 500) -> OMPage[OMTag]:
+        rows = [
+            {"id": "1", "name": "Email", "fullyQualifiedName": "PII.Email", "usageCount": 7},
+            {"id": "2", "name": "Old", "fullyQualifiedName": "PII.Old", "deprecated": True},
+            {"id": "3", "name": "Order_Total", "fullyQualifiedName": "Sales.Order_Total"},
+        ]
+        return OMPage[OMTag](data=[OMTag.model_validate(r) for r in rows], after=None)
+
+    deps.om.list_tags = list_tags  # pyright: ignore[reportAttributeAccessIssue]
+    async with mcp_session(create_server_app(deps), kit.token(scope=READ)) as session:
+        result = await session.call_tool("harvest_vocabulary_candidates", {})
+    data = structured(result)
+    assert "error" not in data, data
+    names = [c["name"] for c in data["candidates"]]
+    assert names[0] == "Email" and "Order Total" in names and "Old" not in names
+    assert "OpenMetadata classification tags" in text(result)
+
+
+async def test_add_broader_reparents_with_the_term_version(
+    make_deps: DepsFactory, kit: AuthKit
+) -> None:
+    from lakeloom.om.models import OMGlossaryTerm
+
+    deps = fake_deps(make_deps)
+    rec = _Recording()
+    deps.proposals = rec  # pyright: ignore[reportAttributeAccessIssue]
+
+    async def get_term(fqn: str, *_: object) -> OMGlossaryTerm:
+        return OMGlossaryTerm.model_validate(
+            {
+                "id": "t",
+                "name": fqn.rsplit(".", 1)[-1],
+                "fullyQualifiedName": fqn,
+                "version": 0.4,
+                "glossary": {"id": "id-retail", "name": "retail", "type": "glossary"},
+            }
+        )
+
+    deps.om.get_term = get_term  # pyright: ignore[reportAttributeAccessIssue]
+    args = {"model": "retail", "source": "OrderDate", "target": "Order", "relation": "broader"}
+    async with mcp_session(create_server_app(deps), kit.token(scope=PROPOSE)) as session:
+        result = await session.call_tool("propose_add_relation", args)
+    assert "error" not in structured(result), structured(result)
+    op = rec.calls[0][0][0]
+    assert (op.op, op.fqn, op.parent, op.base_version) == (
+        "update_concept",
+        "retail.OrderDate",
+        "retail.Order",
+        "0.4",
+    )

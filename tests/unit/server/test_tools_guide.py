@@ -1,5 +1,7 @@
 """The next_steps MCP tool: state gathering, caller rights, and the end-to-end call."""
 
+import itertools
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -207,3 +209,32 @@ async def test_next_steps_requires_read_scope(make_deps: DepsFactory, kit: AuthK
     async with mcp_session(app, kit.token(scope="lakeloom:propose")) as session:
         result = await session.call_tool("get_next_steps", {"model": "retail"})
     assert result.is_error and "lakeloom:read" in text(result)
+
+
+def _recommended_tools() -> set[str]:
+    from pathlib import Path
+
+    import lakeloom.core.next_steps as ns
+
+    lines = [
+        ln for ln in Path(ns.__file__).read_text(encoding="utf-8").splitlines() if "tool=" in ln
+    ]
+    named = {
+        n for ln in lines for n in re.findall(r'"([a-z_]+)"', ln.split("tool=", 1)[1].split(",")[0])
+    }
+    return named
+
+
+async def test_every_recommended_tool_exists(make_deps: DepsFactory) -> None:
+    """A renamed or removed tool must not linger in get_next_steps' recommendations."""
+    named = _recommended_tools()
+    registered = {t.name for t in await create_mcp(fake_deps(make_deps)).list_tools()}
+    assert named and named <= registered, named - registered
+
+
+async def test_tool_names_follow_verb_object(make_deps: DepsFactory) -> None:
+    names = [t.name for t in await create_mcp(fake_deps(make_deps)).list_tools()]
+    for name in names:
+        words = name.split("_")
+        assert re.fullmatch(r"[a-z]+(_[a-z0-9]+)*", name), name
+        assert all(a != b for a, b in itertools.pairwise(words)), name  # no repeated words

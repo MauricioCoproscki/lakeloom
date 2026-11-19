@@ -201,11 +201,16 @@ class RemoveAttribute(_Op):
 
 
 class AddRelation(_Op):
+    """A typed link between two concepts: a glossary relationship and, on a paired model, a
+    native ``owl:ObjectProperty``. ``glossary_only`` skips the property: a thesaurus RT
+    (``relatedTo``) is a term-to-term association, not a class-level property."""
+
     op: Literal["add_relation"]
     source: Ref
     relation_type: RelationType
     target: Ref
     description: UntrustedText | None = None
+    glossary_only: bool = False
 
 
 class RemoveRelation(_Op):
@@ -1009,7 +1014,7 @@ def _add_relation(op: AddRelation, ctx: OMContext) -> OMOps:
                 "relationship": relationship,
             }
         ],
-        native=[_object_property(op, ctx)] if ctx.paired else [],
+        native=[_object_property(op, ctx)] if ctx.paired and not op.glossary_only else [],
     )
 
 

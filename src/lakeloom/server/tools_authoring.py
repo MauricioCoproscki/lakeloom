@@ -25,6 +25,7 @@ __all__ = [
     "proposal_result",
     "resolve_in_model",
     "tool_result",
+    "vocabulary_gap_warning",
 ]
 
 MAX_TERMS_PER_CALL = 500
@@ -74,3 +75,26 @@ def proposal_result(p: Proposal, deps: AppDeps, *, next_step: bool = True) -> Ca
         warnings=p.warnings,
     )
     return tool_result(text, data)
+
+
+async def vocabulary_gap_warning(deps: AppDeps, model: str, step: str) -> list[str]:
+    """A warning when ``step`` (taxonomy or thesaurus work) starts before the vocabulary is
+    defined: the pipeline builds structure on agreed, defined terms, not on bare labels."""
+    from lakeloom.core.annotations import effective_graph
+    from lakeloom.core.next_steps import DEFAULT_THRESHOLDS
+    from lakeloom.core.thesaurus import validate_ansi_z39
+
+    graph = await effective_graph(deps.models, getattr(deps, "proposal_repo", None), model)
+    report = validate_ansi_z39(graph)
+    total = report.total_concepts
+    if not total:
+        return []
+    ratio = report.concepts_with_definition / total
+    if ratio >= DEFAULT_THRESHOLDS.vocabulary_defined:
+        return []
+    return [
+        f"Only {ratio:.0%} of the {total} concepts have a definition. The ontology pipeline "
+        f"finishes the controlled vocabulary before {step}: structure built on undefined "
+        "terms has to be redone. Consider defining the existing concepts first "
+        "(get_next_steps lists them)."
+    ]

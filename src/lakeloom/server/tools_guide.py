@@ -281,7 +281,7 @@ def register_guide_tools(mcp: MCPServer, deps: AppDeps) -> None:
     mcp.add_tool(
         next_steps_tool,
         name="get_next_steps",
-        title="Next steps",
+        title="Get next steps",
         description=NEXT_STEPS_DESCRIPTION,
         annotations=READ_ONLY,
     )

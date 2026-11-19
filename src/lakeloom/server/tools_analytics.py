@@ -221,7 +221,7 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
     mcp.add_tool(
         get_model_stats,
         name="get_model_stats",
-        title="Graph stats",
+        title="Get model stats",
         description=GRAPH_STATS_DESCRIPTION,
         annotations=READ_ONLY,
     )
@@ -270,7 +270,7 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
     mcp.add_tool(
         assess_realization_coverage,
         name="assess_realization_coverage",
-        title="Assess coverage",
+        title="Assess realization coverage",
         description=ASSESS_COVERAGE_DESCRIPTION,
         annotations=READ_ONLY,
     )
@@ -386,7 +386,7 @@ def _register_annotation_tools(mcp: MCPServer, deps: AppDeps) -> None:
     mcp.add_tool(
         get_annotation_stats,
         name="get_annotation_stats",
-        title="SKOS annotation stats",
+        title="Get annotation stats",
         description=SKOS_ANNOTATION_STATS_DESCRIPTION,
         annotations=READ_ONLY,
     )
@@ -437,7 +437,7 @@ def _register_annotation_tools(mcp: MCPServer, deps: AppDeps) -> None:
     mcp.add_tool(
         list_deprecated_concepts,
         name="list_deprecated_concepts",
-        title="SKOS deprecated list",
+        title="List deprecated concepts",
         description=SKOS_DEPRECATED_LIST_DESCRIPTION,
         annotations=READ_ONLY,
     )

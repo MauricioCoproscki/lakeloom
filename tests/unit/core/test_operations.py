@@ -663,6 +663,20 @@ def test_relation_is_also_a_native_object_property() -> None:
     assert to_om(rel, replace(CTX, paired=False)).native == []
 
 
+def test_glossary_only_relation_has_no_native_property() -> None:
+    """A thesaurus RT is a term-to-term link: no owl:ObjectProperty on a paired model."""
+    rel = AddRelation(
+        op="add_relation",
+        source="Order",
+        relation_type="placedBy",
+        target="Customer",
+        glossary_only=True,
+    )
+    result = to_om(rel, CTX)
+    assert result.native == []
+    assert [g["operationType"] for g in result.glossary] == ["ADD_RELATIONSHIP"]
+
+
 def test_unknown_relationship_type_falls_back_to_related_to_on_the_glossary() -> None:
     ctx = replace(CTX, relationship_type_ids={**CTX.relationship_type_ids, "relatedTo": "rt-rel"})
     rel = AddRelation(

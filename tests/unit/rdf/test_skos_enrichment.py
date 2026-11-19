@@ -270,3 +270,12 @@ class TestMixedOps:
         before = len(g)
         enrich_graph_from_ops(g, [op])  # type: ignore[arg-type]
         assert len(g) == before
+
+
+def test_derive_related_makes_om_related_to_symmetric() -> None:
+    from lakeloom.rdf.skos_enrichment import OM_RELATED_TO, derive_related
+
+    g = _graph("A", "B")
+    g.add((_c("A"), OM_RELATED_TO, _c("B")))
+    derive_related(g)
+    assert (_c("A"), SKOS.related, _c("B")) in g and (_c("B"), SKOS.related, _c("A")) in g

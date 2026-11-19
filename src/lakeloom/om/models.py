@@ -122,6 +122,20 @@ class OMNamespace(BaseModel):
     namespace: str | None = None
 
 
+class OMTag(BaseModel):
+    """A classification tag (folksonomy source for the controlled vocabulary)."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    id: str
+    name: str
+    fully_qualified_name: str = Field(alias="fullyQualifiedName")
+    description: str | None = None
+    usage_count: int | None = Field(default=None, alias="usageCount")
+    deprecated: bool | None = None
+    disabled: bool | None = None
+
+
 class OMGlossary(BaseModel):
     """A glossary, i.e. an ontology model (ADR 0007)."""
 

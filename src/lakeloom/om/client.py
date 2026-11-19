@@ -48,6 +48,7 @@ from lakeloom.om.models import (
     OMPermissions,
     OMRelationshipType,
     OMTable,
+    OMTag,
     OMUser,
     OMVersion,
     PermissionResource,
@@ -202,6 +203,7 @@ class OMClient:
         "get_rdf_status": ("GET", "/v1/rdf/status"),
         "get_table_by_name": ("GET", "/v1/tables/name/{fqn}"),
         "list_glossaries": ("GET", "/v1/glossaries"),
+        "list_tags": ("GET", "/v1/tags"),
         "get_glossary_by_name": ("GET", "/v1/glossaries/name/{name}"),
         "list_terms": ("GET", "/v1/glossaryTerms"),
         "get_term_by_id": ("GET", "/v1/glossaryTerms/{id}"),
@@ -459,6 +461,14 @@ class OMClient:
             params["after"] = after
         response = await self._request("list_glossaries", params=params)
         return OMPage[OMGlossary].model_validate(_json(response))
+
+    async def list_tags(self, *, after: str | None = None, limit: int = 500) -> OMPage[OMTag]:
+        """Classification tags (non-deleted), with their usage counts."""
+        params = {"limit": str(limit), "fields": "usageCount", "include": "non-deleted"}
+        if after:
+            params["after"] = after
+        response = await self._request("list_tags", params=params)
+        return OMPage[OMTag].model_validate(_json(response))
 
     async def get_glossary_by_name(
         self, name: str, fields: Sequence[str] = GLOSSARY_FIELDS

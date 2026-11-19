@@ -202,7 +202,7 @@ def register_map_tools(mcp: MCPServer, deps: AppDeps) -> None:
     mcp.add_tool(
         build_map_tool,
         name="build_map",
-        title="Build MAP from scan",
+        title="Build MAP",
         description=BUILD_MAP_DESCRIPTION,
         annotations=READ_ONLY,
     )

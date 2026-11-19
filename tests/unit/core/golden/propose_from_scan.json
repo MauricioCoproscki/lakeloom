@@ -506,7 +506,8 @@
        "R-FK"
       ],
       "source": "Order",
-      "target": "Customer"
+      "target": "Customer",
+      "glossary_only": false
      },
      {
       "axiom": {

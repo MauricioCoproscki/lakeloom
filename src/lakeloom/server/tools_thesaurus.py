@@ -5,7 +5,7 @@ All writes create a draft proposal; nothing is applied until a reviewer approves
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult
@@ -13,8 +13,12 @@ from pydantic import BaseModel, Field
 
 from lakeloom.core.annotations import effective_graph
 from lakeloom.core.operations import (
+    AddHistoryNote,
+    AddRelation,
     AddScopeNote,
     DeprecateConcept,
+    ProposalOperation,
+    UpdateConcept,
 )
 from lakeloom.core.thesaurus import (
     RelatedSuggestion,
@@ -35,6 +39,7 @@ from lakeloom.server.tools_authoring import (
     proposal_result,
     resolve_in_model,
     tool_result,
+    vocabulary_gap_warning,
 )
 from lakeloom.server.tools_common import (
     PROPOSE_SCOPE,
@@ -95,6 +100,33 @@ of a term, disambiguate it from similar concepts, or document governance decisio
 `note`: the scope note text (≤2000 chars).
 `lang`: BCP 47 language tag (default `"en"`).
 `model`: target model slug.
+
+{DRAFT_NOTE}
+
+{SCOPE_PROPOSE_TEXT}"""
+
+
+PROPOSE_ADD_RELATION_DESCRIPTION = f"""\
+Link two existing concepts of a model, as a thesaurus would:
+
+- `related` (RT): an associative link, symmetric by definition (`skos:related` both ways). \
+Stored as OpenMetadata's glossary `relatedTo` relationship, without a native ontology \
+property. Use it for pairs from `suggest_related_terms` the user agrees with.
+- `broader` (BT/NT): makes `target` the parent of `source` (the inverse NT follows). A \
+concept has one parent: an existing parent is replaced. Cycles are refused.
+
+`source`, `target`: name, FQN or IRI of concepts of `model`.
+
+{DRAFT_NOTE}
+
+{SCOPE_PROPOSE_TEXT}"""
+
+PROPOSE_ADD_HISTORY_NOTE_DESCRIPTION = f"""\
+Attach a `skos:historyNote` to an existing concept: when and why its meaning or use \
+changed (renames, merges, split definitions). History notes are how a vocabulary stays \
+trustworthy across releases.
+
+`concept`: name, FQN or IRI. `note`: the text (≤2000 chars). `lang`: BCP 47 tag.
 
 {DRAFT_NOTE}
 
@@ -196,9 +228,8 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 lines.append("\n_Large model: only part of the realizations were read._")
             if suggestions:
                 lines.append(
-                    "\nNext: for each pair the user agrees with, call `propose_change` with an "
-                    "`add_relation` operation of type `related` (or `propose_add_relation` once "
-                    "available)."
+                    "\nNext: for each pair the user agrees with, call `propose_add_relation` "
+                    "(`relation=related`)."
                 )
             data = RelatedSuggestionsResult(
                 model=model,
@@ -265,13 +296,13 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 origin="direct",
                 principal=principal,
                 client=client_name(ctx),
-                tool="propose_deprecate_concept_concept",
+                tool="propose_deprecate_concept",
                 recheck_pending=True,
             )
             return proposal_result(p, deps)
 
         return await guarded(
-            "propose_deprecate_concept_concept",
+            "propose_deprecate_concept",
             ctx,
             PROPOSE_SCOPE,
             body,
@@ -281,7 +312,7 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
 
     mcp.add_tool(
         propose_deprecate_concept,
-        name="propose_deprecate_concept_concept",
+        name="propose_deprecate_concept",
         title="Propose deprecate concept",
         description=PROPOSE_DEPRECATE_DESCRIPTION,
         annotations=WRITE,
@@ -332,5 +363,137 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
         name="propose_add_scope_note",
         title="Propose add scope note",
         description=PROPOSE_ADD_SCOPE_NOTE_DESCRIPTION,
+        annotations=WRITE,
+    )
+
+    # ------------------------------------------------------------------
+    # WRITE: propose_add_relation
+    # ------------------------------------------------------------------
+
+    async def propose_add_relation(
+        model: Annotated[str, Field(description="Model slug.")],
+        source: Annotated[str, Field(description="Name, FQN or IRI of the first concept.")],
+        target: Annotated[str, Field(description="Name, FQN or IRI of the second concept.")],
+        ctx: Context,
+        relation: Annotated[
+            Literal["related", "broader"],
+            Field(description="`related` (RT, symmetric) or `broader` (target becomes parent)."),
+        ] = "related",
+        note: Annotated[
+            str | None,
+            Field(max_length=1000, description="Rationale recorded in the proposal."),
+        ] = None,
+    ) -> Annotated[CallToolResult, ProposalResult]:
+        async def body(principal: Principal) -> CallToolResult:
+            src = await resolve_in_model(deps, model, source)
+            dst = await resolve_in_model(deps, model, target)
+            if src == dst:
+                raise LakeloomError(
+                    "validation_error",
+                    "a concept cannot be related to itself",
+                    "pass two different concepts",
+                )
+            op: ProposalOperation
+            if relation == "related":
+                op = AddRelation(
+                    op="add_relation",
+                    source=src,
+                    relation_type="relatedTo",
+                    target=dst,
+                    glossary_only=True,
+                    rule_ids=["R-CV-DIRECT"],
+                )
+            else:
+                if dst.startswith(src + "."):
+                    raise LakeloomError(
+                        "validation_error",
+                        f"{dst} is below {src}: making it the parent would create a cycle",
+                        "pick a parent outside the concept's own subtree",
+                    )
+                term = await deps.om.get_term(src, ("parent",))
+                if term is None or term.version is None:
+                    raise LakeloomError(
+                        "not_found",
+                        f"glossary term {src!r} was not found in OpenMetadata",
+                        "check the concept with explain_concept",
+                    )
+                op = UpdateConcept(
+                    op="update_concept",
+                    fqn=src,
+                    base_version=str(term.version),
+                    parent=dst,
+                    rule_ids=["R-CV-DIRECT"],
+                )
+            p = await deps.proposals.propose_operations(
+                model,
+                [op],
+                origin="direct",
+                principal=principal,
+                client=client_name(ctx),
+                tool="propose_add_relation",
+                warnings=[
+                    *await vocabulary_gap_warning(deps, model, "linking concepts"),
+                    *([f"Author note: {note}"] if note else []),
+                ],
+                recheck_pending=True,
+            )
+            return proposal_result(p, deps)
+
+        return await guarded(
+            "propose_add_relation", ctx, PROPOSE_SCOPE, body, audited=True, audit=deps.audit
+        )
+
+    mcp.add_tool(
+        propose_add_relation,
+        name="propose_add_relation",
+        title="Propose add relation",
+        description=PROPOSE_ADD_RELATION_DESCRIPTION,
+        annotations=WRITE,
+    )
+
+    # ------------------------------------------------------------------
+    # WRITE: propose_add_history_note
+    # ------------------------------------------------------------------
+
+    async def propose_add_history_note(
+        model: Annotated[str, Field(description="Model slug.")],
+        concept: Annotated[str, Field(description="Name, FQN or IRI of the existing concept.")],
+        note: Annotated[
+            str, Field(min_length=1, max_length=2000, description="The history note text.")
+        ],
+        ctx: Context,
+        lang: Annotated[
+            str,
+            Field(pattern=r"^[a-z]{2,3}(-[A-Z]{2})?$", description="BCP 47 language tag."),
+        ] = "en",
+    ) -> Annotated[CallToolResult, ProposalResult]:
+        async def body(principal: Principal) -> CallToolResult:
+            op = AddHistoryNote(
+                op="add_history_note",
+                concept_fqn=await resolve_in_model(deps, model, concept),
+                note=note,
+                lang=lang,
+                rule_ids=["R-CV-DIRECT"],
+            )
+            p = await deps.proposals.propose_operations(
+                model,
+                [op],
+                origin="direct",
+                principal=principal,
+                client=client_name(ctx),
+                tool="propose_add_history_note",
+                recheck_pending=True,
+            )
+            return proposal_result(p, deps)
+
+        return await guarded(
+            "propose_add_history_note", ctx, PROPOSE_SCOPE, body, audited=True, audit=deps.audit
+        )
+
+    mcp.add_tool(
+        propose_add_history_note,
+        name="propose_add_history_note",
+        title="Propose add history note",
+        description=PROPOSE_ADD_HISTORY_NOTE_DESCRIPTION,
         annotations=WRITE,
     )

@@ -16,7 +16,7 @@ from rdflib.namespace import DCTERMS, SKOS
 
 from lakeloom.core.concepts import OM_FQN, ConceptGovernance, ConceptRef
 from lakeloom.core.operations import ProposalOperation
-from lakeloom.rdf.skos_enrichment import concept_labels, enrich_graph_from_ops
+from lakeloom.rdf.skos_enrichment import concept_labels, derive_related, enrich_graph_from_ops
 from lakeloom.untrusted import UntrustedText
 
 if TYPE_CHECKING:
@@ -55,15 +55,15 @@ async def applied_operations(repo: ProposalLister, model: str) -> list[ProposalO
 
 async def effective_graph(models: "ModelService", repo: ProposalLister | None, model: str) -> Graph:
     """``model``'s graph as users should see it: OpenMetadata's terms plus the scope notes,
-    history notes and deprecations of its applied proposals. The cached OM graph is never
-    mutated; without a proposal log (``repo`` None) the OM graph itself is returned."""
+    history notes and deprecations of its applied proposals, and OM's ``relatedTo`` links as
+    ``skos:related``. The cached OM graph is never mutated."""
     graph = await models.graph(model)
-    if repo is None:
-        return graph
-    ops = await applied_operations(repo, model)
-    if not ops:
-        return graph
-    return await asyncio.to_thread(lambda: enrich_graph_from_ops(copy.deepcopy(graph), ops))
+    ops = await applied_operations(repo, model) if repo is not None else []
+
+    def build() -> Graph:
+        return enrich_graph_from_ops(derive_related(copy.deepcopy(graph)), ops)
+
+    return await asyncio.to_thread(build)
 
 
 def _ref(graph: Graph, node: URIRef, model: str, labels: dict[str, str]) -> ConceptRef:
