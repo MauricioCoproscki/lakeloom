@@ -64,6 +64,7 @@ are also available as MCP resources and over HTTP. See
 | `export_data_dictionary` | `markdown`, `csv` | Columns of a scan with their terms and definitions (`scan_id`, default newest) |
 | `export_taxonomy` | `markdown`, `mermaid`, `csv` | Taxonomy tree |
 | `export_synonyms` | `solr`, `csv`, `deprecations` | Search synonym rules, synonym list, deprecation map |
+| `expand_query` | — | Terms named in a text, with synonyms, narrower (`depth`) and related terms, for search and RAG |
 
 ### Stage 1 — Controlled vocabulary
 

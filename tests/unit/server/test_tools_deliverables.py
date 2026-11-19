@@ -157,3 +157,18 @@ async def test_resource_matches_tool(make_deps: DepsFactory, kit: AuthKit) -> No
     assert isinstance(content, TextResourceContents)
     assert content.mime_type == "text/csv" and content.text == text(tool)
     assert any("deliverables/{filename}" in t.uri_template for t in templates)
+
+
+async def test_expand_query_tool(make_deps: DepsFactory, kit: AuthKit) -> None:
+    result = await call(
+        fake_deps(make_deps),
+        kit,
+        "expand_query",
+        {"model": "retail", "text": "late purchase by order date"},
+        scope=READ,
+    )
+    data = structured(result)
+    assert "error" not in data, data
+    assert [c["label"] for c in data["concepts"]] == ["Order", "OrderDate"]
+    assert data["concepts"][0]["matched"] == "purchase"
+    assert "Purchase" in data["terms"] and "Search terms:" in text(result)

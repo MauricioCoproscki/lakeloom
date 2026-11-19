@@ -133,6 +133,38 @@ trustworthy across releases.
 {SCOPE_PROPOSE_TEXT}"""
 
 
+EXPAND_QUERY_DESCRIPTION = f"""\
+Stage 4 deliverable for search and RAG: expand a user's question or search text with the \
+model's thesaurus. Finds the terms it mentions (by name or synonym, longest phrase first; \
+camelCase names match their spaced form) and returns, for each, its synonyms, narrower \
+terms (`depth` levels) and, unless `related=false`, its related terms. A deprecated term is \
+replaced by its successor and reported in `redirected_from`.
+
+`terms` is the de-duplicated list to add to a keyword search, or to pass to a retriever. \
+Matching is exact after case and punctuation folding: no stemming, no fuzzy matching (use \
+`find_concepts` for that). Read-only, no side effects.
+
+{SCOPE_READ_TEXT}"""
+
+
+class ExpansionResult(BaseModel):
+    matched: str
+    fqn: str
+    label: str
+    synonyms: list[str]
+    narrower: list[str]
+    related: list[str]
+    broader: list[str]
+    redirected_from: str | None = None
+
+
+class ExpandQueryResult(BaseModel):
+    model: str
+    text: str
+    concepts: list[ExpansionResult]
+    terms: list[str]
+
+
 class ThesaurusReportResult(BaseModel):
     model: str
     total_concepts: int
@@ -496,4 +528,83 @@ def register_thesaurus_tools(mcp: MCPServer, deps: AppDeps) -> None:
         title="Propose add history note",
         description=PROPOSE_ADD_HISTORY_NOTE_DESCRIPTION,
         annotations=WRITE,
+    )
+
+    # ------------------------------------------------------------------
+    # READ: expand_query
+    # ------------------------------------------------------------------
+
+    async def expand_query(
+        model: Annotated[str, Field(description="Model slug.")],
+        text: Annotated[
+            str, Field(min_length=1, max_length=2000, description="Question or search text.")
+        ],
+        ctx: Context,
+        depth: Annotated[
+            int, Field(ge=0, le=5, description="Levels of narrower terms to add.")
+        ] = 1,
+        related: Annotated[bool, Field(description="Also add related terms (RT).")] = True,
+    ) -> Annotated[CallToolResult, ExpandQueryResult]:
+        async def body(_: Principal) -> CallToolResult:
+            from lakeloom.core.deliverables import expand_query as expand
+            from lakeloom.core.deliverables import vocabulary_entries
+
+            graph = await effective_graph(deps.models, deps.proposal_repo, model)
+            found = expand(vocabulary_entries(graph), text, depth=depth, related=related)
+            terms: list[str] = []
+            for x in found:
+                for t in (x.label, *x.synonyms, *x.narrower, *x.related):
+                    if t not in terms:
+                        terms.append(t)
+            data = ExpandQueryResult(
+                model=model,
+                text=text,
+                concepts=[
+                    ExpansionResult(
+                        matched=x.matched,
+                        fqn=x.fqn,
+                        label=x.label,
+                        synonyms=list(x.synonyms),
+                        narrower=list(x.narrower),
+                        related=list(x.related),
+                        broader=list(x.broader),
+                        redirected_from=x.redirected_from,
+                    )
+                    for x in found
+                ],
+                terms=terms,
+            )
+            if not found:
+                md = (
+                    f"No term of {_code(model)} found in the text. Try `find_concepts` for "
+                    "fuzzy matching."
+                )
+            else:
+                lines = [f"**{len(found)} term(s)** recognised:", ""]
+                for x in found:
+                    via = (
+                        f" (from deprecated {_code(x.redirected_from)})"
+                        if x.redirected_from
+                        else ""
+                    )
+                    lines.append(f"- {_code(x.label)}{via}")
+                    for name, vals in (
+                        ("synonyms", x.synonyms),
+                        ("narrower", x.narrower),
+                        ("related", x.related),
+                    ):
+                        if vals:
+                            lines.append(f"  - {name}: " + ", ".join(_code(v) for v in vals))
+                lines += ["", "Search terms: " + ", ".join(_code(t) for t in terms)]
+                md = "\n".join(lines)
+            return tool_result(md, data)
+
+        return await guarded("expand_query", ctx, READ_SCOPE, body)
+
+    mcp.add_tool(
+        expand_query,
+        name="expand_query",
+        title="Expand query",
+        description=EXPAND_QUERY_DESCRIPTION,
+        annotations=READ_ONLY,
     )

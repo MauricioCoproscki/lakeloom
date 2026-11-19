@@ -158,3 +158,31 @@ def test_data_dictionary_joins_map_and_definitions() -> None:
     md = data_dictionary_markdown(profile, entries)
     assert "1 of 2 columns carry a business term" in md
     assert "## `svc.retail.sales.orders` — Order" in md and "Client (deprecated)" in md
+
+
+def test_expand_query_synonyms_narrower_related() -> None:
+    from lakeloom.core.deliverables import expand_query
+
+    got = expand_query(vocabulary_entries(model()), "Total of purchases by card payment")
+    by = {x.label: x for x in got}
+    assert set(by) == {"CardPayment"}  # "purchases" ≠ "Purchase": no stemming, by design
+    got = expand_query(vocabulary_entries(model()), "payment for each purchase")
+    by = {x.label: x for x in got}
+    assert by["Payment"].narrower == ("CardPayment",)
+    assert by["Order"].matched == "purchase" and by["Order"].related == ("Payment",)
+    assert by["Order"].synonyms == ("Purchase",)
+
+
+def test_expand_query_redirects_deprecated_terms() -> None:
+    from lakeloom.core.deliverables import expand_query
+
+    (x,) = expand_query(vocabulary_entries(model()), "top client this year")
+    assert (x.label, x.redirected_from) == ("Customer", "Client")
+    assert x.synonyms == ("Account holder",)
+
+
+def test_expand_query_prefers_the_longest_phrase() -> None:
+    from lakeloom.core.deliverables import expand_query
+
+    got = expand_query(vocabulary_entries(model()), "account holder")
+    assert [x.label for x in got] == ["Customer"]

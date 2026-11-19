@@ -17,6 +17,7 @@ document, a diagram or a search configuration. No RDF, triple store or Git is ne
 | 2. Metadata profile | **Data dictionary** of the scanned tables: column, type, business term, definition; unmapped columns marked | Markdown, CSV | Analysts, engineers, audits and data-protection records | `export_data_dictionary` |
 | 3. Taxonomy | **Taxonomy tree**, from broad to narrow | Markdown outline, Mermaid diagram, CSV (depth, term, parent) | Portals, navigation menus, BI hierarchies, presentations | `export_taxonomy` |
 | 4. Thesaurus | **Search synonyms**: each term with its synonyms; deprecated term ⇒ its replacement | Solr / Elasticsearch / OpenSearch synonym file, CSV | Enterprise search, BI semantic layers | `export_synonyms` |
+| 4. Thesaurus | **Query expansion**: a question or search text in, the terms it names plus synonyms, narrower and related terms out; deprecated terms redirected | MCP tool result | Search, RAG retrievers, agents | `expand_query` |
 | 4. Thesaurus | **Deprecation map**: old term → replacement, with its history | CSV | Migrating reports and dashboards | `export_synonyms(format="deprecations")` |
 | 5. Ontology | SHACL shapes, JSON-LD context, RDF exports | Turtle, JSON-LD, RDF/XML, N-Triples, SKOS | Data engineering, validation, semantic apps | `export_model`, resources |
 | 6. Knowledge graph | Releases, triple-store graphs, SPARQL | Git tags, named graphs | Applications, analytics | `create_release`, `sparql_query` |

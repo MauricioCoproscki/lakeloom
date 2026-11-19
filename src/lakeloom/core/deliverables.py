@@ -34,11 +34,13 @@ __all__ = [
     "DELIVERABLES",
     "ConceptEntry",
     "Deliverable",
+    "Expansion",
     "QualityScore",
     "data_dictionary_csv",
     "data_dictionary_markdown",
     "deliverable",
     "deprecations_csv",
+    "expand_query",
     "glossary_csv",
     "glossary_markdown",
     "quality_score",
@@ -505,3 +507,119 @@ def deprecations_csv(entries: list[ConceptEntry]) -> str:
                 ]
             )
     return _csv(["deprecated_term", "fqn", "use_instead", "use_instead_fqn", "history"], rows)
+
+
+# --- stage 4: query expansion ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Expansion:
+    """One concept recognised in a query, with the terms a search should add."""
+
+    matched: str  # the text of the query that matched
+    fqn: str
+    label: str
+    synonyms: tuple[str, ...] = ()
+    narrower: tuple[str, ...] = ()  # labels, up to ``depth`` levels down
+    related: tuple[str, ...] = ()
+    broader: tuple[str, ...] = ()
+    redirected_from: str | None = None  # a deprecated term the query used
+
+
+def _fold(text: str) -> str:
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in text.casefold()).split())
+
+
+def _decamel(text: str) -> str:
+    """``CardPayment`` → ``Card Payment``, ``order_date`` stays for :func:`_fold`."""
+    out: list[str] = []
+    for i, ch in enumerate(text):
+        if i and ch.isupper() and (text[i - 1].islower() or text[i - 1].isdigit()):
+            out.append(" ")
+        out.append(ch)
+    return "".join(out)
+
+
+def expand_query(
+    entries: list[ConceptEntry],
+    text: str,
+    *,
+    depth: int = 1,
+    related: bool = True,
+) -> list[Expansion]:
+    """The concepts ``text`` mentions (by label or synonym, longest match first) and, for
+    each, its synonyms, narrower terms (``depth`` levels), related and broader terms. A
+    deprecated term is replaced by its successor and reported as ``redirected_from``."""
+    by_fqn = {e.fqn: e for e in entries}
+    names: dict[str, ConceptEntry] = {}
+    for e in entries:
+        for name in (e.label, *e.synonyms):
+            for key in {_fold(name), _fold(_decamel(name))}:
+                if key and (key not in names or names[key].deprecated):
+                    names[key] = e
+    children: dict[str, list[ConceptEntry]] = {}
+    for e in entries:
+        if not e.deprecated:
+            for p in e.broader:
+                children.setdefault(p, []).append(e)
+
+    words = _fold(text).split()
+    longest = max((len(k.split()) for k in names), default=0)
+    found: list[Expansion] = []
+    seen: set[str] = set()
+    i = 0
+    while i < len(words):
+        for n in range(min(longest, len(words) - i), 0, -1):
+            phrase = " ".join(words[i : i + n])
+            e = names.get(phrase)
+            if e is None:
+                continue
+            origin: str | None = None
+            if e.deprecated:
+                successor = by_fqn.get(e.replaced_by or "")
+                if successor is None:
+                    break  # deprecated with no successor: nothing safe to expand
+                origin, e = e.label, successor
+            if e.fqn not in seen:
+                seen.add(e.fqn)
+                found.append(_expansion(phrase, e, origin, by_fqn, children, depth, related))
+            i += n - 1
+            break
+        i += 1
+    return found
+
+
+def _expansion(
+    phrase: str,
+    e: ConceptEntry,
+    origin: str | None,
+    by_fqn: dict[str, ConceptEntry],
+    children: dict[str, list[ConceptEntry]],
+    depth: int,
+    related: bool,
+) -> Expansion:
+    narrower: list[str] = []
+    frontier, seen = [e.fqn], {e.fqn}
+    for _ in range(max(depth, 0)):
+        nxt: list[str] = []
+        for f in frontier:
+            for kid in sorted(children.get(f, []), key=lambda k: k.label.casefold()):
+                if kid.fqn not in seen:
+                    seen.add(kid.fqn)
+                    narrower.append(kid.label)
+                    nxt.append(kid.fqn)
+        frontier = nxt
+
+    def labels(fqns: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(by_fqn[f].label for f in fqns if f in by_fqn and not by_fqn[f].deprecated)
+
+    return Expansion(
+        matched=phrase,
+        fqn=e.fqn,
+        label=e.label,
+        synonyms=e.synonyms,
+        narrower=tuple(narrower),
+        related=labels(e.related) if related else (),
+        broader=labels(e.broader),
+        redirected_from=origin,
+    )
