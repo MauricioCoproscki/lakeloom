@@ -320,10 +320,10 @@ async def test_propose_add_scope_note_missing_concept(make_deps: DepsFactory, ki
 class _Recording(_ExtendedFakeProposals):
     def __init__(self) -> None:
         super().__init__()
-        self.calls: list[tuple[list[Any], dict[str, Any]]] = []
+        self.recorded: list[tuple[list[Any], dict[str, Any]]] = []
 
     async def propose_operations(self, model: str, operations: Any, **kw: Any) -> Any:
-        self.calls.append((list(operations), kw))
+        self.recorded.append((list(operations), kw))
         return await super().propose_operations(model, operations, **kw)
 
 
@@ -372,7 +372,7 @@ async def test_deprecate_resolves_concept_and_successor_fqns(
     args = {"model": "retail", "concept": "OrderDate", "reason": "r", "successor": "MonetaryAmount"}
     result, rec = await call_recorded(make_deps, kit, "propose_deprecate_concept", args)
     assert "error" not in structured(result), structured(result)
-    (op,), kw = rec.calls[0]
+    (op,), kw = rec.recorded[0]
     assert (op.fqn, op.successor) == ("retail.OrderDate", "retail.MonetaryAmount")
     assert kw["recheck_pending"] is True
 
@@ -399,7 +399,7 @@ async def test_scope_note_uses_the_exact_fqn(make_deps: DepsFactory, kit: AuthKi
         {"model": "retail", "concept": "retail.Order.OrderStatus", "note": "n"},
     )
     assert "error" not in structured(result), structured(result)
-    assert rec.calls[0][0][0].concept_fqn == "retail.Order.OrderStatus"
+    assert rec.recorded[0][0][0].concept_fqn == "retail.Order.OrderStatus"
 
 
 async def test_hierarchy_reuses_an_existing_parent(make_deps: DepsFactory, kit: AuthKit) -> None:
@@ -410,7 +410,7 @@ async def test_hierarchy_reuses_an_existing_parent(make_deps: DepsFactory, kit: 
         {"model": "retail", "parent_name": "Order", "children": ["Refund"]},
     )
     assert "error" not in structured(result), structured(result)
-    ops = rec.calls[0][0]
+    ops = rec.recorded[0][0]
     assert [(o.name, o.parent) for o in ops] == [("Refund", "retail.Order")]
 
 
@@ -421,7 +421,7 @@ async def test_hierarchy_creates_a_new_parent(make_deps: DepsFactory, kit: AuthK
         "propose_add_hierarchy",
         {"model": "retail", "parent_name": "Shipment", "children": ["Parcel"]},
     )
-    ops = rec.calls[0][0]
+    ops = rec.recorded[0][0]
     assert [(o.name, o.parent) for o in ops] == [("Shipment", None), ("Parcel", "Shipment")]
 
 
@@ -440,7 +440,7 @@ async def test_add_related_is_a_glossary_only_related_to(
         {"model": "retail", "source": "OrderDate", "target": "MonetaryAmount"},
     )
     assert "error" not in structured(result), structured(result)
-    ((op,), kw) = rec.calls[0]
+    ((op,), kw) = rec.recorded[0]
     assert (op.op, op.source, op.relation_type, op.target, op.glossary_only) == (
         "add_relation",
         "retail.OrderDate",
@@ -474,7 +474,7 @@ async def test_add_history_note_uses_the_exact_fqn(make_deps: DepsFactory, kit: 
         {"model": "retail", "concept": "OrderDate", "note": "Was OrderTimestamp until v2."},
     )
     assert "error" not in structured(result), structured(result)
-    op = rec.calls[0][0][0]
+    op = rec.recorded[0][0][0]
     assert (op.op, op.concept_fqn) == ("add_history_note", "retail.OrderDate")
 
 
@@ -485,7 +485,7 @@ async def test_add_concepts_warns_about_missing_definitions(
     _, rec = await call_recorded(
         make_deps, kit, "propose_add_concepts", {"model": "retail", "terms": terms}
     )
-    warnings = rec.calls[0][1]["warnings"]
+    warnings = rec.recorded[0][1]["warnings"]
     assert any("1 concept(s) have no definition (Voucher)" in w for w in warnings)
 
 
@@ -499,7 +499,7 @@ async def test_hierarchy_warns_when_the_vocabulary_is_undefined(
         "propose_add_hierarchy",
         {"model": "retail", "parent_name": "Order", "children": ["Refund"]},
     )
-    assert any("finishes the controlled vocabulary" in w for w in rec.calls[0][1]["warnings"])
+    assert any("finishes the controlled vocabulary" in w for w in rec.recorded[0][1]["warnings"])
 
 
 async def test_harvest_without_tags_reads_om_classifications(
@@ -552,7 +552,7 @@ async def test_add_broader_reparents_with_the_term_version(
     async with mcp_session(create_server_app(deps), kit.token(scope=PROPOSE)) as session:
         result = await session.call_tool("propose_add_relation", args)
     assert "error" not in structured(result), structured(result)
-    op = rec.calls[0][0][0]
+    op = rec.recorded[0][0][0]
     assert (op.op, op.fqn, op.parent, op.base_version) == (
         "update_concept",
         "retail.OrderDate",

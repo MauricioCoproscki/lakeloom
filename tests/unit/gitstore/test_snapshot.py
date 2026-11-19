@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import pytest
 
 from lakeloom.gitstore import Snapshot
@@ -77,9 +79,9 @@ async def test_fill_exports_with_ops_writes_skos_ttl() -> None:
     from lakeloom.core.operations import AddScopeNote
 
     op = AddScopeNote(op="add_scope_note", concept_fqn="Revenue", note="Net of returns.", lang="en")
-    snap = await fill_exports(  # pyright: ignore[reportArgumentType]
-        _Models(["v1"], ttl=_TTL.encode()),
-        _OM(),
+    snap = await fill_exports(
+        cast(Any, _Models(["v1"], ttl=_TTL.encode())),
+        cast(Any, _OM()),
         _base(),
         ops=[op],
     )
@@ -92,9 +94,9 @@ async def test_fill_exports_with_ops_writes_skos_ttl() -> None:
 
 async def test_fill_exports_with_empty_ops_writes_skos_ttl() -> None:
     """ops=[] still triggers skos.ttl production (enrichment with no matching ops)."""
-    snap = await fill_exports(  # pyright: ignore[reportArgumentType]
-        _Models(["v1"], ttl=_TTL.encode()),
-        _OM(),
+    snap = await fill_exports(
+        cast(Any, _Models(["v1"], ttl=_TTL.encode())),
+        cast(Any, _OM()),
         _base(),
         ops=[],
     )

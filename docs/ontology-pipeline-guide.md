@@ -112,9 +112,11 @@ Lakeloom should harvest candidate terms from:
 #   pip install spacy && python -m spacy download en_core_web_sm
 # NLTK: lightweight alternative, good for corpus frequency analysis
 
+
 def extract_candidate_terms(text: str, method: str = "spacy") -> list[CandidateTerm]:
     """Extract noun phrases and named entities from free text."""
     ...
+
 
 def harvest_folksonomies(tag_sources: list[TagSource]) -> list[CandidateTerm]:
     """Collect organic tag patterns from OM classifications, column tags, etc."""
@@ -186,26 +188,28 @@ class MetadataApplicationProfile(BaseModel):
 
     name: str
     version: str
-    canonical_schema: list[MetadataElement]      # core elements (Dublin Core + domain-specific)
-    system_profiles: list[SystemProfile]          # per-system implementation notes
-    crosswalks: list[Crosswalk]                   # element mappings between systems
-    controlled_vocabularies: list[str]            # slugs of linked CVs
-    value_vocabularies: dict[str, list[str]]      # allowed values per element
+    canonical_schema: list[MetadataElement]  # core elements (Dublin Core + domain-specific)
+    system_profiles: list[SystemProfile]  # per-system implementation notes
+    crosswalks: list[Crosswalk]  # element mappings between systems
+    controlled_vocabularies: list[str]  # slugs of linked CVs
+    value_vocabularies: dict[str, list[str]]  # allowed values per element
+
 
 class MetadataElement(BaseModel):
     name: str
-    uri: str                       # e.g. "dc:creator"
+    uri: str  # e.g. "dc:creator"
     definition: str
     obligation: Literal["mandatory", "recommended", "optional"]
     max_occurrences: int | None
-    encoding_scheme: str | None    # e.g. "ISO 8601"
+    encoding_scheme: str | None  # e.g. "ISO 8601"
     example: str | None
-    skos_mapping: str | None       # maps to SKOS property
+    skos_mapping: str | None  # maps to SKOS property
+
 
 class Crosswalk(BaseModel):
     source_element: str
     target_element: str
-    target_standard: str           # "Dublin Core", "DCAT", "schema.org", etc.
+    target_standard: str  # "Dublin Core", "DCAT", "schema.org", etc.
     transformation_rule: str | None  # e.g. "concatenate first + last name"
     semantic_equivalence: Literal["exact", "close", "broad", "narrow"]
 ```
@@ -284,13 +288,14 @@ A coverage model answers four questions:
 class CoverageModel(BaseModel):
     taxonomy_name: str
     use_cases: list[TaxonomyUseCase]
-    domain_boundaries: list[str]              # what is in scope
-    out_of_scope: list[str]                   # explicit exclusions
-    required_concept_areas: list[ConceptArea] # must-have categories
-    depth_guidelines: dict[str, int]          # branch name → max depth
+    domain_boundaries: list[str]  # what is in scope
+    out_of_scope: list[str]  # explicit exclusions
+    required_concept_areas: list[ConceptArea]  # must-have categories
+    depth_guidelines: dict[str, int]  # branch name → max depth
     granularity_level: Literal["coarse", "medium", "fine"]
-    external_benchmarks: list[str]            # competitor/industry taxonomies compared
-    coverage_gaps: list[str]                  # areas needing more research
+    external_benchmarks: list[str]  # competitor/industry taxonomies compared
+    coverage_gaps: list[str]  # areas needing more research
+
 
 class TaxonomyUseCase(BaseModel):
     name: str
@@ -378,14 +383,16 @@ class ThesaurusRelationship(BaseModel):
     subject_uri: str
     predicate: Literal["broader", "narrower", "related"]
     object_uri: str
-    source: str                    # how this relationship was discovered
-    confidence: float              # 0.0–1.0
+    source: str  # how this relationship was discovered
+    confidence: float  # 0.0–1.0
     reviewer: str | None
     approved_at: datetime | None
+
 
 def mine_rt_from_schema(scan_result: ScanResult) -> list[ThesaurusRelationship]:
     """Derive RT candidates from foreign-key and join relationships in the lake schema."""
     ...
+
 
 def mine_rt_from_cooccurrence(term_corpus: list[str]) -> list[ThesaurusRelationship]:
     """Extract RT candidates from term co-occurrence in column descriptions."""

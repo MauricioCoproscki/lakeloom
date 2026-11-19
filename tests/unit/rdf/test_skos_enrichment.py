@@ -259,16 +259,9 @@ class TestMixedOps:
         from lakeloom.core.operations import AddConcept
 
         g = _graph("Animal")
-        op = AddConcept(
-            op="add_concept",
-            model="retail",
-            name="NewThing",
-            definition="A new thing",
-            parent_fqn=None,
-            synonyms=[],
-        )
+        op = AddConcept(op="add_concept", name="NewThing")
         before = len(g)
-        enrich_graph_from_ops(g, [op])  # type: ignore[arg-type]
+        enrich_graph_from_ops(g, [op])
         assert len(g) == before
 
 

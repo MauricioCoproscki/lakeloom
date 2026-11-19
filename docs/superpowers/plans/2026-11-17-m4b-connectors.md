@@ -80,9 +80,10 @@
       private_key_file: Path | None = None
       private_key_passphrase_env: str | None = None
       password_env: str | None = None
-      token_env: str | None = None          # OAuth access token
+      token_env: str | None = None  # OAuth access token
       # validator: exactly one of private_key_file / password_env / token_env;
       # private_key_passphrase_env only with private_key_file
+
 
   class SnowflakeSourceConfig(_Base):
       type: Literal["snowflake"]

@@ -43,12 +43,12 @@ O que falta são **workflows de construção direta** para os estágios 1-4 e me
 
 ```python
 # Adicionar ao __all__ e implementar:
-UpdateConcept        # já existe — verificar se cobre description + scopeNote
-AddScopeNote         # nova: skos:scopeNote em conceito existente
-AddHistoryNote       # nova: skos:historyNote (thesaurus)
-DeprecateConcept     # nova: marca conceito como deprecated + substituto opcional
-RetireConcept        # nova: remove conceito com tombstone (skos:hiddenLabel)
-SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
+UpdateConcept  # já existe — verificar se cobre description + scopeNote
+AddScopeNote  # nova: skos:scopeNote em conceito existente
+AddHistoryNote  # nova: skos:historyNote (thesaurus)
+DeprecateConcept  # nova: marca conceito como deprecated + substituto opcional
+RetireConcept  # nova: remove conceito com tombstone (skos:hiddenLabel)
+SetCoverageModel  # nova: metadados do modelo de cobertura no ConceptScheme
 ```
 
 **Novo módulo `core/vocabulary.py`:**
@@ -59,7 +59,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 # - create_candidate(term, source_text, authority) → AddConcept op
 # - harvest_folksonomy(model_slug) → list[AddConcept] candidatos das tags OM
 # - dedupe_candidates(candidates, model) → list[Match] (reutiliza dedupe.py)
-# - batch_add_terms(terms: list[TermDraft]) → Proposal  
+# - batch_add_terms(terms: list[TermDraft]) → Proposal
 # - export_cv_report(model_slug) → markdown com estatísticas do CV
 ```
 
@@ -105,7 +105,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 # Returns: lista de {term, source_tag, frequency, existing_match}
 # Implementação: cv_builder.harvest_folksonomy()
 
-"assess_realization_coverage"  
+"assess_realization_coverage"
 # Avalia a cobertura da taxonomia atual contra um modelo de cobertura definido.
 # Params: model (str), topics (list[str]), depth (int), granularity (str)
 # Returns: CoverageReport markdown com gaps identificados
@@ -165,7 +165,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 #   implementation_layer: dict — {conceito_fqn: campo_físico_atual}
 #   translation_rules: list    — transformações (cast, rename, derive)
 #   crosswalks: list[Crosswalk] — mapeamentos para padrões externos
-# 
+#
 # Funções:
 # - build_from_scan(scan_id) → MapProfile  (usa resultado de scan existente)
 # - validate_map(map_profile) → MapReport  (verifica cobertura e consistência)

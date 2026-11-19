@@ -242,4 +242,5 @@ class TestCandidatesToOps:
             )
         ]
         ops = candidates_to_ops(approved)
+        assert isinstance(ops[0], AddMapping)
         assert ops[0].kind == "closeMatch"
