@@ -992,3 +992,18 @@ def test_deleted_key_that_is_live_again_is_not_deleted() -> None:
     ctx = replace(CTX, native_deleted={key})
     op = AddAttribute(op="add_attribute", concept="Order", name="order_id", datatype="xsd:long")
     assert to_om_all([op], ctx).native[0]["targetId"] == "np-1"
+
+
+def test_moving_an_existing_concept_is_refused() -> None:
+    """OM 2.1.0-rc1 applies a parent change by re-inserting the term (duplicate key), so a
+    move is refused when it is proposed, not left to fail at approval."""
+    move = UpdateConcept(
+        op="update_concept", fqn="retail.Order", base_version="0.3", parent="retail.Customer"
+    )
+    with pytest.raises(LakeloomError) as err:
+        to_om(move, CTX)
+    assert err.value.code == "validation_error" and "duplicate key" in err.value.message
+    same = UpdateConcept(
+        op="update_concept", fqn="retail.Order", base_version="0.3", parent="retail.Thing"
+    )
+    assert to_om(same, CTX).glossary  # keeping the current parent is fine

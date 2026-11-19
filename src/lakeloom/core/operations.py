@@ -895,6 +895,15 @@ def _update_term(
             synonyms = list(change.synonyms)
         if change.parent is not None:
             parent_id = _term_ref(ctx, change.parent)["id"]
+            if parent_id != snapshot.parent_id:
+                raise _fail(
+                    f"cannot move existing concept {name!r} to a new parent: OpenMetadata "
+                    "2.1.0-rc1 applies a parent change by inserting the term again, which "
+                    "fails on its own id (duplicate key)",
+                    "move it in the OpenMetadata UI (reconciliation then records the change), "
+                    "or create new concepts directly under their parent "
+                    "(propose_add_concepts with broader, propose_add_hierarchy)",
+                )
     term: dict[str, Any] = {
         "id": term_id,
         "name": name,

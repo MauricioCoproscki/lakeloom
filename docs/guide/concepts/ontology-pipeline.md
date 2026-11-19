@@ -82,7 +82,7 @@ a question ("all payments" or "only card payments").
 | You ask | The assistant uses |
 |---------|--------------------|
 | "Group these terms under *Payment*" | `propose_add_hierarchy` |
-| "Make *Refund* a kind of *Payment*" | `propose_add_relation` with `relation: broader` |
+| "Add *Refund* as a kind of *Payment*" | `propose_add_concepts` with `broader: Payment` (moving an *existing* term is refused on OpenMetadata 2.1.0-rc1; move it in the OpenMetadata UI) |
 | "Do we cover the topics we care about?" | `assess_taxonomy_coverage` |
 | "Is the hierarchy too flat or too deep?" | `get_model_stats`, and the hierarchy signals of `get_next_steps` |
 

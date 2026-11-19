@@ -425,3 +425,15 @@ def test_oversized_axiom_skipped_with_warning() -> None:
     assert result.warnings == [
         "1 axioms are too large to import (more than 16384 bytes of JSON): ChildRestrictions"
     ]
+
+
+def test_moving_an_existing_concept_is_reported_not_proposed() -> None:
+    """OM 2.1.0-rc1 cannot re-parent a term: the import keeps the other edits and warns."""
+    result = run(
+        terms([concept("A", description="old"), concept("P")]),
+        terms([concept("A", description="new", parent="P"), concept("P")]),
+        versions={"A": 0.3},
+    )
+    (op,) = result.operations
+    assert isinstance(op, UpdateConcept) and op.parent is None
+    assert any("change their parent and are not moved" in w and ": A" in w for w in result.warnings)

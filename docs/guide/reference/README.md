@@ -89,7 +89,7 @@ are also available as MCP resources and over HTTP. See
 | Tool | Scope | | Purpose |
 |------|-------|-|---------|
 | `propose_add_hierarchy` | propose | W | A parent and its children. An existing parent is reused |
-| `propose_add_relation` (`relation="broader"`) | propose | W | Re-parents `source` under `target`. Refuses self-links and cycles |
+| `propose_add_relation` (`relation="broader"`) | propose | W | Re-parents `source` under `target`. Refuses self-links and cycles. **Refused on OpenMetadata 2.1.0-rc1**, which cannot move an existing term (`validation_error`) |
 | `assess_taxonomy_coverage` | read | R | Gaps against the declared topics, depth and granularity |
 | `get_model_stats` | read | R | Depth, hubs, orphans and relation counts |
 

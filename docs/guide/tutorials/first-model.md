@@ -94,9 +94,11 @@ a term are marked. Maria sends the CSV to the analysts.
 > **Maria:** Card payments, transfers and vouchers are all kinds of payment.
 
 The assistant calls `propose_add_hierarchy` with parent *Payment* and children *Card
-payment*, *Bank transfer* and *Voucher*. If *Payment* already exists, it is reused. To move
-one term under another, it uses `propose_add_relation(relation="broader")`, which refuses a
-link that would create a cycle.
+payment*, *Bank transfer* and *Voucher*. If *Payment* already exists, it is reused. Moving a
+term that already exists under another parent (`propose_add_relation(relation="broader")`) is
+refused on OpenMetadata 2.1.0-rc1: that version fails when it applies a parent change. Create
+new terms directly under their parent, as here, or move an existing term in the OpenMetadata
+UI.
 
 If most terms still lacked definitions, the proposal would carry a warning that the
 vocabulary should be finished first.

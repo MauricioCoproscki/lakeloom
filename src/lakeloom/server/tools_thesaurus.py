@@ -113,7 +113,11 @@ Link two existing concepts of a model, as a thesaurus would:
 Stored as OpenMetadata's glossary `relatedTo` relationship, without a native ontology \
 property. Use it for pairs from `suggest_related_terms` the user agrees with.
 - `broader` (BT/NT): makes `target` the parent of `source` (the inverse NT follows). A \
-concept has one parent: an existing parent is replaced. Cycles are refused.
+concept has one parent: an existing parent is replaced. Cycles are refused. **Not possible \
+on OpenMetadata 2.1.0-rc1**, which applies a parent change by inserting the term again and \
+fails: the proposal is refused with `validation_error`. Create new concepts directly under \
+their parent (`propose_add_concepts` with `broader`, `propose_add_hierarchy`), or move the \
+term in the OpenMetadata UI.
 
 `source`, `target`: name, FQN or IRI of concepts of `model`.
 

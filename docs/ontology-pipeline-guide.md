@@ -53,7 +53,7 @@ add" they mention are **proposals, not implemented features**. This table and th
 |-------|-------------------------|------------|
 | 1 – Controlled Vocabulary | `harvest_vocabulary_candidates` (OM classification tags or given strings), `propose_add_concepts` (warns on missing definitions), `import_model`, dedupe and pending checks; deliverable `export_glossary` (Markdown/CSV, quality score) | NLP concept mining; per-term provenance/status model |
 | 2 – Metadata Schema / MAP | `build_map`, `validate_map`, `export_map`: the **implementation layer** (scanned column → concept), computed on demand; deliverable `export_data_dictionary` (Markdown/CSV) | Canonical layer (elements, obligations), crosswalks, persisted and versioned MAP documents |
-| 3 – Taxonomy | `propose_add_hierarchy`, `propose_add_relation(relation="broader")`, `assess_taxonomy_coverage`, hierarchy signals in `get_next_steps`; deliverable `export_taxonomy` (Markdown, Mermaid, CSV) | Persisted coverage model; polyhierarchy (OM terms have one parent) |
+| 3 – Taxonomy | `propose_add_hierarchy`, `propose_add_concepts` with `broader`, `assess_taxonomy_coverage`, hierarchy signals in `get_next_steps`; deliverable `export_taxonomy` (Markdown, Mermaid, CSV) | Persisted coverage model; polyhierarchy (OM terms have one parent); moving an existing term (OpenMetadata 2.1.0-rc1 fails on a parent change, so it is refused) |
 | 4 – Thesaurus | `validate_thesaurus` (ANSI Z39.19 checks), `suggest_related_terms` (asset co-occurrence), `propose_add_relation` (RT as OM `relatedTo`, symmetric), `propose_add_scope_note`, `propose_add_history_note`, `propose_deprecate_concept` (`owl:deprecated` + `dct:isReplacedBy`); deliverables `export_synonyms` (search synonym file, deprecation map) and `expand_query` (search/RAG) | Foreign-key and embedding-based RT mining |
 | 5 – Ontology | OWL/SKOS via OpenMetadata + rdflib; `propose_change`, `validate_model`, SHACL shapes, `export_model` (all formats; `skos` carries the governance annotations) | Reasoner integration |
 | 6 – Knowledge Graph | Releases in Git, triple-store sink (Fuseki, GraphDB, RDF4J) with SKOS named graphs, `suggest_external_mappings` / `propose_external_mappings` (Wikidata, schema.org) | SPARQL query templates as MCP tools |
@@ -606,7 +606,7 @@ The CLI workflow above is the book-inspired design; agents run the pipeline thro
 | Deliverables | `export_glossary` (1), `export_data_dictionary` (2), `export_taxonomy` (3), `export_synonyms` and `expand_query` (4) | — |
 | 1 – Vocabulary | `harvest_vocabulary_candidates`, `find_concepts`, `explain_concept` | `propose_add_concepts`, `import_model` |
 | 2 – MAP | `build_map`, `validate_map`, `export_map` | `propose_realization` |
-| 3 – Taxonomy | `assess_taxonomy_coverage`, `get_model_stats` | `propose_add_hierarchy`, `propose_add_relation` (`broader`) |
+| 3 – Taxonomy | `assess_taxonomy_coverage`, `get_model_stats` | `propose_add_hierarchy`, `propose_add_concepts` (`broader`) |
 | 4 – Thesaurus | `validate_thesaurus`, `suggest_related_terms`, `get_annotation_stats`, `list_deprecated_concepts` | `propose_add_relation` (`related`), `propose_add_scope_note`, `propose_add_history_note`, `propose_deprecate_concept` |
 | 5 – Ontology | `validate_model`, `export_model` | `propose_from_scan`, `propose_change` |
 | 6 – Knowledge Graph | `assess_realization_coverage`, `list_releases`, `diff_releases`, `suggest_external_mappings` | `create_release`, `propose_external_mappings` |

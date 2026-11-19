@@ -107,6 +107,7 @@ class _Diff:
         self.dropped_attributes: set[tuple[str, str]] = set()
         self.description_edits = 0
         self.retargeted: set[str] = set()
+        self.reparented: set[str] = set()  # OM rc1 cannot apply a parent change
         self.oversized: set[str] = set()
 
     # helpers -------------------------------------------------------------------------------
@@ -196,7 +197,9 @@ class _Diff:
             if inc.parent in self.dropped_concepts:
                 self.dependents += 1  # only the parent change depends on it; keep the rest
             else:
-                changes["parent"] = inc.parent
+                # OM 2.1.0-rc1 applies a parent change by re-inserting the term, which fails
+                # on its own id (duplicate key): report the move instead of proposing it
+                self.reparented.add(inc.name)
         if not changes:
             return
         self.adds.append(
@@ -394,6 +397,12 @@ class _Diff:
                 f"{len(self.retargeted)} relations change their target and are not imported "
                 f"({_OM} cannot retarget an object property): "
                 f"{', '.join(sorted(self.retargeted)[:10])}"
+            )
+        if self.reparented:
+            out.append(
+                f"{len(self.reparented)} concepts change their parent and are not moved "
+                f"({_OM} cannot re-parent an existing term; move them in OpenMetadata): "
+                f"{', '.join(sorted(self.reparented)[:10])}"
             )
         if self.oversized:
             out.append(

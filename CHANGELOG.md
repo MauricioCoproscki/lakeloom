@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The proposal summary crashed on scope and history notes, and showed nothing for
+  deprecations, against the real service.
+- `get_next_steps` now tells authors that their own submitted proposals wait for a
+  reviewer, and finds scans made only to document the lake.
+- Moving an existing concept to a new parent is refused when it is proposed. OpenMetadata
+  2.1.0-rc1 applies a parent change by re-inserting the term and fails on a duplicate key.
+  Imports report such moves instead of proposing them.
+
 ## [0.1.0] - 2026-11-19
 
 First public release (alpha). Highlights:
