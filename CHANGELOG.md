@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-19
+
+Fixes found by running the whole pipeline on the `retail` model against a real OpenMetadata.
+
+### Changed
+
+- The HTTP API (`GET /v1/models/{slug}`) and the ontology resources now serve the
+  effective model, the same bytes as `export_model`. That is OpenMetadata's terms plus the
+  approved scope notes, history notes and deprecations.
+
 ### Fixed
 
 - The proposal summary crashed on scope and history notes, and showed nothing for
@@ -23,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Typed links between concepts (OpenMetadata keeps one relationship per pair of terms) count
   as related terms. `propose_add_relation(related)` refuses a pair that is already linked,
   instead of proposing a link that would change nothing.
+- `export_model`, the HTTP API and the ontology resources no longer drift apart when a model
+  has governance annotations.
 
 ## [0.1.0] - 2026-11-19
 
@@ -331,5 +343,6 @@ Detailed changes:
   so two models proposing the same concept no longer collide on OpenMetadata's global ids
   (the second model's approve failed with "the name is already taken").
 
-[Unreleased]: https://github.com/elcioabrahao/lakeloom/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/elcioabrahao/lakeloom/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/elcioabrahao/lakeloom/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/elcioabrahao/lakeloom/releases/tag/v0.1.0
