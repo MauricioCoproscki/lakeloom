@@ -171,14 +171,14 @@ code spans.
 | URI | Content |
 |-----|---------|
 | `lakeloom://models` | The model list (JSON) |
-| `lakeloom://models/{slug}/ontology.{ttl,jsonld,owl,nt}` | The ontology. Add `?version=` for a release |
+| `lakeloom://models/{slug}/ontology.{ext}` | The ontology; `ext` is `ttl`, `jsonld`, `owl` or `nt`. Add `?version=` for a release |
 | `lakeloom://models/{slug}/shapes.ttl` | SHACL shapes |
 | `lakeloom://models/{slug}/context.jsonld` | JSON-LD context |
 | `lakeloom://models/{slug}/deliverables/{filename}` | A stage deliverable (`glossary.md`, `data-dictionary.csv`, `synonyms.txt`, …) |
 | `lakeloom://assets/{fqn}/context.md` | Asset context (percent-encode the FQN) |
 
 The same artefacts are served over the read-only HTTP API at `/v1`. See
-[HTTP API](../../../README.md#http-api) and [`docs/api/openapi.json`](../../api/openapi.json).
+[HTTP API](../../technical-reference.md#http-api) and [`docs/api/openapi.json`](../../api/openapi.json).
 
 ## Conventions
 

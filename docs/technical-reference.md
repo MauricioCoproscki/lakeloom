@@ -1,0 +1,831 @@
+# Technical reference
+
+The detailed behaviour of every Lakeloom subsystem: configuration keys, limits, security
+rules and edge cases. The [User Guide](guide/README.md) explains how to use Lakeloom; this
+page is what operators and contributors look up.
+
+Contents:
+- [Development stack and clients](#development-stack-and-clients)
+- [Lake sources and scans](#lake-sources-and-scans)
+- [Semantic tools](#semantic-tools)
+- [Proposals](#proposals)
+- [Review](#review)
+- [Git publishing](#git-publishing)
+- [Releases](#releases)
+- [Import, restore and drift](#import-restore-and-drift)
+- [SPARQL](#sparql)
+- [Reconciliation and scheduled drift](#reconciliation-and-scheduled-drift)
+- [Rate limits](#rate-limits)
+- [Running more than one replica](#running-more-than-one-replica)
+- [Stage deliverables](#stage-deliverables)
+- [Surfaces overview](#surfaces-overview)
+- [HTTP API](#http-api)
+- [MCP resources](#mcp-resources)
+- [Optional RDF store](#optional-rdf-store)
+- [Observability](#observability)
+
+## Development stack and clients
+
+| Service       | URL                     | Notes                  |
+|---------------|-------------------------|------------------------|
+| Lakeloom      | http://localhost:8000   | MCP at `/mcp`          |
+| OpenMetadata  | http://localhost:8585   | log in via Keycloak    |
+| Keycloak      | http://localhost:8180   | realm `lakeloom`       |
+| Gitea         | http://localhost:3000   |                        |
+| PostgreSQL    | localhost:5432          |                        |
+
+All ports are bound to `127.0.0.1` only.
+
+> **Development only.** Every credential in the dev stack is a fixed, publicly known default
+> (for example the Keycloak client secret `dev-agent-secret`). Never reuse them outside a
+> local machine.
+
+OpenMetadata signs in through Keycloak (realm `lakeloom`). The OM admin is `om-admin` /
+`om-admin`. The dev users `alice`, `bob` and `carol` use their user name as their password.
+All of these are DEV ONLY. See [ADR 0012](decisions/0012-review-and-human-identity.md).
+
+> **Upgrading from a basic-auth checkout (before M2b):** OpenMetadata needs a fresh data
+> volume, and the old `admin@open-metadata.org` login is gone. Run
+> `docker compose -f deploy/compose/docker-compose.yml down`, then
+> `docker volume rm lakeloom_om-db-data lakeloom_es-data`, then `up` again. This also resets
+> the dev Lakeloom state-store database.
+
+### Call a tool from an agent
+
+Get an agent token from Keycloak (client `lakeloom-agent`, realm `lakeloom`):
+
+```bash
+TOKEN=$(curl -s http://localhost:8180/realms/lakeloom/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=lakeloom-agent \
+  -d client_secret=dev-agent-secret | python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])')
+```
+
+Register Lakeloom in Claude Code and ask it to call `get_server_info` (or `list_sources`):
+
+```bash
+claude mcp add --transport http lakeloom http://localhost:8000/mcp \
+  --header "Authorization: Bearer $TOKEN"
+```
+
+Any other MCP client that supports Streamable HTTP works the same way: point it at
+`http://localhost:8000/mcp` and send the bearer token. Tokens are short-lived; fetch a new one
+when it expires.
+
+### stdio transport (local use)
+
+For a local client that launches the server itself (Claude Code, Claude Desktop), Lakeloom can
+speak MCP over stdin/stdout. It is treated as the configured local principal
+(`LAKELOOM_STDIO_PRINCIPAL`, default `local`, an agent) with only the scopes in
+`LAKELOOM_STDIO_SCOPES` (JSON or comma list, default `lakeloom:read`); there is no bearer
+token and no OIDC setup. It is disabled in production unless `LAKELOOM_STDIO_ENABLED=true`
+(default on in development), and **the container image disables it**. `LAKELOOM_STDIO_SCOPES` may
+grant any known scope, including `lakeloom:admin`: grant only what the local user should have. Logs go to stderr;
+stdout carries only the protocol.
+
+```bash
+claude mcp add lakeloom \
+  -e LAKELOOM_STDIO_ENABLED=true -e LAKELOOM_OM_URL=http://localhost:8585 \
+  -e LAKELOOM_OM_BOT_TOKEN=... -e LAKELOOM_DB_URL=sqlite:////tmp/lakeloom.db \
+  -- lakeloom serve --transport stdio
+```
+
+The same as a project `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "lakeloom": {
+      "command": "lakeloom",
+      "args": ["serve", "--transport", "stdio"],
+      "env": {
+        "LAKELOOM_STDIO_ENABLED": "true",
+        "LAKELOOM_OM_URL": "http://localhost:8585",
+        "LAKELOOM_OM_BOT_TOKEN": "...",
+        "LAKELOOM_DB_URL": "sqlite:////tmp/lakeloom.db"
+      }
+    }
+  }
+}
+```
+
+## Lake sources and scans
+
+Lake sources are configured by the operator in a YAML file named by `LAKELOOM_CONFIG_FILE`;
+agents can only name a configured source, never add one or pass a URL. The dev stack mounts
+[`deploy/compose/lakeloom-sources.yaml`](../deploy/compose/lakeloom-sources.yaml) with three
+sources over the same fixture lake (catalog `retail`, schema `sales`, four tables):
+
+```yaml
+sources:
+  - type: delta                       # Delta tables read with delta-rs (extra `delta`)
+    name: fixture_delta
+    om_service: lakeloom_fixture      # OpenMetadata service used to look tables up
+    tables:
+      - {uri: "file:///lake/orders", catalog: retail, schema: sales}
+      # ... customers, products, invoices
+  - type: unity_catalog               # Unity Catalog REST API (OSS or Databricks)
+    name: fixture_uc
+    url: http://unitycatalog:8080
+    catalogs: [retail]                # optional allow-list
+    read_storage: true                # versions/profiles from the Delta log
+    om_service: lakeloom_fixture
+  - type: mcp                         # an upstream MCP server, bound by a mapping file
+    name: openmetadata_mcp
+    transport: streamable_http
+    url: http://openmetadata-server:8585/mcp
+    token_file: /secrets/om_bot_token # or token_env: VAR_NAME; never logged
+    mapping: /etc/lakeloom/mappings/openmetadata.yaml
+    om_service: lakeloom_fixture
+```
+
+Relative `mapping` and `token_file` paths resolve against the YAML file's directory. A
+broken config stops startup with a configuration error; an unreachable upstream MCP server
+does not: its source is reported `available: false` with an error code and hint, and the
+next call at least 30 s after the last attempt reconnects.
+
+Give an upstream MCP source a **read-only** token. Lakeloom only calls the mapped read
+tools, but OpenMetadata's MCP server also exposes write tools (`create_entity`,
+`patch_entity`, ...); in production use a dedicated OM bot whose role can only read. The
+dev stack reuses OM's `ingestion-bot` token, which can write.
+
+MCP tools: `list_sources`, `list_tables` (paginated with `cursor`/`limit`) and
+`describe_table` need scope `lakeloom:read` and are read-only; `scan_lake_source` needs
+`lakeloom:propose` and writes a scan record (tables, versions, OpenMetadata matches and
+optional profiles). The same operations are on the CLI for operators:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml exec lakeloom lakeloom sources
+docker compose -f deploy/compose/docker-compose.yml exec lakeloom lakeloom tables fixture_uc
+docker compose -f deploy/compose/docker-compose.yml exec lakeloom lakeloom scan fixture_delta --profile
+```
+
+**Privacy defaults.** Profiles are computed where the data lives; no data is exported.
+Top-k values and string min/max are off by default (`LAKELOOM_PROFILE_SAMPLES=false`);
+numeric/date min/max are aggregates and always reported; columns tagged with a sensitive
+tag (`LAKELOOM_SENSITIVE_TAGS`, default `PII.*`) never expose values. When samples are
+enabled, values are truncated to `LAKELOOM_PROFILE_VALUE_MAX_LENGTH` (default 64).
+Upstream MCP sources contribute aggregates only. Lake comments and upstream text are
+untrusted: tool outputs show them as quoted blocks flagged `untrusted`.
+
+Unity Catalog OSS keeps its state inside its container, so recreating the container drops
+the fixture registrations; re-seed them with
+`docker compose -f deploy/compose/docker-compose.yml run --rm uc-init`.
+
+### Snowflake, Databricks authentication and mapping checks
+
+Extras: `delta` (delta-rs and pyarrow), `snowflake` (`snowflake-connector-python`) and
+`databricks` (`databricks-sdk`), as in `pip install 'lakeloom[snowflake]'`. A source whose extra
+is missing stops startup with a configuration error naming the `pip install` to run.
+
+A **Snowflake** source reads `INFORMATION_SCHEMA` and `SHOW … KEYS` (ADR 0018). A database is a
+catalog:
+
+```yaml
+  - type: snowflake
+    name: sf_prod
+    account: myorg-myaccount
+    user: LAKELOOM_SVC
+    role: LAKELOOM_READER             # optional
+    warehouse: LAKELOOM_WH            # needed only for profiling
+    databases: [SALES, MARKETING]     # optional allow-list (recommended)
+    auth:                             # exactly one method
+      private_key_file: /run/secrets/sf_key.p8   # key-pair (recommended)
+      private_key_passphrase_env: SF_KEY_PASS    # optional
+      # or: password_env: SF_PASSWORD
+      # or: token_env: SF_OAUTH_TOKEN            # OAuth access token
+    profiling: false                  # opt in: profiling runs warehouse queries (cost)
+    om_service: snowflake_prod
+```
+
+Grant the role:
+- `USAGE` on the databases and schemas;
+- `REFERENCES` (or ownership) on the tables, so `SHOW PRIMARY/IMPORTED KEYS` can see their keys;
+- with profiling, also `USAGE` on the warehouse and `SELECT` on the tables.
+
+Tags are read when the role may read tag references. Otherwise a describe has no tags, and a
+profile treats every column as sensitive (no values shown). A Snowflake tag shows as
+`NAME.VALUE`, and a tag set on a table or schema also marks the columns it applies to, so the
+default sensitive glob `PII.*` covers a `PII` tag wherever it is set.
+
+For **Databricks-hosted Unity Catalog**, `auth: databricks` (with an optional `profile` from
+`~/.databrickscfg`) takes the headers from `databricks-sdk`. That gives service-principal
+OAuth, Azure, Google and CLI profiles in place of a `token_env` personal access token.
+
+`lakeloom sources check NAME [--call] [--tools] [--json]` checks an **upstream MCP mapping**
+against the server's `tools/list`. Each operation is reported `ok`, `placeholder`, `missing` or
+`schema_mismatch`. `--call` runs the read operations once. The exit code is 0 when all is ok and
+3 otherwise. The Databricks and Snowflake examples in `examples/mcp-mappings/` keep placeholder
+tool names. [docs/guides/mcp-mappings.md](guides/mcp-mappings.md) walks from an example to
+a working mapping.
+
+**Not verified live:** the Snowflake connector and both MCP examples have been tested only
+against local fakes, never against a real Snowflake account or a real Databricks or Snowflake
+MCP server.
+
+## Semantic tools
+
+The semantic read path serves the business vocabulary kept in OpenMetadata (one glossary is one
+model; its `slug` is the glossary name). All eight tools need scope `lakeloom:read` and are
+read-only.
+
+| Tool | What it does |
+| --- | --- |
+| `list_models`, `get_model` | The models Lakeloom serves, with base IRI, prefixes and term count. |
+| `find_concepts` | Find concepts by name, synonym, FQN or IRI (fuzzy), optionally within one model. |
+| `explain_concept` | Definition, synonyms, hierarchy, typed relations, attributes, mappings and realizing assets of one concept. |
+| `find_assets_for_concept` | Tables and columns that realize a concept, optionally including narrower concepts. |
+
+`explain_concept` and `find_assets_for_concept` take the concept as an FQN (`retail.Order`), an
+IRI, a term id or a plain name: a name, synonym or local name (any case) that matches exactly
+one concept across the models resolves to it; several matches give `validation_error` listing
+the candidate FQNs, none gives `not_found` (use `find_concepts`).
+| `get_asset_context` | Everything known about an asset: description, owners, concepts per column, related assets, lineage. |
+| `export_model` | The model as Turtle, RDF/XML (OWL), N-Triples, JSON-LD or SKOS, byte-identical for the same model state. |
+| `validate_model` | A structural check of the model: errors (duplicate labels, hierarchy cycles, properties whose domain is not a concept), warnings (relations to outside concepts, isolated or undefined concepts, untyped attributes) and the count of generated SHACL shapes. |
+
+`get_asset_context` takes the asset in any of three forms: an OpenMetadata FQN
+(`lakeloom_fixture.retail.sales.orders`), a Unity Catalog name (`retail.sales.orders`) or the
+storage URI of a configured source; add a column name to get one column. `format` is `markdown`
+(default, for LLM context windows), `json` (schema in `docs/schemas/asset-context.schema.json`)
+or `jsonld`. Every response carries a `token_estimate` (about one token per four characters);
+`max_tokens` cuts the content at section (or column) boundaries and sets `truncated: true`.
+Descriptions and definitions come from OpenMetadata and the lake: they are shown as quoted
+blocks and flagged untrusted. An `export_model` result above 8 MiB is refused; use the CLI.
+
+`validate_model` returns Markdown plus the structured report (`model`, `conforms`, `counts`,
+`issues`, `truncated`); `conforms` is false only when an error exists, and at most 200 issues are
+listed. A model fresh from `propose_from_scan` conforms with warnings (for example
+`untyped_attribute` for a `date` column, whose OpenMetadata range is `rdfs:Literal`).
+
+**Shapes and JSON-LD context (ADR 0014).** Every model also publishes generated SHACL shapes
+(`shapes.ttl`: one `sh:NodeShape` per model class with `sh:targetClass`, one property shape per
+attribute or relation with `sh:datatype`, `sh:class`, `sh:in` from enumerations and
+`sh:minCount`/`sh:maxCount` from identifiers and cardinality restrictions; open shapes, units not
+constrained) and a full JSON-LD `@context` (one term per class and per property, keyed
+`<Class>.<attribute>` and typed by datatype, plus a short alias such as `email` when the name is
+unique in the model). Vocabulary classes the model graph also declares (`skos:Concept`,
+`skos:ConceptScheme`, `om:Glossary`, `om:GlossaryTerm`, anything in the SKOS, OWL, RDF, RDFS, XSD
+or OpenMetadata `https://open-metadata.org/ontology/` namespaces) get no shape, no context term
+and no `validate_model` issue; the same holds for properties in those namespaces. Lakeloom does
+not validate lake data itself: consumers run the shapes and use the context to read JSON records
+as RDF. Two things to know when doing so:
+
+- **Subclass instances.** SHACL resolves `sh:targetClass` and `sh:class` through
+  `rdfs:subClassOf` triples in the *data* graph only, so an instance typed with a subclass is
+  not checked against its parent's shape unless the ontology is supplied with the data:
+  `pyshacl -s shapes.ttl -e ontology.ttl -i rdfs data.ttl` (`-e` mixes the ontology into the
+  data graph; `-i rdfs` also infers the parent types).
+- **Decimal attributes.** Send `xsd:decimal` values as JSON strings (`"12.5"`, not `12.5`): a
+  JSON number is converted per JSON-LD 1.1 toRdf to a double's lexical form (rdflib keeps a
+  float or int), which fails `sh:datatype xsd:decimal`.
+
+Asset JSON-LD (`get_asset_context` with `format=jsonld`) carries the model's context pruned to
+the terms its payload uses, so it stays small however large the model is.
+
+Models, OpenMetadata tables and realizing-asset lists are cached for
+`LAKELOOM_MODEL_CACHE_TTL_SECONDS` (default 60 s; `0` disables the cache). A change made directly
+in OpenMetadata (a new term, a tag on a column) can therefore take up to that long to show; a
+lookup that found no table is remembered for at most 10 s.
+
+The same operations are available to operators:
+
+```bash
+lakeloom models
+lakeloom concept Customer                       # or an FQN or IRI
+lakeloom context lakeloom_fixture.retail.sales.orders --format md --max-tokens 2000
+lakeloom export retail --format turtle --out retail.ttl
+lakeloom validate retail                        # exit code 1 when the model does not conform
+```
+
+## Proposals
+
+Agents never change the catalog directly: they write **proposals**, which are OpenMetadata
+change sets in Draft state that a human reviews (see [Review](#review)). A model is an OpenMetadata glossary plus a **paired native ontology**
+of the same name. The ontology holds the classes, attributes and axioms; both sides share one
+base IRI, `{LAKELOOM_PUBLIC_URL}/ontology/{slug}/` (ADR 0011).
+
+| Tool | Scope | Side effect |
+| --- | --- | --- |
+| `create_model` | `lakeloom:admin` | Creates the glossary and its paired ontology in OpenMetadata, after a dry run and a confirm token. `pair_existing=true` creates only the missing ontology of an existing glossary. |
+| `propose_from_scan` | `lakeloom:propose` | Maps a scan to concepts, attributes, keys and relations. Skips what already exists or is pending. Writes Draft change sets (at most 50 operations per part, split by table). |
+| `propose_change` | `lakeloom:propose` | Appends typed operations (selected by `op`) to a draft proposal. Skips operations pending in another proposal and concepts or attributes the model already has. |
+| `propose_realization` | `lakeloom:propose` | Records that a table or column realizes a concept of the model (or of a model it imports). The tag is applied in OpenMetadata only on approval. |
+| `get_proposal`, `diff_proposal` | `lakeloom:read` | None. They show the summary, the parts and their OpenMetadata states, and the entity-level changes. |
+| `submit_proposal` | `lakeloom:propose` | Moves every change set from Draft to Submitted. |
+| `discard_proposal` | `lakeloom:propose` | Discards every change set, after a dry run and a confirm token. Destructive. |
+
+The typical flow, which the MCP prompt `bootstrap_data_product(source, model, tables?)` walks an
+agent through:
+
+1. `scan_lake_source`.
+2. `create_model` if the model is missing.
+3. `propose_from_scan`.
+4. Show the summary to the user.
+5. `propose_change` to add definitions, synonyms and mappings.
+6. `submit_proposal`.
+
+A second prompt, `explain_table(asset)`, explains a table in plain language using
+`get_asset_context` and `explain_concept`. Running a scan again proposes nothing twice: concepts
+that already exist or are pending show up as matches or as "already proposed" warnings. A scan
+that extends an open proposal (first `customers`, then `customers` and `orders`) proposes the new
+concepts; relations to a concept that is still pending are dropped with the warning "depends on
+Customer pending in proposal …; propose again after it is applied".
+
+**Ownership.** Only the principal that created a proposal, or a caller with `lakeloom:admin`, can
+change it (`propose_change`, `propose_realization` with `proposal_id`), submit it or discard it.
+Anyone else gets `forbidden`. The CLI operator counts as `lakeloom:admin`.
+
+**Confirm tokens (FR-AGT-03).** `create_model` and `discard_proposal` are catalog-changing:
+- A call without `confirm_token` is a dry run. It writes nothing and returns a preview and a
+  token.
+- The token is an HMAC over the tool, the arguments and a digest of the previewed state, and it
+  expires after `LAKELOOM_CONFIRM_TTL_SECONDS` (default 600).
+- The second call must pass the token with the same arguments, from the same principal.
+- A token issued for other arguments, another tool or another principal fails with
+  `validation_error`.
+- If the state has changed since the preview, or the token is replayed after use, the call fails
+  with `conflict`.
+- Production must set `LAKELOOM_CONFIRM_SECRET` (or `_FILE`). Development falls back to a random
+  per-process key.
+
+**Provenance (FR-PRO-03).** Each change set description holds a Markdown summary and a fenced
+`lakeloom-provenance` JSON block with:
+- the scan and proposal ids;
+- the source tables and their versions;
+- the rule ids behind each operation (`R-AGENT` for operations an agent passed; rule ids an
+  agent supplies are replaced);
+- the calling principal, the client and the time.
+
+The same data is kept in Lakeloom's state store, which stays authoritative. Lake comments become
+descriptions verbatim, capped at 4,000 characters, and are always shown quoted as untrusted.
+
+**Audit (NFR-SEC-12).** Every write and every dry run writes one audit record: principal,
+principal type, client, tool, model, proposal and change set ids, and the result. A partial
+result (a proposal part that could not be created) is audited as an error. Records go to
+the `lakeloom.audit` JSON log on stdout and to the `audit_log` table. Arguments are never
+recorded.
+
+In the dev realm, the client `lakeloom-admin-agent` (secret `dev-admin-secret`, dev only)
+receives `lakeloom:read`, `lakeloom:propose` and `lakeloom:admin`. Use it for `create_model`.
+Operators have the same operations on the command line. These commands write their own audit
+records:
+
+```bash
+lakeloom propose scan_01J... --model retail_auto [--table orders]   # prints the summary
+lakeloom proposal prop_01J...                                        # refreshed from OpenMetadata
+lakeloom submit prop_01J...
+```
+
+
+## Review
+
+Only humans decide. `review_proposal(proposal_id, decision, reason?, confirm_token?)` takes
+`approve`, `reject` or `request_changes`, needs scope `lakeloom:review`, and refuses agent
+principals with `forbidden`. An agent asks its human to review with their own sign-in.
+
+| Tool | Scope | What it does |
+| --- | --- | --- |
+| `list_pending_reviews` | `lakeloom:review` | Lists `submitted` and `apply_failed` proposals awaiting you, grouped by model and data product (the lake `catalog.schema` of the tables), without your own proposals. Paginated with `cursor` and `limit`. |
+| `review_proposal` | `lakeloom:review` | Approve applies every change set in OpenMetadata, reject discards the unapplied ones, request changes sends it back with your comment. Destructive. |
+| `rebase_proposal` | `lakeloom:propose` | Rebuilds a proposal against OpenMetadata's current state; it becomes a draft again. |
+
+The prompt `review_with_specialist(model?)` walks a reviewer through the pending proposals in
+plain language and calls `review_proposal` only on their explicit decision.
+
+- **Decisions and confirm tokens.** `approve` and `reject` are two steps: the first call
+  returns a preview and a `confirm_token` and changes nothing; the second passes the token, from
+  the same reviewer, after the human decided. The token is bound to the reviewer, the decision
+  and the proposal's state (including its change sets' OpenMetadata versions). `reject` and
+  `request_changes` need a `reason`. Parts already applied stay in OpenMetadata on reject. A
+  failed approve leaves `apply_failed` with its progress; approving again continues.
+- **Human identity.** The approval reaches OpenMetadata as the reviewer, never as the bot. Lakeloom
+  either exchanges the reviewer's token for an OpenMetadata one (token exchange) or forwards it
+  (`LAKELOOM_OM_FORWARD_USER_TOKEN=true` together with `LAKELOOM_OIDC_TOKEN_EXCHANGE=false`);
+  with neither available it fails closed with a typed error
+  and applies nothing. OpenMetadata must grant the reviewer the apply permissions (role
+  `LakeloomOntologyReviewer`). `request_changes` needs no OpenMetadata identity. See ADR 0012.
+  OpenMetadata records the reviewer: `applicationResult.appliedBy`, the terms' `updatedBy` and
+  the realization tags' `appliedBy` name them. When OpenMetadata rejects the reviewer's
+  token (HTTP 401) the decision fails `forbidden` and the reviewer signs in again.
+- **No self-review.** A reviewer cannot approve, reject or request changes on a proposal they
+  created themselves (`forbidden`, no admin exemption).
+- **Dev stack.** The Lakeloom container uses token exchange as the confidential client
+  `lakeloom` (secret `dev-lakeloom-secret`, DEV ONLY) on the compose-network token endpoint
+  (`LAKELOOM_OIDC_TOKEN_ENDPOINT`), because the issuer host `localhost:8180` is not reachable
+  from inside the container. Forward mode is not usable in the dev stack: OpenMetadata accepts
+  only tokens whose audience includes `openmetadata`, and Lakeloom's tokens do not.
+  `get_server_info` reports the mode as `review_identity`. In the dev realm `alice` can
+  approve, `carol` has `lakeloom:review` but no OpenMetadata reviewer role (refused by
+  OpenMetadata's permission), and `bob` has no review scope.
+- **Per-model access.** `models:` entries in `LAKELOOM_CONFIG_FILE` may set
+  `access.propose_groups` and `access.review_groups`. A reviewer must belong to one of the
+  model's `review_groups` (empty means anyone with the scope), and `list_pending_reviews` only
+  shows such models.
+- **Rebase.** When approval fails because a base version moved (`conflict`, hint
+  `rebase_proposal`), the proposal's creator or an admin runs `rebase_proposal` (CLI:
+  `lakeloom rebase ID`), which refreshes term ids and versions with warnings, then submits again.
+- **CLI.** `lakeloom pending [--model M]` lists the proposals awaiting review. There is no CLI
+  review command: decisions are made by humans through MCP with their own identity.
+
+## Git publishing
+
+With `LAKELOOM_GIT_REMOTE` set, every proposal a human approves and applies in OpenMetadata
+becomes one commit in the ontology repository (ADR 0013). OpenMetadata stays the source of
+truth: Git is a published copy, and a Git problem never fails or undoes an approval.
+
+- **What is committed.** `ontologies/<slug>/ontology.ttl`, `ontology.jsonld` and
+  `ontology.owl` (the same deterministic bytes as `export_model`), `shapes.ttl` and
+  `context.jsonld` (the same bytes as the HTTP API), `ontologies/<slug>/manifest.yaml`
+  (model, glossary, base IRI, versions, source tables), one line appended to
+  `provenance/<slug>.jsonl`, and a regenerated root `README.md`. An empty repository first gets
+  the commit `chore: initialise ontology repository`.
+- **Commit message.** Subject `ontology(<slug>): add_concept x4, ...`, a body of operation keys,
+  then the trailers `Lakeloom-Proposal`, one `Lakeloom-ChangeSet` per applied change set,
+  `Approved-By` (the human reviewer), one `Lake-Source-Version: <table>@<version>` per scanned
+  table, `Lakeloom-Scan`, `Lakeloom-Proposed-By`, `Lakeloom-AI-Generated` and
+  `Lakeloom-Publication`. The author is the Lakeloom service identity
+  (`LAKELOOM_GIT_AUTHOR_NAME`, `LAKELOOM_GIT_AUTHOR_EMAIL`).
+- **Modes.** `LAKELOOM_GIT_MODE=pull_request` (the default) pushes the branch
+  `lakeloom/<slug>/<proposal-id>` and opens a pull request (an open one for that branch is
+  reused); `direct` commits on `LAKELOOM_GIT_BRANCH` (default `main`) and pushes. Each pull
+  request branch starts from the target tip and rewrites `README.md` and the model's
+  `manifest.yaml` and appends to `provenance/<slug>.jsonl`, so two open Lakeloom pull requests
+  conflict (on `README.md` even across models): merge or close one before the next approval, or
+  resolve the conflict keeping both provenance lines. A model can override the default in
+  `LAKELOOM_CONFIG_FILE`:
+
+  ```yaml
+  models:
+    - name: retail
+      git:
+        mode: direct   # or pull_request
+  ```
+
+  Pull requests need a forge: `LAKELOOM_FORGE` (`github` default, `gitlab`, `gitea`, `none`)
+  and optionally `LAKELOOM_FORGE_API_URL` (else derived from the remote). `pull_request` with
+  `LAKELOOM_FORGE=none` is a startup error. Only Gitea is live-tested.
+- **Credentials.** HTTPS: `LAKELOOM_GIT_TOKEN` (or `LAKELOOM_GIT_TOKEN_FILE`) with
+  `LAKELOOM_GIT_USERNAME` (default `x-access-token`); git gets them through a `GIT_ASKPASS`
+  helper, never in arguments or the URL, and the forge API uses the same token. SSH:
+  `LAKELOOM_GIT_SSH_KEY_FILE` and `LAKELOOM_GIT_SSH_KNOWN_HOSTS_FILE` (without it, unknown hosts
+  are accepted on first use, with a warning). Git runs with no system or global config and no
+  credential helper. `LAKELOOM_GIT_REMOTE` must not carry a password or token
+  (`https://user:TOKEN@host/...` is a startup error; a user name alone, as in
+  `git@host:owner/repo.git`, is fine), and any user info in it is redacted everywhere.
+- **Queue and retry.** The approval stores a snapshot in the state store (the outbox; queued
+  before anything is exported, so `Git: not queued` appears only when that store failed and an
+  operator must re-publish the proposal) and
+  waits up to `LAKELOOM_GIT_PUBLISH_TIMEOUT_SECONDS` (default 20) for the commit. The
+  `review_proposal` text then ends with `Git: committed <sha> to <branch>`,
+  `Git: pull request <url>`, `Git: queued` (retried automatically) or `Git: blocked`, and its
+  structured `publication` has `id`, `status`, `commit`, `branch` and `pr_url` (`get_proposal`
+  shows it too). Publications of one repository are committed strictly in order; transient
+  failures (network, timeouts, a push rejected after three re-renders) are retried every
+  `LAKELOOM_GIT_RETRY_INTERVAL_SECONDS` (default 60) with backoff up to one hour; permanent ones
+  (authentication, missing repository) block the queue. A retry never commits twice: the
+  remote is searched for the `Lakeloom-Publication` trailer first. `get_server_info` reports
+  `git` (`enabled`, `mode`, `pending`, `blocked`, `last_error`); metrics
+  `lakeloom_git_publications_total{result}` and `lakeloom_git_push_failures_total`.
+- **CLI.** `lakeloom git status` lists the pending and blocked publications with their last
+  error; `lakeloom git retry` requeues the blocked ones and publishes the queue once. Run it
+  while the server is stopped or idle: the queue lock is in-process only.
+- **Dev stack.** The Lakeloom container publishes in `direct` mode to the Gitea repository
+  `lakeloom-admin/ontologies` (<http://localhost:3000/lakeloom-admin/ontologies>) with the
+  Gitea admin's password as token (DEV ONLY); the throwaway model `retail_m2c_pr` uses
+  `pull_request` mode (`deploy/compose/lakeloom-sources.yaml`). The contract tests delete their
+  models from OpenMetadata, close their pull requests and delete their branches, but the
+  direct commits of their throwaway models (`ontologies/retail_m2c/`, `ontologies/retail_m3a/`)
+  stay in the dev repository's history.
+
+## Releases
+
+A release is an annotated Git tag over OpenMetadata's current state of a model (ADR 0015).
+Lakeloom never creates or seals OpenMetadata releases. Releases need Git publishing
+(`LAKELOOM_GIT_REMOTE`).
+
+- **Create.** `create_release(model, version?, bump?, confirm_token?)` needs the scope
+  `lakeloom:publish` and, when the model's `access.publish_groups` is set, one of those groups.
+  Agents may release; only review is human-only. Without `confirm_token` it is a dry run:
+  the version, the bump and its reason, warnings, the CHANGELOG section and a token (valid 10
+  minutes, bound to the caller, the arguments, the model state and the previous release).
+  Call again with the token to release. The CLI is `lakeloom release create <model>
+  [--version X.Y.Z | --bump major|minor|patch] [--yes]`: it prints the plan, and `--yes`
+  confirms it. The CLI keeps its own clone (`<LAKELOOM_DATA_DIR>/git/cli-repo`), separate from
+  the server's, because the repository lock only serialises one process; concurrent pushes
+  still serialise on the remote (a rejected push is re-rendered on the new tip).
+- **Version.** Strict `MAJOR.MINOR.PATCH` (no pre-release or build metadata), tag
+  `<slug>/v<version>`. The first release is `1.0.0`. Later ones are computed from a semantic
+  diff of the previous release's `ontology.ttl` against the current export:
+  - a removed term or a removed structural triple (a range, a `broader`, a restriction) is
+    **major**;
+  - an added term or triple is **minor**;
+  - only labels, definitions and notes changed is **patch**;
+  - no change at all is a `validation_error`.
+
+  `bump` or `version` overrides the computed version, never both, and the result must be
+  higher than every existing release.
+- **What is committed.** One commit directly on `LAKELOOM_GIT_BRANCH`, in both Git modes. It
+  holds the five exports, `manifest.yaml` with `release` and `released_at`, the regenerated
+  `README.md`, and `ontologies/<slug>/CHANGELOG.md` with the new section first, and the stage deliverables
+under `ontologies/<slug>/deliverables/` (glossary, taxonomy, synonyms, deprecations). The section
+  has Added, Changed and Removed terms and the approved proposals since the previous tag.
+  The subject is `release(<slug>): v<version>`, with the trailers `Lakeloom-Release`,
+  `Released-By`, `Lakeloom-Model-Version` and `Lakeloom-Release-Id`. Branch and tag are pushed
+  together (`git push --atomic`). A rejected push is re-rendered on the new tip, at most 3
+  times; other Git failures are returned to the caller. Retrying the same confirmed call is
+  idempotent.
+- **Refused** while the model has a `pending` or `blocked` publication (wait, or
+  `lakeloom git retry`), when the tag already exists, or when nothing changed.
+- **Read a release.** `list_releases(model)` and `lakeloom release list <model>` list the
+  releases, highest first. `diff_releases(model, from_version, to_version="latest")` compares
+  two versions term by term (`from_version` must be a release, not `latest`). `export_model(model, format, version=)` exports one version.
+  Over HTTP: `GET /v1/models/{slug}/versions` (JSON: `latest` first, then each release with
+  tag, commit, date and links), `GET /v1/models/{slug}/versions/{version}`, and `?version=` on
+  the model, `/shapes` and `/context.jsonld`. The MCP resources take `?version=` too. A
+  release is served from its tag, so tags made outside Lakeloom count as well; the tags are
+  refreshed from the remote at most every 30 s (pruned: a tag deleted on the remote disappears),
+  and a tag that is only local is never listed. Vocabulary IRIs (SKOS, OWL, RDF(S), XSD, the
+  OpenMetadata ontology) are never counted as release terms. Release
+  artefacts carry `Link`s to the tag and commit web pages. The web base is
+  `LAKELOOM_GIT_WEB_URL` (user info, query and fragment dropped), else derived from the
+  remote; GitHub, GitLab and Gitea paths are
+  supported, and there are no links with `LAKELOOM_FORGE=none`.
+- **Triple-store sink (optional, off by default).** With `LAKELOOM_TRIPLESTORE_ENABLED=true`
+  and `LAKELOOM_TRIPLESTORE_URL` (a Graph Store endpoint such as
+  `http://fuseki:3030/lakeloom/data`), each release is pushed with Graph Store HTTP `PUT`s:
+  - the release to `<base-iri>release/<version>`;
+  - the same to `<base-iri>latest`, for the highest release only;
+  - the shapes to `<base-iri>shapes` (`LAKELOOM_TRIPLESTORE_SHAPES`, default true), for the
+    highest release only.
+
+  A `/` is inserted between the base IRI and the suffix when the base IRI does not end in `/`
+  or `#`.
+
+  Credentials are `LAKELOOM_TRIPLESTORE_USERNAME` and `LAKELOOM_TRIPLESTORE_PASSWORD` (or
+  `_FILE`). A model opts out with `triplestore: {enabled: false}` in its `models:` entry.
+  Failures are retried with backoff and never block or undo the Git release. After 10
+  attempts or a permanent error the push is `failed`; `lakeloom release sink-retry` requeues
+  it. `get_server_info` reports `features.releases` and `triplestore` (pending, failed, last
+  error).
+- **Dev stack.** The M3b contract test releases the throwaway model `retail_m3b`. It deletes
+  its tags through the Gitea API afterwards, but the release commits stay in the dev
+  repository's history.
+
+## Import, restore and drift
+
+All three only create a **draft** proposal (FR-OM-02). OpenMetadata's own importers are
+never called. Submit the draft with `submit_proposal`; a human reviewer approves it as for
+scans. They need the scope `lakeloom:propose` and the model's `propose_groups`, and they are
+audited. Decisions and OpenMetadata 2.1.0-rc1 limits: ADR 0016.
+
+- **Import a file.** `import_model(model, content, format, mode="merge", base_iri=None)`, or
+  `lakeloom import <model> <file> [--format] [--mode] [--base-iri] [--yes]`.
+  - Formats: `turtle`, `rdfxml` (OWL), `ntriples` or `jsonld`. A SKOS vocabulary is read the
+    same way in any of them.
+  - Lakeloom reads concepts, attributes, relations, mappings and cardinality axioms from the
+    namespace (`base_iri`, or the one most concepts share) and maps them onto the model by
+    local name.
+  - It proposes the difference. `merge` adds and updates; `replace` also removes what the
+    file lacks.
+  - The first call is a dry run: counts, operations, warnings and a `confirm_token`. The
+    second call, with the token (`--yes` in the CLI), creates the draft.
+  - Limits: 20 MB (`LAKELOOM_IMPORT_MAX_BYTES`, checked before parsing), 200000 triples, 60 s
+    of parsing.
+  - Refused: remote JSON-LD contexts and RDF/XML DTDs. Nothing is ever downloaded.
+- **Restore from Git.** `import_from_git(model, version="latest", from_model=None)`, or
+  `lakeloom import-git <model> [--version] [--from-model] [--yes]`. It reads
+  `ontologies/<from_model>/ontology.ttl` from a release tag, or from the tip of the branch,
+  and imports it in the same two steps.
+  - Create the target model first with `create_model`.
+  - The publication commit carries `Lakeloom-Origin: git` and
+    `Lakeloom-Import: <tag>@<commit>`.
+- **Drift.** `detect_drift(model)`, `lakeloom drift <model> [--no-new-tables]`, or the prompt
+  `drift_check`.
+  - It scans the model's baseline tables again: those of the newest applied scan-based
+    proposal.
+  - It drafts the difference: added columns as `add_attribute`, removed columns and tables
+    as removals, new tables through the scan mapper.
+  - Possible renames are proposed as a remove plus an add.
+  - Comment changes are only reported, because rc1 cannot edit attribute descriptions.
+  - No drift is a report, not an error.
+
+## SPARQL
+
+`sparql_query(model, query, format=None)`, `POST /v1/models/{slug}/sparql` or
+`lakeloom sparql <model> <query-file|->` runs a **read-only** query over the model's glossary,
+answered by OpenMetadata. It needs the scope `lakeloom:read`.
+
+- **What you can query.** Only the glossary is in the dataset: concepts, labels, definitions,
+  `broader`/`narrower`, mappings and links. Attributes, relations and axioms are not; read
+  them with `explain_concept` or the exports.
+- **Allowed forms.** SELECT, ASK, CONSTRUCT and DESCRIBE. Updates, `SERVICE` and
+  `FROM` / `FROM NAMED` are 403 `forbidden` before anything reaches OpenMetadata.
+- **HTTP.** Send the query as `application/sparql-query`, form `query=` or JSON
+  `{"query": …}`. Pick the result format with `Accept`: SPARQL results JSON/XML, CSV and TSV
+  for SELECT and ASK; Turtle, JSON-LD, N-Triples and RDF/XML for CONSTRUCT and DESCRIBE.
+- **Limits.** 20000 characters (`LAKELOOM_SPARQL_MAX_QUERY_CHARS`), 30 s
+  (`LAKELOOM_SPARQL_TIMEOUT_SECONDS`, at most 30), and a 5 MiB result
+  (`LAKELOOM_SPARQL_MAX_RESULT_BYTES`; add `LIMIT`).
+- **Dev stack.** The M3c contract test restores the throwaway model `retail_m3c` from its
+  `1.0.0` tag and checks drift on `retail_m3c_drift`. Drift uses the source `fixture_scratch`,
+  a Delta table the test writes under `.scratch-lake/`. Run `mkdir -p .scratch-lake` before
+  `docker compose up`.
+
+## Reconciliation and scheduled drift
+
+An edit made directly in OpenMetadata, outside a Lakeloom proposal, is found by
+**reconciliation** (FR-GIT-08; ADR 0017). It needs Git publishing.
+
+- **What it compares.** For each model with a `done` Git publication, the OpenMetadata export
+  against `ontology.ttl` at that publication's commit (the semantic view, so ids, prefixes and
+  triple order never count). The result per model is `in_sync`, `drifted` (with the added,
+  changed and removed terms), `skipped` or `error`.
+- **Skips.** A model with a publication in flight (an approval not yet in Git, including one
+  stuck in `apply_failed`) is `skipped` "publication in flight", never `drifted`. So is a model
+  never published, a model deleted in OpenMetadata ("model not found in OpenMetadata"), and one
+  whose baseline commit cannot be found ("baseline commit not found").
+- **Pull request mode.** The baseline is the commit of the model's latest `done` publication,
+  merged or not: an unmerged or closed pull request (`prp_…` or `rec_…`) still counts as the
+  baseline until the model's next publication. When that commit is gone (a squash merge that
+  deleted the branch), the commit on the target branch with the publication's
+  `Lakeloom-Publication` trailer is used, as the publisher does for merged pull requests.
+- **The job.** The server runs it once at start and then every
+  `LAKELOOM_RECONCILE_INTERVAL_SECONDS` (default `3600`, `0` = off), as `system:reconcile`. It
+  only reports (audit row, `lakeloom_reconcile_drifted_models`, `jobs.reconcile` in
+  `get_server_info`) unless `LAKELOOM_RECONCILE_COMMIT=true`.
+- **Commit.** A committing run queues a Git publication (`rec_…`) through the normal outbox,
+  rendered exactly as an applied proposal would be. Its commit says
+  `ontology(<slug>): direct edits in OpenMetadata` and carries
+  `Lakeloom-Origin: om-direct-edit` and `Lakeloom-Reconcile: rec_…`. Reconciliation never writes
+  OpenMetadata and never reverts an edit.
+- **CLI.** `lakeloom reconcile [--model SLUG] [--commit] [--json]`: exit `0` in sync (skips
+  included), `3` drift found, `1` an error; when every model was skipped, a warning goes to
+  stderr (the exit code stays `0`). `--commit` works while the server's reconcile job is on. A
+  committing run, the CLI's or the job's with `LAKELOOM_RECONCILE_COMMIT=true`, holds the
+  short `reconcile-commit` lease (15 minutes, renewed while it runs, released after). So
+  `--commit` is refused (`conflict` "a committing reconciliation is already running; try again
+  later") only while another committing run holds it. A run without `--commit` takes no lease.
+- **Caches.** A direct term edit does not change the glossary's version in OpenMetadata rc1, so
+  version-keyed caches (HTTP `ETag`) can show the old state until their TTL
+  (`LAKELOOM_MODEL_CACHE_TTL_SECONDS`).
+- **Scheduled drift.** `LAKELOOM_DRIFT_INTERVAL_SECONDS` (default `0`, off; `300`–`604800`)
+  runs the drift check of every model with an applied scan as `system:drift`. It only reports
+  (`lakeloom_drift_tables{model}`, `jobs.drift` in `get_server_info`, a log line); it never
+  drafts a proposal. Every run scans the lake and stores fresh scan records; it writes no
+  audit row.
+
+## Rate limits
+
+Every MCP `tools/call` and `resources/read` and every `/v1` request takes a token from the caller's bucket
+(NFR-SEC-16). One bucket per principal (type and subject), shared by MCP and HTTP:
+`LAKELOOM_RATE_LIMIT_BURST` (default `60`) is its size and `LAKELOOM_RATE_LIMIT_PER_MINUTE`
+(default `300`, `0` = off) its refill. Over the limit, a tool returns the error `rate_limited`
+with a "retry after <n> s" hint (a resource read, an MCP error with the same `rate_limited`
+data and `retry_after`) and HTTP returns `429` with `Retry-After`. Health, metrics,
+the protected-resource metadata, MCP `initialize` and the `*/list` calls are not limited.
+The count is `lakeloom_rate_limited_total{surface}`.
+
+## Running more than one replica
+
+Background jobs (the Git outbox `git-publisher`, `triplestore-sink`, `reconcile`,
+`drift-schedule`) take a lease in the state store, so each runs on one replica at a time. The
+lease is renewed while a run lasts; a replica that loses it cancels its run. When a replica dies,
+another one picks up its jobs after at most one lease TTL (`max(3 × interval, 60 s)`) plus one
+job interval. A graceful shutdown releases the leases, but the next replica still waits up to one
+interval before its next attempt.
+`get_server_info` shows the jobs of the replica that answers (`jobs`).
+
+- Use the **PostgreSQL** state store: SQLite is single-replica only.
+- **Never share `LAKELOOM_DATA_DIR`** between replicas. The Git working copy at
+  `<data_dir>/git/repo` is guarded in-process only, so each replica needs its own data
+  directory (its own volume).
+- Set **`LAKELOOM_MCP_STATELESS=true`** or route each client to one replica (sticky
+  sessions). An MCP session is bound to the principal that opened it and lives in one
+  replica's memory; another principal, or another replica, answers `404` "unknown MCP session".
+- **Rate limits are per replica**: N replicas admit up to N times the configured rate.
+- Keep the replicas' clocks in sync (NTP): lease expiry uses each replica's clock.
+- **Shutdown.** `LAKELOOM_SHUTDOWN_TIMEOUT_SECONDS` (default `30`) is both the time in-flight
+  requests get and the time a running job tick then gets, so a stop can take up to twice that;
+  leases are released on the way out. Queued publications stay in the store.
+- Not shared across replicas yet (M4a backlog): the per-model proposal lock, and releases and
+  imports, which are serialised per process (the Git remote rejects the losing push).
+
+## Stage deliverables
+
+Every pipeline stage hands out a file people and ordinary tools can use, without RDF, a
+triple store or Git, and long before the model is a full ontology. All are read-only
+(`lakeloom:read`) and render the effective model, which includes the approved scope notes,
+history notes and deprecations.
+
+| Stage | Tool | Formats | Content |
+| --- | --- | --- | --- |
+| 1 Vocabulary | `export_glossary` | `markdown`, `csv` | Business glossary (term, definition, synonyms, scope notes, deprecated terms and their replacement), plus a quality score in `structured.quality` |
+| 2 MAP | `export_data_dictionary` | `markdown`, `csv` | Columns of a scan (`scan_id`, default the newest) with type, business term and definition; unmapped columns marked |
+| 3 Taxonomy | `export_taxonomy` | `markdown`, `mermaid`, `csv` | The broad-to-narrow tree |
+| 4 Thesaurus | `export_synonyms` | `solr`, `csv`, `deprecations` | Solr/Elasticsearch/OpenSearch synonym rules (`old => new` for deprecated terms), synonym list, deprecation map |
+| 4 Thesaurus | `expand_query` | — | The terms a text names, with synonyms, narrower (`depth`) and related terms, for search and RAG |
+
+`get_next_steps` lists each deliverable as `ready`, `partial` or `unavailable`, with the
+reason. The files are also MCP resources and HTTP routes (see below), with `?version=` for
+a release. Every release stores the glossary, taxonomy, synonym and deprecation files under
+`ontologies/<slug>/deliverables/`. The data dictionary depends on a scan and is always
+rendered live. In Markdown, untrusted text is folded to one line and escaped. CSV keeps the
+exact text, quoted per RFC 4180. See the
+[guide chapter](guide/concepts/deliverables.md).
+
+## Surfaces overview
+
+| Capability | MCP tool | MCP resource | HTTP route |
+| --- | --- | --- | --- |
+| List models | `list_models` | `lakeloom://models` | `GET /v1/models` |
+| Model summary | `get_model` | | none (`GET /v1/models` lists summaries) |
+| Versions | `list_releases`, `diff_releases`, `export_model(version=)` | `?version=` on ontology, shapes, context | `GET /v1/models/{slug}/versions`, `GET /v1/models/{slug}/versions/{version}`, `?version=` |
+| Release | `create_release` | | none (CLI `lakeloom release create`) |
+| Import and restore | `import_model`, `import_from_git` | | none (CLI `lakeloom import`, `lakeloom import-git`) |
+| Drift | `detect_drift`, prompt `drift_check` | | none (CLI `lakeloom drift`) |
+| SPARQL | `sparql_query` | | `POST /v1/models/{slug}/sparql` |
+| Reconciliation | | | none (CLI `lakeloom reconcile`; job `reconcile`) |
+| Ontology export | `export_model` | `lakeloom://models/{slug}/ontology.{ttl,jsonld,owl,nt}` | `GET /v1/models/{slug}` (`Accept`) |
+| JSON-LD context | | `lakeloom://models/{slug}/context.jsonld` | `GET /v1/models/{slug}/context.jsonld` |
+| SHACL shapes | | `lakeloom://models/{slug}/shapes.ttl` | `GET /v1/models/{slug}/shapes` (`Accept`) |
+| Model validation | `validate_model` | | none (CLI `lakeloom validate`) |
+| Stage deliverables | `export_glossary`, `export_data_dictionary`, `export_taxonomy`, `export_synonyms` | `lakeloom://models/{slug}/deliverables/{filename}` | `GET /v1/models/{slug}/deliverables/{filename}` |
+| Query expansion | `expand_query` | | none |
+| Concept lookup | `explain_concept`, `find_concepts` | | `GET /v1/concepts/{concept}` (IRI, FQN, id or name, percent-encoded) |
+| Asset context | `get_asset_context` | `lakeloom://assets/{fqn}/context.md` | `GET /v1/assets/{fqn}/context` |
+
+## HTTP API
+
+A read-only HTTP API serves the same artefacts to non-MCP clients. Every route is a `GET` (but the SPARQL `POST`), needs a
+bearer token with `lakeloom:read` (`401` without a token, `403` without the scope) and is described
+in [`docs/api/openapi.json`](api/openapi.json) (also served, behind auth, at `/openapi.json`;
+regenerate with `uv run python scripts/gen_openapi.py`).
+
+| Route | Representations (first is the default) |
+| --- | --- |
+| `/v1/models` (`cursor`, `limit` 1-200) | `application/json` |
+| `/v1/models/{slug}`, `/v1/models/{slug}/versions/{version}` | `text/turtle`, `application/ld+json`, `application/rdf+xml`, `application/n-triples` |
+| `/v1/models/{slug}/versions` | `application/json` |
+| `/v1/models/{slug}/shapes` | `text/turtle`, `application/ld+json`, `application/n-triples` |
+| `/v1/models/{slug}/context.jsonld` | `application/ld+json` (the full context) |
+| `/v1/models/{slug}/deliverables/{filename}` (`scan_id` for the data dictionary) | the file's own type: `text/markdown` (`.md`), `text/csv` (`.csv`), `text/plain` (`.txt`, `.mmd`) |
+| `/v1/concepts/{iri-or-fqn-or-id-or-name}` | `text/markdown`, `application/json` |
+| `/v1/assets/{fqn}/context` (`max_tokens`) | `text/markdown`, `application/json`, `application/ld+json` |
+| `POST /v1/models/{slug}/sparql` | SELECT/ASK: `application/sparql-results+json`, `application/sparql-results+xml`, `text/csv`, `text/tab-separated-values`; CONSTRUCT/DESCRIBE: `text/turtle`, `application/ld+json`, `application/n-triples`, `application/rdf+xml` |
+
+Pick the representation with `Accept` (q-values are honoured; no `Accept` or `*/*` gives the
+default; an unsupported type gives `406` listing the supported ones). IRIs and FQNs in paths may be
+percent-encoded. A version is `latest` or a release `MAJOR.MINOR.PATCH` (see Releases); an unknown or
+malformed one is `404`.
+
+Every `200` carries a strong `ETag` (`"sha256:<hex of the body>"`), `Last-Modified` (the
+OpenMetadata `updatedAt` of the glossary or table, never earlier than the model load; for a
+release, the tag date), a `Link`
+header pointing at the OpenMetadata entity (`rel="via"`; a release links its Git tag and commit instead, and
+`latest` adds the commit of the last Git publication as `rel="related"`),
+`Vary: Accept` and `Cache-Control: private, max-age=0, must-revalidate`. Send `If-None-Match` to get
+`304` with no body. Errors are JSON, `{"error": {"code", "message", "hint"}}`, with `404`
+`not_found`, `403` `forbidden`, `400` `validation_error`, `429` `rate_limited` (with
+`Retry-After`), `503` `upstream_unavailable`.
+
+## MCP resources
+
+The same artefacts are MCP resources, byte-identical to the HTTP API for the same representation
+and readable with the `lakeloom:read` scope (`forbidden` without it):
+
+| Resource | Content |
+| --- | --- |
+| `lakeloom://models` | `application/json`, the model list |
+| `lakeloom://models/{slug}/ontology.{ext}` | `ttl` `text/turtle`, `jsonld` `application/ld+json`, `owl` `application/rdf+xml`, `nt` `application/n-triples` |
+| `lakeloom://models/{slug}/shapes.ttl` | `text/turtle`, the SHACL shapes |
+| `lakeloom://models/{slug}/context.jsonld` | `application/ld+json`, the full JSON-LD context |
+| `lakeloom://models/{slug}/deliverables/{filename}` | a stage deliverable: `glossary.md`/`.csv`, `data-dictionary.md`/`.csv`, `taxonomy.md`/`.mmd`/`.csv`, `synonyms.txt`/`.csv`, `deprecations.csv` |
+| `lakeloom://assets/{fqn}/context.md` | `text/markdown`; percent-encode the table FQN |
+
+`resources/list` names `lakeloom://models` and, for up to 100 models, their ontology, shapes and
+context URIs; `resources/templates/list` gives the parameterised forms. Append `?version=latest`
+to pin, or `?version=1.0.0` to read a release (ontology, shapes and context only). Errors are
+MCP errors whose `data` is `{"error": {"code", "message", "hint"}}`: `not_found` and
+`validation_error` (for example an unknown `ext`, which lists `ttl, jsonld, owl, nt`) use the
+invalid-params code, the rest the internal-error code.
+
+## Optional RDF store
+
+```bash
+RDF_ENABLED=true docker compose -f deploy/compose/docker-compose.yml --profile rdf up -d --wait
+```
+
+Point the release sink at it with `LAKELOOM_TRIPLESTORE_ENABLED=true` and
+`LAKELOOM_TRIPLESTORE_URL` (see Releases). The sink is not live-tested yet.
+
+Stop the stack and delete its data with `docker compose -f deploy/compose/docker-compose.yml down -v`.
+
+For development setup see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Observability
+
+- **Prometheus**: `GET /metrics` (no auth) always serves `lakeloom_tool_calls_total`, `lakeloom_resource_reads_total`, `lakeloom_om_request_seconds`, `lakeloom_scan_duration_seconds` and `lakeloom_http_requests_total`; since M4a also `lakeloom_rate_limited_total{surface}`, `lakeloom_reconcile_drifted_models`, `lakeloom_reconcile_runs_total{outcome}` and `lakeloom_drift_tables{model}`.
+- **OpenTelemetry (OTLP)**: off unless `LAKELOOM_OTEL_EXPORTER_OTLP_ENDPOINT` is set (for example `http://collector:4318`). Then traces go to `{endpoint}/v1/traces` and metrics to `{endpoint}/v1/metrics` over OTLP/HTTP, with `service.name=lakeloom` and the Lakeloom version. When unset, no exporter or thread is created. Works for both the HTTP and stdio transports.
+- **Spans**: `HTTP <method> <route>` (not for `/healthz`, `/readyz`, `/metrics`), `mcp.tool/<tool>` (tool name, outcome, principal type; never arguments), `mcp.resource` (resource kind and outcome), `om.<operation>` (status code) and `scan` (source, table counts, status). Tokens, headers, URLs and untrusted text are never recorded.
+- **OTel metrics**: `lakeloom.tool_calls`, `lakeloom.resource_reads`, `lakeloom.om.request.duration` (s) and `lakeloom.scan.duration` (s).
+- **Logs** are JSON lines with `request_id`, plus `trace_id` and `span_id` when a span is active.

@@ -1,8 +1,8 @@
 # Operator guide
 
-This guide is for the people who install and run Lakeloom. The project
-[README](../../../README.md) remains the detailed reference for each subsystem; this page puts
-the pieces in order and links to the right section.
+This guide is for the people who install and run Lakeloom. The
+[technical reference](../../technical-reference.md) holds the details of each subsystem.
+This page puts the pieces in order and links to the right section.
 
 ## What you are running
 
@@ -33,17 +33,17 @@ curl localhost:8000/readyz
 ```
 
 Ports, the dev users (`alice`, `bob`, `carol`) and how to get an agent token are in the
-README, under [Quick start](../../../README.md#quick-start). Every credential in the dev stack is
+README, under [Quick start](../../technical-reference.md#development-stack-and-clients). Every credential in the dev stack is
 a public default: never reuse one outside your machine.
 
 ## 2. Connect an assistant
 
 - **Over HTTP:** point any Streamable HTTP MCP client at `https://<host>/mcp` with a bearer
   token from your IdP. See
-  [Call a tool from an agent](../../../README.md#call-a-tool-from-an-agent).
+  [Call a tool from an agent](../../technical-reference.md#call-a-tool-from-an-agent).
 - **Locally over stdio:** run `lakeloom serve --transport stdio`. The client is the
   configured local principal, with the scopes in `LAKELOOM_STDIO_SCOPES`. stdio is disabled
-  in the container image. See [stdio transport](../../../README.md#stdio-transport-local-use).
+  in the container image. See [stdio transport](../../technical-reference.md#stdio-transport-local-use).
 
 Ask the assistant to call `get_server_info` first. It reports:
 - the versions, and whether OpenMetadata is reachable;
@@ -94,13 +94,13 @@ models:
 ```
 
 Reviewers also need the OpenMetadata role `LakeloomOntologyReviewer`. Background:
-[Review](../../../README.md#review) and
+[Review](../../technical-reference.md#review) and
 [ADR 0012](../../decisions/0012-review-and-human-identity.md).
 
 ### Lake sources
 
 Declared under `sources:` in `LAKELOOM_CONFIG_FILE`. Agents can only name a configured
-source. See [Lake sources and scans](../../../README.md#lake-sources-and-scans) for Delta,
+source. See [Lake sources and scans](../../technical-reference.md#lake-sources-and-scans) for Delta,
 Unity Catalog, Snowflake and upstream MCP sources. To check an upstream MCP mapping, run
 `lakeloom sources check NAME`.
 
@@ -119,8 +119,8 @@ Privacy defaults:
 | `LAKELOOM_GIT_TOKEN` or `LAKELOOM_GIT_SSH_KEY_FILE` (+ `_KNOWN_HOSTS_FILE`) | — | Credentials |
 | `LAKELOOM_FORGE`, `LAKELOOM_FORGE_API_URL`, `LAKELOOM_GIT_WEB_URL` | `github` | Pull requests and links |
 
-Details: [Git publishing](../../../README.md#git-publishing) and
-[Releases](../../../README.md#releases).
+Details: [Git publishing](../../technical-reference.md#git-publishing) and
+[Releases](../../technical-reference.md#releases).
 
 ### Triple store (optional)
 
@@ -140,7 +140,7 @@ endpoint). Each release is pushed to these graphs:
 | `LAKELOOM_DRIFT_INTERVAL_SECONDS` | `0` (off) | Re-scans the tables of each model and reports drift. `get_next_steps` shows the result |
 | `LAKELOOM_GIT_RETRY_INTERVAL_SECONDS` | `60` | Retries queued Git publications |
 
-See [Reconciliation and scheduled drift](../../../README.md#reconciliation-and-scheduled-drift).
+See [Reconciliation and scheduled drift](../../technical-reference.md#reconciliation-and-scheduled-drift).
 
 ### Limits
 
@@ -164,7 +164,7 @@ cached for `LAKELOOM_MODEL_CACHE_TTL_SECONDS` (60).
 
 - Use PostgreSQL. Give each replica its own `LAKELOOM_DATA_DIR`. Set
   `LAKELOOM_MCP_STATELESS=true` or use sticky sessions. See
-  [Running more than one replica](../../../README.md#running-more-than-one-replica).
+  [Running more than one replica](../../technical-reference.md#running-more-than-one-replica).
 - Give the OpenMetadata bot, and any upstream MCP source token, only the rights it needs.
   Reviewers act with their own identity.
 - Keep clocks in sync (NTP), because job leases depend on them.
@@ -194,7 +194,7 @@ release, and `?scan_id=` to pick the scan behind the data dictionary.
 - The audit log has one record per write and per dry run, both on the `lakeloom.audit` log
   and in the `audit_log` table. Arguments are never recorded.
 
-See [Observability](../../../README.md#observability).
+See [Observability](../../technical-reference.md#observability).
 
 ## 7. The CLI
 

@@ -44,8 +44,10 @@ be built on ambiguous, uncontrolled terms that break downstream reasoning.
 
 ## 2. Lakeloom's Current Position
 
-Status after the pipeline audit (2026-11-19). Sections 3–8 below remain the design
-reference derived from the book; this table says what is implemented.
+Status after the pipeline audit (2026-11-19). Sections 3–9 below remain the design
+reference derived from the book. The `lakeloom …` CLI commands, modules and "commands to
+add" they mention are **proposals, not implemented features**. This table and the
+[MCP reference](guide/reference/README.md) say what is implemented.
 
 | Stage | Implemented in lakeloom | Still open |
 |-------|-------------------------|------------|
@@ -561,7 +563,7 @@ Connect the lake ontology to external knowledge graphs for enrichment:
 
 ## 9. Pipeline Orchestration
 
-### CLI workflow (extend `cli.py`)
+### CLI workflow (proposed design, not implemented)
 
 A practitioner building an ontology from scratch should run stages in order:
 
@@ -698,7 +700,7 @@ Design every ontology artifact for dual audiences:
 ### M5 (next)
 
 5. **Stage 4 thesaurus mining** – implement `core/thesaurus.py`; foreign-key → RT mining; `lakeloom thesaurus mine` command
-6. **MCP tools for pipeline** – expose `harvest_candidate_terms`, `explain_concept`, `get_coverage_model` as MCP tools
+6. **MCP tools for pipeline** – expose candidate harvesting, concept explanation and the coverage model as MCP tools (delivered as `harvest_vocabulary_candidates`, `explain_concept` and `assess_taxonomy_coverage`)
 7. **Semantic theater detection** – add `audit.py` rules that flag terms without definitions or relationships without provenance
 
 ### M6 (future)
