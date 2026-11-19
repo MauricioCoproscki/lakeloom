@@ -11,7 +11,7 @@ from rdflib.namespace import RDF, SKOS
 from test_tools_semantic import fake_deps, structured, text
 
 from lakeloom.core.callers import Actor
-from lakeloom.core.map_builder import MapIssue, MapReport
+from lakeloom.core.map_profile import MapIssue, MapReport
 from lakeloom.core.model_policy import ModelPolicyEntry
 from lakeloom.server import tools_guide
 from lakeloom.server.mcp_app import create_mcp, create_server_app
@@ -184,14 +184,14 @@ def test_guide_caller_combines_scopes_and_groups() -> None:
 
 async def test_next_steps_registered_read_only(make_deps: DepsFactory) -> None:
     tools = {t.name: t for t in await create_mcp(fake_deps(make_deps)).list_tools()}
-    ann = tools["next_steps"].annotations
+    ann = tools["get_next_steps"].annotations
     assert ann is not None and ann.read_only_hint is True and ann.destructive_hint is False
 
 
 async def test_next_steps_end_to_end(make_deps: DepsFactory, kit: AuthKit) -> None:
     app = create_server_app(fake_deps(make_deps))
     async with mcp_session(app, kit.token(scope="lakeloom:read")) as session:
-        result = await session.call_tool("next_steps", {"model": "retail", "limit": 5})
+        result = await session.call_tool("get_next_steps", {"model": "retail", "limit": 5})
     data = structured(result)
     assert "error" not in data, data
     assert data["model"] == "retail" and data["stage"]
@@ -205,5 +205,5 @@ async def test_next_steps_end_to_end(make_deps: DepsFactory, kit: AuthKit) -> No
 async def test_next_steps_requires_read_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
     app = create_server_app(fake_deps(make_deps))
     async with mcp_session(app, kit.token(scope="lakeloom:propose")) as session:
-        result = await session.call_tool("next_steps", {"model": "retail"})
+        result = await session.call_tool("get_next_steps", {"model": "retail"})
     assert result.is_error and "lakeloom:read" in text(result)

@@ -1,14 +1,17 @@
 """MCP tools for the MAP (Metadata Application Profile) workflow (M5c).
 
 The MAP documents the semantic contract between a physical lake source and an ontology:
-which column/table in the lake is realized by which concept.
+which column/table in the lake is realized by which concept. Lakeloom builds the
+*implementation layer* of the book's MAP (physical element → concept), computed on demand
+from a scan; the canonical layer (elements and obligations), crosswalks and versioned MAP
+documents are not modelled yet.
 
 Three tools:
 
 READ tools (scope ``lakeloom:read``, read_only_hint=True):
-  - ``build_map_from_scan``  — build a MAP profile from a completed scan + model
-  - ``validate_map``         — validate coverage and consistency of an existing MAP
-  - ``export_map``           — export the MAP as Markdown or JSON
+  - ``build_map``    — build a MAP profile from a completed scan + model
+  - ``validate_map`` — validate coverage and consistency of the MAP
+  - ``export_map``   — export the MAP as Markdown or JSON
 
 All tools are read-only: they query but never modify the model or scan store.
 """
@@ -22,7 +25,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, Field
 
-from lakeloom.core.map_builder import (
+from lakeloom.core.map_profile import (
     MapProfile,
     MapReport,
     build_map,
@@ -50,7 +53,9 @@ _SCOPE_READ = "Requires scope `lakeloom:read`."
 BUILD_MAP_DESCRIPTION = f"""\
 Build a MAP (Metadata Application Profile) from a completed lake scan and a semantic \
 model.  The MAP shows, for each scanned table and column, which concept from the ontology \
-realizes it — the semantic contract between the physical source and the model.
+realizes it — the semantic contract between the physical source and the model. This \
+is the implementation layer of a MAP (physical element → concept), computed from the scan \
+on each call; it is not stored or versioned.
 
 Steps performed:
 1. Retrieve the scan record (table + column schema).
@@ -156,10 +161,10 @@ def register_map_tools(mcp: MCPServer, deps: AppDeps) -> None:
     """Register the three MAP tools on ``mcp``."""
 
     # ------------------------------------------------------------------
-    # READ: build_map_from_scan
+    # READ: build_map_tool
     # ------------------------------------------------------------------
 
-    async def build_map_from_scan(
+    async def build_map_tool(
         scan_id: Annotated[
             str,
             Field(
@@ -192,11 +197,11 @@ def register_map_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 structured_content=data.model_dump(mode="json"),
             )
 
-        return await guarded("build_map_from_scan", ctx, READ_SCOPE, body)
+        return await guarded("build_map", ctx, READ_SCOPE, body)
 
     mcp.add_tool(
-        build_map_from_scan,
-        name="build_map_from_scan",
+        build_map_tool,
+        name="build_map",
         title="Build MAP from scan",
         description=BUILD_MAP_DESCRIPTION,
         annotations=READ_ONLY,

@@ -6,7 +6,7 @@ The coverage model answers the four questions from Stage 3 of the Ontology Pipel
   3. At what granularity (coarse/medium/fine)?
   4. What is explicitly excluded?
 
-:func:`assess_coverage` compares the declared coverage model against the actual taxonomy
+:func:`assess_taxonomy_coverage` compares the declared coverage model against the actual taxonomy
 in the model's RDF graph and returns a :class:`CoverageReport` listing matched topics,
 gaps, and depth violations.
 
@@ -29,7 +29,7 @@ __all__ = [
     "CoverageReport",
     "DepthViolation",
     "TopicMatch",
-    "assess_coverage",
+    "assess_taxonomy_coverage",
     "hierarchy_depth",
 ]
 
@@ -97,7 +97,7 @@ class DepthViolation:
 
 @dataclass
 class CoverageReport:
-    """Result of :func:`assess_coverage`."""
+    """Result of :func:`assess_taxonomy_coverage`."""
 
     total_concepts: int = 0
     actual_max_depth: int = 0
@@ -226,7 +226,7 @@ def _simple_match_score(topic: str, label: str) -> float:
     return len(intersection) / len(union)
 
 
-def assess_coverage(
+def assess_taxonomy_coverage(
     graph: Graph,
     model: CoverageModel,
 ) -> CoverageReport:

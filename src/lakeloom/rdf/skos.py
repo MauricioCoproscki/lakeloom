@@ -6,12 +6,12 @@ child has no ``skos:broader`` at all, a ``skos:broader`` is derived from it.
 
 M6c: ``SKOS_PREDICATES`` now includes the annotation and editorial note predicates
 (``scopeNote``, ``historyNote``, ``changeNote``, ``editorialNote``, ``hiddenLabel``) and
-``owl:deprecated``, so they are preserved when the SKOS projection is built from an
-enriched graph (see :mod:`lakeloom.rdf.skos_enrichment`).
+``owl:deprecated`` (with ``dct:isReplacedBy``), so they are preserved when the SKOS
+projection is built from an enriched graph (see :mod:`lakeloom.rdf.skos_enrichment`).
 """
 
 from rdflib import OWL, RDF, RDFS, Graph, URIRef
-from rdflib.namespace import SKOS
+from rdflib.namespace import DCTERMS, SKOS
 
 __all__ = ["SKOS_PREDICATES", "skos_projection"]
 
@@ -36,8 +36,10 @@ SKOS_PREDICATES: frozenset[URIRef] = frozenset(
         SKOS.inScheme,
         SKOS.topConceptOf,
         SKOS.hasTopConcept,
-        # owl:deprecated is not a SKOS predicate but belongs in the SKOS export.
+        # owl:deprecated and dct:isReplacedBy are not SKOS predicates but carry a
+        # deprecation and its successor, which belong in the SKOS export.
         OWL.deprecated,
+        DCTERMS.isReplacedBy,
     }
 )
 _SKOS_TYPES: frozenset[URIRef] = frozenset({SKOS.Concept, SKOS.ConceptScheme})

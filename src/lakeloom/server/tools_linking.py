@@ -32,16 +32,16 @@ from lakeloom.core.entity_linking import (
 from lakeloom.rdf.skos_enrichment import concept_labels
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
+from lakeloom.server.tools_authoring import proposal_result
 from lakeloom.server.tools_common import (
     PROPOSE_SCOPE,
     READ_SCOPE,
     client_name,
     guarded,
 )
-from lakeloom.server.tools_cv import proposal_result
 from lakeloom.server.tools_proposals import ProposalResult
 
-__all__ = ["register_entity_tools"]
+__all__ = ["register_linking_tools"]
 
 _log = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ class ProposeMappingsResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def register_entity_tools(mcp: MCPServer, deps: AppDeps) -> None:
+def register_linking_tools(mcp: MCPServer, deps: AppDeps) -> None:
     """Register the entity-linking tools on ``mcp``."""
 
     # ------------------------------------------------------------------

@@ -2,9 +2,8 @@
 
 Tests focus on:
 - Tool registration and read_only annotations
-- ``export_skos``: returns Turtle + structured stats
-- ``skos_annotation_stats``: returns annotation counts
-- ``skos_deprecated_list``: returns deprecated concepts
+- ``get_annotation_stats``: returns annotation counts
+- ``list_deprecated_concepts``: returns deprecated concepts
 - Scope guards: all tools require lakeloom:read
 - Unknown model → not_found error
 """
@@ -14,13 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 from kit import AuthKit, DepsFactory, mcp_session
-from test_tools_semantic import fake_deps, structured, text
+from test_tools_semantic import fake_deps, structured
 
 from lakeloom.server.mcp_app import create_mcp, create_server_app
 
 READ = "lakeloom:read"
 
-SKOS_TOOLS = {"export_skos", "skos_annotation_stats", "skos_deprecated_list"}
+SKOS_TOOLS = {"get_annotation_stats", "list_deprecated_concepts"}
 
 
 # ---------------------------------------------------------------------------
@@ -60,53 +59,14 @@ async def test_skos_tools_read_only(make_deps: DepsFactory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# export_skos
-# ---------------------------------------------------------------------------
-
-
-async def test_export_skos_returns_turtle(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "export_skos", {"model": "retail"}, scope=READ)
-    data = structured(result)
-    assert "error" not in data, data.get("error")
-    assert data["model"] == "retail"
-    assert isinstance(data["concepts"], int)
-    assert isinstance(data["scope_notes"], int)
-    assert isinstance(data["history_notes"], int)
-    assert isinstance(data["deprecated"], int)
-    assert data["turtle_bytes"] > 0
-    # Text content should be valid Turtle (starts with @prefix or has triples)
-    turtle = text(result)
-    assert len(turtle) > 0
-
-
-async def test_export_skos_text_is_turtle_format(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "export_skos", {"model": "retail"}, scope=READ)
-    turtle = text(result)
-    # rdflib Turtle output uses @prefix declarations
-    assert "@prefix" in turtle or "skos:" in turtle
-
-
-async def test_export_skos_unknown_model(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "export_skos", {"model": "no-such-model"}, scope=READ)
-    data = structured(result)
-    assert data["error"]["code"] == "not_found"
-
-
-async def test_export_skos_requires_read_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "export_skos", {"model": "retail"}, scope=None)
-    data = structured(result)
-    assert data["error"]["code"] == "forbidden"
-
-
-# ---------------------------------------------------------------------------
-# skos_annotation_stats
+# get_annotation_stats
 # ---------------------------------------------------------------------------
 
 
 async def test_skos_annotation_stats_returns_structured(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
-    result = await call(make_deps, kit, "skos_annotation_stats", {"model": "retail"}, scope=READ)
+    result = await call(make_deps, kit, "get_annotation_stats", {"model": "retail"}, scope=READ)
     data = structured(result)
     assert "error" not in data, data.get("error")
     assert data["model"] == "retail"
@@ -122,7 +82,7 @@ async def test_skos_annotation_stats_returns_structured(
 
 async def test_skos_annotation_stats_unknown_model(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call(
-        make_deps, kit, "skos_annotation_stats", {"model": "no-such-model"}, scope=READ
+        make_deps, kit, "get_annotation_stats", {"model": "no-such-model"}, scope=READ
     )
     data = structured(result)
     assert data["error"]["code"] == "not_found"
@@ -131,20 +91,20 @@ async def test_skos_annotation_stats_unknown_model(make_deps: DepsFactory, kit: 
 async def test_skos_annotation_stats_requires_read_scope(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
-    result = await call(make_deps, kit, "skos_annotation_stats", {"model": "retail"}, scope=None)
+    result = await call(make_deps, kit, "get_annotation_stats", {"model": "retail"}, scope=None)
     data = structured(result)
     assert data["error"]["code"] == "forbidden"
 
 
 # ---------------------------------------------------------------------------
-# skos_deprecated_list
+# list_deprecated_concepts
 # ---------------------------------------------------------------------------
 
 
 async def test_skos_deprecated_list_returns_structured(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
-    result = await call(make_deps, kit, "skos_deprecated_list", {"model": "retail"}, scope=READ)
+    result = await call(make_deps, kit, "list_deprecated_concepts", {"model": "retail"}, scope=READ)
     data = structured(result)
     assert "error" not in data, data.get("error")
     assert data["model"] == "retail"
@@ -155,7 +115,7 @@ async def test_skos_deprecated_list_returns_structured(
 
 async def test_skos_deprecated_list_unknown_model(make_deps: DepsFactory, kit: AuthKit) -> None:
     result = await call(
-        make_deps, kit, "skos_deprecated_list", {"model": "no-such-model"}, scope=READ
+        make_deps, kit, "list_deprecated_concepts", {"model": "no-such-model"}, scope=READ
     )
     data = structured(result)
     assert data["error"]["code"] == "not_found"
@@ -164,13 +124,13 @@ async def test_skos_deprecated_list_unknown_model(make_deps: DepsFactory, kit: A
 async def test_skos_deprecated_list_requires_read_scope(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
-    result = await call(make_deps, kit, "skos_deprecated_list", {"model": "retail"}, scope=None)
+    result = await call(make_deps, kit, "list_deprecated_concepts", {"model": "retail"}, scope=None)
     data = structured(result)
     assert data["error"]["code"] == "forbidden"
 
 
 async def test_skos_deprecated_list_sorted_by_label(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "skos_deprecated_list", {"model": "retail"}, scope=READ)
+    result = await call(make_deps, kit, "list_deprecated_concepts", {"model": "retail"}, scope=READ)
     data = structured(result)
     labels = [e["pref_label"] for e in data["concepts"]]
     assert labels == sorted(labels)

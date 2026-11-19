@@ -9,7 +9,7 @@ Supported external KGs:
   - ``"schema.org"`` — schema.org type hierarchy via its JSON-LD context
 
 This module is I/O-free: all network functions accept a ``fetch`` callable so that
-tests can inject a fake HTTP client.  The MCP tools in ``server/tools_entity.py``
+tests can inject a fake HTTP client.  The MCP tools in ``server/tools_linking.py``
 pass ``aiohttp`` or ``httpx``.
 
 Terminology:

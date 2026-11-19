@@ -2,7 +2,7 @@
 
 Tests focus on:
 - Tool registration and read_only annotations
-- ``build_map_from_scan``: builds a MAP and returns structured content
+- ``build_map``: builds a MAP and returns structured content
 - ``validate_map``: validates coverage and returns a report
 - ``export_map``: exports as markdown or JSON
 - Scope guard: all tools require lakeloom:read
@@ -24,7 +24,7 @@ from lakeloom.state.scans import ScannedTable, ScanRecord
 
 READ = "lakeloom:read"
 
-MAP_TOOLS = {"build_map_from_scan", "validate_map", "export_map"}
+MAP_TOOLS = {"build_map", "validate_map", "export_map"}
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -117,7 +117,7 @@ async def test_map_tools_read_only(make_deps: DepsFactory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# build_map_from_scan
+# build_map
 # ---------------------------------------------------------------------------
 
 
@@ -125,7 +125,7 @@ async def test_build_map_from_scan_returns_profile(make_deps: DepsFactory, kit: 
     result = await call(
         make_deps,
         kit,
-        "build_map_from_scan",
+        "build_map",
         {"scan_id": "scan-1", "model": "retail"},
         scope=READ,
     )
@@ -142,7 +142,7 @@ async def test_build_map_from_scan_unknown_scan(make_deps: DepsFactory, kit: Aut
     result = await call(
         make_deps,
         kit,
-        "build_map_from_scan",
+        "build_map",
         {"scan_id": "no-such-scan", "model": "retail"},
         scope=READ,
     )
@@ -156,7 +156,7 @@ async def test_build_map_from_scan_requires_read_scope(
     result = await call(
         make_deps,
         kit,
-        "build_map_from_scan",
+        "build_map",
         {"scan_id": "scan-1", "model": "retail"},
         scope=None,
     )

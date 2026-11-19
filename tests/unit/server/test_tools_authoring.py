@@ -1,10 +1,10 @@
-"""MCP tools for CV/Thesaurus/Taxonomy authoring (M5b).
+"""MCP tools for direct authoring: vocabulary, taxonomy and thesaurus (M5b).
 
 Tests focus on:
 - Tool registration, annotations and scope guards (FR-AGT-06)
-- ``list_cv_candidates``: tag normalisation
-- ``validate_thesaurus``: delegates to thesaurus_builder (integration with SKOS graph)
-- ``propose_add_term``: creates a ``direct``-origin draft proposal
+- ``harvest_vocabulary_candidates``: tag normalisation
+- ``validate_thesaurus``: delegates to core.thesaurus (integration with SKOS graph)
+- ``propose_add_concepts``: creates a ``direct``-origin draft proposal
 - Scope guard: read tools require lakeloom:read; write tools require lakeloom:propose
 """
 
@@ -24,15 +24,15 @@ READ = "lakeloom:read"
 PROPOSE = "lakeloom:propose"
 
 READ_TOOLS = {
-    "list_cv_candidates",
+    "harvest_vocabulary_candidates",
     "validate_thesaurus",
     "suggest_related_terms",
     "assess_taxonomy_coverage",
 }
 WRITE_TOOLS = {
-    "propose_add_term",
+    "propose_add_concepts",
     "propose_add_hierarchy",
-    "propose_deprecate",
+    "propose_deprecate_concept_concept",
     "propose_add_scope_note",
 }
 ALL_CV_TOOLS = READ_TOOLS | WRITE_TOOLS
@@ -117,7 +117,7 @@ async def test_write_tools_are_not_read_only(make_deps: DepsFactory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# list_cv_candidates
+# harvest_vocabulary_candidates
 # ---------------------------------------------------------------------------
 
 
@@ -125,7 +125,7 @@ async def test_list_cv_candidates_normalises_tags(make_deps: DepsFactory, kit: A
     result = await call_read(
         make_deps,
         kit,
-        "list_cv_candidates",
+        "harvest_vocabulary_candidates",
         {"tags": ["PII.Email", "Domain.Order_Management", "!!!"]},
         scope=READ,
     )
@@ -141,7 +141,7 @@ async def test_list_cv_candidates_frequency_map_sorts(make_deps: DepsFactory, ki
     result = await call_read(
         make_deps,
         kit,
-        "list_cv_candidates",
+        "harvest_vocabulary_candidates",
         {
             "tags": ["PII.Email", "Domain.Order"],
             "frequency_map": {"PII.Email": 5, "Domain.Order": 20},
@@ -157,7 +157,7 @@ async def test_list_cv_candidates_requires_read_scope(make_deps: DepsFactory, ki
     result = await call_read(
         make_deps,
         kit,
-        "list_cv_candidates",
+        "harvest_vocabulary_candidates",
         {"tags": ["PII.Email"]},
         scope=None,  # drops the scope claim
     )
@@ -215,7 +215,7 @@ async def test_assess_taxonomy_coverage(make_deps: DepsFactory, kit: AuthKit) ->
 
 
 # ---------------------------------------------------------------------------
-# propose_add_term
+# propose_add_concepts
 # ---------------------------------------------------------------------------
 
 
@@ -223,7 +223,7 @@ async def test_propose_add_term_creates_draft(make_deps: DepsFactory, kit: AuthK
     result = await call_write(
         make_deps,
         kit,
-        "propose_add_term",
+        "propose_add_concepts",
         {
             "model": "retail",
             "terms": [{"name": "Invoice", "definition": "A billing document."}],
@@ -243,7 +243,7 @@ async def test_propose_add_term_requires_propose_scope(
     result = await call_write(
         make_deps,
         kit,
-        "propose_add_term",
+        "propose_add_concepts",
         {"model": "retail", "terms": [{"name": "Invoice"}]},
         scope=READ,
     )
@@ -255,7 +255,7 @@ async def test_propose_add_term_multiple_terms(make_deps: DepsFactory, kit: Auth
     result = await call_write(
         make_deps,
         kit,
-        "propose_add_term",
+        "propose_add_concepts",
         {
             "model": "retail",
             "terms": [
@@ -370,7 +370,7 @@ async def test_deprecate_resolves_concept_and_successor_fqns(
     make_deps: DepsFactory, kit: AuthKit
 ) -> None:
     args = {"model": "retail", "concept": "OrderDate", "reason": "r", "successor": "MonetaryAmount"}
-    result, rec = await call_recorded(make_deps, kit, "propose_deprecate", args)
+    result, rec = await call_recorded(make_deps, kit, "propose_deprecate_concept_concept", args)
     assert "error" not in structured(result), structured(result)
     (op,), kw = rec.calls[0]
     assert (op.fqn, op.successor) == ("retail.OrderDate", "retail.MonetaryAmount")
@@ -382,11 +382,11 @@ async def test_deprecate_rejects_unknown_successor_and_self(
 ) -> None:
     base = {"model": "retail", "concept": "retail.OrderDate", "reason": "r"}
     result, _ = await call_recorded(
-        make_deps, kit, "propose_deprecate", {**base, "successor": "Nope"}
+        make_deps, kit, "propose_deprecate_concept_concept", {**base, "successor": "Nope"}
     )
     assert structured(result)["error"]["code"] == "not_found"
     result, _ = await call_recorded(
-        make_deps, kit, "propose_deprecate", {**base, "successor": "OrderDate"}
+        make_deps, kit, "propose_deprecate_concept_concept", {**base, "successor": "OrderDate"}
     )
     assert structured(result)["error"]["code"] == "validation_error"
 

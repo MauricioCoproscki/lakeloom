@@ -91,7 +91,7 @@ async def call_suggest(
     **claims: Any,
 ) -> Any:
     # Patch the aiohttp fetch with the fake.
-    import lakeloom.server.tools_entity as te
+    import lakeloom.server.tools_linking as te
 
     original = te._aiohttp_fetch
     te._aiohttp_fetch = _fake_wikidata_fetch  # type: ignore[assignment]

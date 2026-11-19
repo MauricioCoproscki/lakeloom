@@ -335,7 +335,7 @@ def _s8_unmapped(s: ModelState, t: Thresholds, c: Caller) -> list[Step]:
         why=f"Agents cannot explain these columns; they are "
         f"{_ratio(unmapped, s.total_columns):.0%} of the scanned lake.",
         tier=3, impact="high", effort=2, who="propose", reach=unmapped,
-        tool="build_map_from_scan", args=args,
+        tool="build_map", args=args,
         evidence={"unmapped_columns": unmapped, "tables": s.unmapped_tables[:_MAX_LISTED]},
         actionable="propose" in c.can,
     )]  # fmt: skip
@@ -352,7 +352,7 @@ def _s9_coverage(s: ModelState, t: Thresholds, c: Caller) -> list[Step]:
         why=f"Only {ratio:.0%} of the concepts point at data; the rest cannot be used to "
         "find assets.",
         tier=4, impact="medium", effort=2, who="propose", reach=missing,
-        tool="assess_coverage", args={"model": s.model},
+        tool="assess_realization_coverage", args={"model": s.model},
         evidence={"coverage": round(ratio, 3), "unrealized": missing},
         actionable="propose" in c.can,
     )]  # fmt: skip
@@ -384,7 +384,7 @@ def _s11_orphans(s: ModelState, t: Thresholds, c: Caller) -> list[Step]:
         why="These concepts have no broader, narrower or related term, so browsing and "
         "\"include narrower\" searches never reach them.",
         tier=4, impact="medium", effort=2, who="propose", reach=s.orphan_concepts,
-        tool="graph_stats", args={"model": s.model},
+        tool="get_model_stats", args={"model": s.model},
         evidence={"orphans": s.orphan_concepts, "concepts": s.concepts},
         actionable="propose" in c.can,
     )]  # fmt: skip
@@ -408,7 +408,7 @@ def _s12_depth(s: ModelState, t: Thresholds, c: Caller) -> list[Step]:
             "classification with detail."
         ),
         tier=4, impact="medium", effort=3, who="propose", reach=s.concepts,
-        tool="propose_add_hierarchy" if flat else "graph_stats", args={"model": s.model},
+        tool="propose_add_hierarchy" if flat else "get_model_stats", args={"model": s.model},
         evidence={"max_depth": s.max_depth, "concepts": s.concepts},
         actionable="propose" in c.can,
     )]  # fmt: skip

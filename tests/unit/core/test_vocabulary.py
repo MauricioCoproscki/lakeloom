@@ -1,20 +1,9 @@
-"""Unit tests for cv_builder, thesaurus_builder and coverage modules (M5a)."""
+"""Unit tests for the vocabulary, thesaurus and taxonomy core modules (M5a)."""
 
 import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, SKOS
 
-from lakeloom.core.coverage import (
-    CoverageModel,
-    assess_coverage,
-    hierarchy_depth,
-)
-from lakeloom.core.cv_builder import (
-    TermDraft,
-    batch_to_ops,
-    harvest_folksonomy,
-    normalize_term_name,
-)
 from lakeloom.core.operations import (
     AddConcept,
     AddHistoryNote,
@@ -23,12 +12,23 @@ from lakeloom.core.operations import (
     ProposalOperation,
     SetCoverageModel,
 )
-from lakeloom.core.thesaurus_builder import (
+from lakeloom.core.taxonomy import (
+    CoverageModel,
+    assess_taxonomy_coverage,
+    hierarchy_depth,
+)
+from lakeloom.core.thesaurus import (
     IssueLevel,
     suggest_related_from_cooccurrence,
     validate_ansi_z39,
     validate_bt_nt_cycles,
     validate_rt_symmetry,
+)
+from lakeloom.core.vocabulary import (
+    TermDraft,
+    batch_to_ops,
+    harvest_folksonomy,
+    normalize_term_name,
 )
 
 # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ class TestNewOps:
 
 
 # ---------------------------------------------------------------------------
-# cv_builder
+# vocabulary
 # ---------------------------------------------------------------------------
 
 
@@ -171,7 +171,7 @@ class TestBatchToOps:
         assert concept.parent == "retail.Order"
 
     def test_exceeds_limit_raises(self) -> None:
-        from lakeloom.core.cv_builder import MAX_TERMS_PER_BATCH
+        from lakeloom.core.vocabulary import MAX_TERMS_PER_BATCH
 
         terms = [TermDraft(name=f"T{i}") for i in range(MAX_TERMS_PER_BATCH + 1)]
         with pytest.raises(ValueError, match="limit"):
@@ -189,7 +189,7 @@ class TestBatchToOps:
 
 
 # ---------------------------------------------------------------------------
-# thesaurus_builder
+# thesaurus
 # ---------------------------------------------------------------------------
 
 
@@ -286,7 +286,7 @@ class TestSuggestRelated:
 
 
 # ---------------------------------------------------------------------------
-# coverage
+# taxonomy
 # ---------------------------------------------------------------------------
 
 
@@ -320,19 +320,19 @@ class TestAssessCoverage:
 
     def test_matched_topics(self) -> None:
         model = CoverageModel.from_lists(["Customer", "Order"], depth=3, granularity="medium")
-        report = assess_coverage(self._graph(), model)
+        report = assess_taxonomy_coverage(self._graph(), model)
         assert len(report.matched_topics) == 2
         assert report.gaps == []
 
     def test_gap_detected(self) -> None:
         model = CoverageModel.from_lists(["Customer", "Invoice"], depth=3, granularity="medium")
-        report = assess_coverage(self._graph(), model)
+        report = assess_taxonomy_coverage(self._graph(), model)
         gap_topics = [g.topic for g in report.gaps]
         assert "Invoice" in gap_topics
 
     def test_depth_violation(self) -> None:
         model = CoverageModel.from_lists(["Customer"], depth=1, granularity="coarse")
-        report = assess_coverage(self._graph(), model)
+        report = assess_taxonomy_coverage(self._graph(), model)
         # B (Order) has depth 2, which exceeds max 1
         assert any(v.actual_depth > 1 for v in report.depth_violations)
 
@@ -340,7 +340,7 @@ class TestAssessCoverage:
         model = CoverageModel.from_lists(
             ["Customer", "Order"], depth=3, granularity="medium", exclusions=["Order"]
         )
-        report = assess_coverage(self._graph(), model)
+        report = assess_taxonomy_coverage(self._graph(), model)
         # "Order" is excluded, so only "Customer" is checked
         assert all(m.topic != "Order" for m in report.matched_topics)
         assert all(g.topic != "Order" for g in report.gaps)
@@ -349,13 +349,13 @@ class TestAssessCoverage:
         model = CoverageModel.from_lists(
             ["Customer", "Order", "Invoice"], depth=3, granularity="medium"
         )
-        report = assess_coverage(self._graph(), model)
+        report = assess_taxonomy_coverage(self._graph(), model)
         # 2 matched, 1 gap → 2/3
         assert abs(report.coverage_ratio - 2 / 3) < 0.01
 
 
 def test_batch_orders_parents_before_children() -> None:
-    from lakeloom.core.cv_builder import TermDraft, batch_to_ops
+    from lakeloom.core.vocabulary import TermDraft, batch_to_ops
 
     ops = batch_to_ops(
         [

@@ -1,10 +1,10 @@
-"""Unit tests for map_builder (M5c)."""
+"""Unit tests for map_profile (M5c)."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from lakeloom.core.map_builder import (
+from lakeloom.core.map_profile import (
     MapProfile,
     build_map,
     export_map_json,

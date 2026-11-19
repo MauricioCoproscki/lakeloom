@@ -1670,7 +1670,12 @@ async def test_propose_operations_direct_origin_is_valid(make) -> None:
     """The CV/thesaurus and entity-linking tools propose with origin "direct"."""
     kit = make()
     p = await kit.service.propose_operations(
-        "shop", _imported(1), origin="direct", principal=AGENT, client=None, tool="propose_add_term"
+        "shop",
+        _imported(1),
+        origin="direct",
+        principal=AGENT,
+        client=None,
+        tool="propose_add_concepts",
     )
     assert (await kit.repo.get(p.id)).provenance.origin == "direct"
 

@@ -46,7 +46,7 @@ RetireConcept        # nova: remove conceito com tombstone (skos:hiddenLabel)
 SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 ```
 
-**Novo módulo `core/cv_builder.py`:**
+**Novo módulo `core/vocabulary.py`:**
 
 ```python
 # Workflow de construção de CV do zero (sem ingestão de lake)
@@ -58,7 +58,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 # - export_cv_report(model_slug) → markdown com estatísticas do CV
 ```
 
-**Novo módulo `core/thesaurus_builder.py`:**
+**Novo módulo `core/thesaurus.py`:**
 
 ```python
 # Validação e construção de thesaurus formal
@@ -70,7 +70,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 #   (baseado em co-ocorrência de realizações, não embeddings)
 ```
 
-**Novo módulo `core/coverage.py`:**
+**Novo módulo `core/taxonomy.py`:**
 
 ```python
 # Modelo de cobertura para taxonomias (livro, estágio 3)
@@ -94,13 +94,13 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 ```python
 # Ferramentas READ (ToolAnnotations: read_only_hint=True):
 
-"list_cv_candidates"
+"harvest_vocabulary_candidates"
 # Lista candidatos a termos minerados automaticamente das tags OM do modelo.
 # Params: model (str), limit (int)
 # Returns: lista de {term, source_tag, frequency, existing_match}
 # Implementação: cv_builder.harvest_folksonomy()
 
-"assess_coverage"  
+"assess_realization_coverage"  
 # Avalia a cobertura da taxonomia atual contra um modelo de cobertura definido.
 # Params: model (str), topics (list[str]), depth (int), granularity (str)
 # Returns: CoverageReport markdown com gaps identificados
@@ -117,7 +117,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 
 # Ferramentas WRITE (passam por proposal → review, igual ao scan):
 
-"propose_add_term"
+"propose_add_concepts"
 # Adiciona um ou mais conceitos diretamente ao modelo (sem ingestão de lake).
 # Params: model (str), terms (list[TermDraft]), note (str)
 # TermDraft: {name, definition, broader?, synonyms?, scope_note?, tags?}
@@ -134,7 +134,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 # Params: model, from_concept, relation_type (BT|NT|RT|exactMatch|...), to_concept
 # Returns: ProposalResult
 
-"propose_deprecate"
+"propose_deprecate_concept"
 # Depreca um conceito e opcionalmente redireciona para substituto.
 # Params: model, concept, successor? (str), reason (str)
 # Returns: ProposalResult com DeprecateConcept op
@@ -149,7 +149,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 
 ### M5c — Workflow MAP (Metadata Application Profile)
 
-**Novo módulo `core/map_builder.py`:**
+**Novo módulo `core/map_profile.py`:**
 
 ```python
 # MAP = contrato semântico entre fonte de dados e ontologia
@@ -170,7 +170,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 **Novas ferramentas MCP em `server/tools_sources.py` (ou novo `tools_map.py`):**
 
 ```python
-"build_map_from_scan"
+"build_map"
 # Constrói um MAP a partir de um scan existente.
 # Params: scan_id (str), model (str)
 # Returns: MapProfile como JSON + markdown summary
@@ -237,7 +237,7 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 **Nova ferramenta MCP:**
 
 ```python
-"graph_stats"
+"get_model_stats"
 # Retorna estatísticas estruturais da ontologia: profundidade, nós órfãos, hubs.
 # Params: model (str)
 # Returns: ConceptStats + HierarchyReport em markdown
@@ -251,10 +251,10 @@ SetCoverageModel     # nova: metadados do modelo de cobertura no ConceptScheme
 | Milestone | Escopo | Novos módulos core | Novas ferramentas MCP |
 |---|---|---|---|
 | **M5a** | Ops diretas + CV builder | `cv_builder.py`, `thesaurus_builder.py`, `coverage.py` | — (apenas ops) |
-| **M5b** | Ferramentas MCP CV/Thesaurus | — | `list_cv_candidates`, `validate_thesaurus`, `suggest_related_terms`, `propose_add_term`, `propose_add_hierarchy`, `propose_add_relation`, `propose_deprecate`, `propose_add_scope_note` |
-| **M5c** | MAP workflow | `map_builder.py` | `build_map_from_scan`, `validate_map`, `export_map` |
+| **M5b** | Ferramentas MCP CV/Thesaurus | — | `harvest_vocabulary_candidates`, `validate_thesaurus`, `suggest_related_terms`, `propose_add_concepts`, `propose_add_hierarchy`, `propose_add_relation`, `propose_deprecate_concept`, `propose_add_scope_note` |
+| **M5c** | MAP workflow | `map_builder.py` | `build_map`, `validate_map`, `export_map` |
 | **M6a** | Entity linking KG externo | `entity_linking.py` | `suggest_external_mappings`, `propose_external_mappings` |
-| **M6b** | Graph analytics | `graph_analytics.py` | `graph_stats`, `assess_coverage` |
+| **M6b** | Graph analytics | `graph_analytics.py` | `get_model_stats`, `assess_realization_coverage` |
 
 ---
 
@@ -304,7 +304,7 @@ create_model (MCP)                      # cria glossário OM
 ## Decisões de Design a Confirmar
 
 1. **NLP mining**: o livro sugere spaCy/NLTK para extrair candidatos de texto livre. Adicionar como dependência opcional (`lakeloom[nlp]`) ou deixar fora do escopo?
-2. **Folksonomy harvest**: `list_cv_candidates` proposto usa tags OM existentes. Deve também aceitar texto livre (documentos, wikis) como fonte de candidatos?
+2. **Folksonomy harvest**: `harvest_vocabulary_candidates` proposto usa tags OM existentes. Deve também aceitar texto livre (documentos, wikis) como fonte de candidatos?
 3. **MAP como entidade persistida**: o `MapProfile` deve ser salvo no state store (nova tabela Alembic) ou gerado on-demand a partir do scan + modelo?
 4. **Wikidata rate limits**: `suggest_external_mappings` chama API externa. Deve ter cache local (SQLite) para evitar chamadas repetidas?
-5. **`propose_add_term` em lote**: limite de 200 ops por call (igual a `MAX_OPERATIONS_PER_CALL` em `tools_proposals.py`) é adequado para imports de CV grandes?
+5. **`propose_add_concepts` em lote**: limite de 200 ops por call (igual a `MAX_OPERATIONS_PER_CALL` em `tools_proposals.py`) é adequado para imports de CV grandes?

@@ -1,9 +1,11 @@
-"""MCP tools for ontology graph analytics (M6b).
+"""MCP tools for model analytics and governance annotations (M6b, M7).
 
-Two READ tools (scope ``lakeloom:read``, read_only_hint=True):
+READ tools (scope ``lakeloom:read``, read_only_hint=True):
 
-  - ``graph_stats``      — structural stats (depth, hubs, orphans, relations)
-  - ``assess_coverage``  — realization coverage ratio per concept
+  - ``get_model_stats``      — structural stats (depth, hubs, orphans, relations)
+  - ``assess_realization_coverage``  — realization coverage ratio per concept
+  - ``get_annotation_stats`` — how many concepts carry scope/history notes, deprecations
+  - ``list_deprecated_concepts`` — deprecated concepts (markers from the proposal log)
 """
 
 from __future__ import annotations
@@ -178,10 +180,10 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
     """Register the two graph analytics tools on ``mcp``."""
 
     # ------------------------------------------------------------------
-    # READ: graph_stats
+    # READ: get_model_stats
     # ------------------------------------------------------------------
 
-    async def graph_stats(
+    async def get_model_stats(
         model: Annotated[str, Field(description="Semantic model slug.")],
         ctx: Context,
     ) -> Annotated[CallToolResult, GraphStatsResult]:
@@ -190,7 +192,7 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
 
             stats: ConceptStats = concept_stats(graph)
             hier: HierarchyReport = hierarchy_report(graph)
-            # Pass empty realizations for graph_stats (coverage is a separate tool).
+            # Pass empty realizations for get_model_stats (coverage is a separate tool).
             cov: CoverageStats = realization_coverage(graph, {})
 
             md = analytics_markdown(stats, hier, cov)
@@ -214,21 +216,21 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 structured_content=data.model_dump(mode="json"),
             )
 
-        return await guarded("graph_stats", ctx, READ_SCOPE, body)
+        return await guarded("get_model_stats", ctx, READ_SCOPE, body)
 
     mcp.add_tool(
-        graph_stats,
-        name="graph_stats",
+        get_model_stats,
+        name="get_model_stats",
         title="Graph stats",
         description=GRAPH_STATS_DESCRIPTION,
         annotations=READ_ONLY,
     )
 
     # ------------------------------------------------------------------
-    # READ: assess_coverage
+    # READ: assess_realization_coverage
     # ------------------------------------------------------------------
 
-    async def assess_coverage(
+    async def assess_realization_coverage(
         model: Annotated[str, Field(description="Semantic model slug.")],
         ctx: Context,
     ) -> Annotated[CallToolResult, CoverageResult]:
@@ -263,12 +265,179 @@ def register_analytics_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 structured_content=data.model_dump(mode="json"),
             )
 
-        return await guarded("assess_coverage", ctx, READ_SCOPE, body)
+        return await guarded("assess_realization_coverage", ctx, READ_SCOPE, body)
 
     mcp.add_tool(
-        assess_coverage,
-        name="assess_coverage",
+        assess_realization_coverage,
+        name="assess_realization_coverage",
         title="Assess coverage",
         description=ASSESS_COVERAGE_DESCRIPTION,
+        annotations=READ_ONLY,
+    )
+
+    _register_annotation_tools(mcp, deps)
+
+
+SKOS_ANNOTATION_STATS_DESCRIPTION = f"""\
+Return annotation coverage statistics for a semantic model's SKOS graph:
+how many concepts carry scope notes, history notes, and ``owl:deprecated`` \
+markers.  Read-only.
+
+{_SCOPE_READ}"""
+
+SKOS_DEPRECATED_LIST_DESCRIPTION = f"""\
+List the IRIs and preferred labels of deprecated concepts in a semantic model.
+Deprecation markers (``owl:deprecated true``) come from the proposal log.  \
+Read-only.
+
+{_SCOPE_READ}"""
+
+_PAGE_LIMIT = 200  # max proposals to scan per model
+
+
+# ---------------------------------------------------------------------------
+# Result models
+# ---------------------------------------------------------------------------
+
+
+class AnnotationStatsResult(BaseModel):
+    model: str
+    total_concepts: int
+    with_scope_note: int
+    with_history_note: int
+    with_definition: int
+    deprecated: int
+
+
+class DeprecatedConceptEntry(BaseModel):
+    iri: str
+    pref_label: str
+    reason: str | None = None
+
+
+class DeprecatedListResult(BaseModel):
+    model: str
+    total_deprecated: int
+    concepts: list[DeprecatedConceptEntry]
+
+
+# ---------------------------------------------------------------------------
+# Shared helper: load enriched SKOS graph for a model
+# ---------------------------------------------------------------------------
+
+
+async def _enriched_graph(deps: AppDeps, model: str):
+    """Return an rdflib Graph enriched with annotation ops from applied proposals."""
+
+    return await effective_graph(deps.models, deps.proposal_repo, model)
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
+
+def _register_annotation_tools(mcp: MCPServer, deps: AppDeps) -> None:
+    """Register the governance-annotation tools on ``mcp``."""
+
+    # ------------------------------------------------------------------
+    # READ: get_annotation_stats
+    # ------------------------------------------------------------------
+
+    async def get_annotation_stats(
+        model: Annotated[str, Field(description="Semantic model slug.")],
+        ctx: Context,
+    ) -> Annotated[CallToolResult, AnnotationStatsResult]:
+        async def body(_: Principal) -> CallToolResult:
+            from rdflib.namespace import OWL, RDF, SKOS
+
+            enriched = await _enriched_graph(deps, model)
+            concepts = list(enriched.subjects(RDF.type, SKOS.Concept))
+
+            with_scope = sum(1 for c in concepts if (c, SKOS.scopeNote, None) in enriched)
+            with_history = sum(1 for c in concepts if (c, SKOS.historyNote, None) in enriched)
+            with_def = sum(1 for c in concepts if (c, SKOS.definition, None) in enriched)
+            depr = sum(1 for c in concepts if (c, OWL.deprecated, None) in enriched)
+
+            lines = [
+                f"## SKOS Annotation Stats — {model}",
+                f"- Total concepts: {len(concepts)}",
+                f"- With definition: {with_def}",
+                f"- With scope note: {with_scope}",
+                f"- With history note: {with_history}",
+                f"- Deprecated: {depr}",
+            ]
+            md = "\n".join(lines)
+            data = AnnotationStatsResult(
+                model=model,
+                total_concepts=len(concepts),
+                with_scope_note=with_scope,
+                with_history_note=with_history,
+                with_definition=with_def,
+                deprecated=depr,
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=md)],
+                structured_content=data.model_dump(mode="json"),
+            )
+
+        return await guarded("get_annotation_stats", ctx, READ_SCOPE, body)
+
+    mcp.add_tool(
+        get_annotation_stats,
+        name="get_annotation_stats",
+        title="SKOS annotation stats",
+        description=SKOS_ANNOTATION_STATS_DESCRIPTION,
+        annotations=READ_ONLY,
+    )
+
+    # ------------------------------------------------------------------
+    # READ: list_deprecated_concepts
+    # ------------------------------------------------------------------
+
+    async def list_deprecated_concepts(
+        model: Annotated[str, Field(description="Semantic model slug.")],
+        ctx: Context,
+    ) -> Annotated[CallToolResult, DeprecatedListResult]:
+        async def body(_: Principal) -> CallToolResult:
+            from rdflib.namespace import OWL, RDF, SKOS
+
+            enriched = await _enriched_graph(deps, model)
+            concepts = list(enriched.subjects(RDF.type, SKOS.Concept))
+
+            entries: list[DeprecatedConceptEntry] = []
+            for c in concepts:
+                if (c, OWL.deprecated, None) not in enriched:
+                    continue
+                labels = list(enriched.objects(c, SKOS.prefLabel))
+                label = str(labels[0]) if labels else str(c).rsplit("/", 1)[-1]
+                # changeNote carries the deprecation reason.
+                notes = list(enriched.objects(c, SKOS.changeNote))
+                reason = str(notes[0]) if notes else None
+                entries.append(DeprecatedConceptEntry(iri=str(c), pref_label=label, reason=reason))
+
+            entries.sort(key=lambda e: e.pref_label)
+
+            lines = [f"## Deprecated Concepts — {model}", f"Total: {len(entries)}", ""]
+            for e in entries:
+                reason_str = f" _(reason: {e.reason})_" if e.reason else ""
+                lines.append(f"- **{e.pref_label}** `{e.iri}`{reason_str}")
+            md = "\n".join(lines)
+
+            data = DeprecatedListResult(
+                model=model, total_deprecated=len(entries), concepts=entries
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=md)],
+                structured_content=data.model_dump(mode="json"),
+            )
+
+        return await guarded("list_deprecated_concepts", ctx, READ_SCOPE, body)
+
+    mcp.add_tool(
+        list_deprecated_concepts,
+        name="list_deprecated_concepts",
+        title="SKOS deprecated list",
+        description=SKOS_DEPRECATED_LIST_DESCRIPTION,
         annotations=READ_ONLY,
     )

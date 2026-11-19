@@ -1,4 +1,4 @@
-"""The ``next_steps`` MCP tool: gathers a :class:`ModelState` and ranks what to do next.
+"""The ``get_next_steps`` MCP tool: gathers a :class:`ModelState` and ranks what to do next.
 
 Every source is read with what already exists (validation, proposal log, release tags,
 triple-store sink, the last scheduled drift run, the latest scan, graph analytics). A source
@@ -19,7 +19,7 @@ from rdflib import Graph
 
 from lakeloom.core.callers import Actor, Caller
 from lakeloom.core.graph_analytics import concept_stats, hierarchy_report, realization_coverage
-from lakeloom.core.map_builder import build_map, validate_map
+from lakeloom.core.map_profile import build_map, validate_map
 from lakeloom.core.model_policy import AccessAction, access_for, may
 from lakeloom.core.next_steps import Caller as GuideCaller
 from lakeloom.core.next_steps import (
@@ -31,7 +31,7 @@ from lakeloom.core.next_steps import (
     next_steps,
 )
 from lakeloom.core.proposals import Proposal
-from lakeloom.core.thesaurus_builder import validate_ansi_z39
+from lakeloom.core.thesaurus import validate_ansi_z39
 from lakeloom.server.auth import Principal
 from lakeloom.server.http_app import AppDeps
 from lakeloom.server.tools_analytics import load_graph_and_realizations
@@ -276,11 +276,11 @@ def register_guide_tools(mcp: MCPServer, deps: AppDeps) -> None:
                 structured_content=result.model_dump(mode="json"),
             )
 
-        return await guarded("next_steps", ctx, READ_SCOPE, body)
+        return await guarded("get_next_steps", ctx, READ_SCOPE, body)
 
     mcp.add_tool(
         next_steps_tool,
-        name="next_steps",
+        name="get_next_steps",
         title="Next steps",
         description=NEXT_STEPS_DESCRIPTION,
         annotations=READ_ONLY,

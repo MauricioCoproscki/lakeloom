@@ -180,7 +180,7 @@ def batch_to_ops(
         evidence = (
             [
                 Evidence(
-                    kind="agent", ref="cv_builder", detail=f"authority: {draft.authority_source}"
+                    kind="agent", ref="vocabulary", detail=f"authority: {draft.authority_source}"
                 )
             ]
             if draft.authority_source

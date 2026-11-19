@@ -2,8 +2,8 @@
 
 Tests focus on:
 - Tool registration and read_only annotations
-- ``graph_stats``: returns structured stats for a model
-- ``assess_coverage``: returns coverage ratio
+- ``get_model_stats``: returns structured stats for a model
+- ``assess_realization_coverage``: returns coverage ratio
 - Scope guard: both tools require lakeloom:read
 """
 
@@ -18,7 +18,7 @@ from lakeloom.server.mcp_app import create_mcp, create_server_app
 
 READ = "lakeloom:read"
 
-ANALYTICS_TOOLS = {"graph_stats", "assess_coverage"}
+ANALYTICS_TOOLS = {"get_model_stats", "assess_realization_coverage"}
 
 
 # ---------------------------------------------------------------------------
@@ -58,12 +58,12 @@ async def test_analytics_tools_read_only(make_deps: DepsFactory) -> None:
 
 
 # ---------------------------------------------------------------------------
-# graph_stats
+# get_model_stats
 # ---------------------------------------------------------------------------
 
 
 async def test_graph_stats_returns_structured(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "graph_stats", {"model": "retail"}, scope=READ)
+    result = await call(make_deps, kit, "get_model_stats", {"model": "retail"}, scope=READ)
     data = structured(result)
     assert "error" not in data, data.get("error")
     assert data["model"] == "retail"
@@ -75,24 +75,26 @@ async def test_graph_stats_returns_structured(make_deps: DepsFactory, kit: AuthK
 
 
 async def test_graph_stats_unknown_model(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "graph_stats", {"model": "no-such-model"}, scope=READ)
+    result = await call(make_deps, kit, "get_model_stats", {"model": "no-such-model"}, scope=READ)
     data = structured(result)
     assert data["error"]["code"] == "not_found"
 
 
 async def test_graph_stats_requires_read_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "graph_stats", {"model": "retail"}, scope=None)
+    result = await call(make_deps, kit, "get_model_stats", {"model": "retail"}, scope=None)
     data = structured(result)
     assert data["error"]["code"] == "forbidden"
 
 
 # ---------------------------------------------------------------------------
-# assess_coverage
+# assess_realization_coverage
 # ---------------------------------------------------------------------------
 
 
 async def test_assess_coverage_returns_structured(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "assess_coverage", {"model": "retail"}, scope=READ)
+    result = await call(
+        make_deps, kit, "assess_realization_coverage", {"model": "retail"}, scope=READ
+    )
     data = structured(result)
     assert "error" not in data, data.get("error")
     assert data["model"] == "retail"
@@ -103,12 +105,16 @@ async def test_assess_coverage_returns_structured(make_deps: DepsFactory, kit: A
 
 
 async def test_assess_coverage_unknown_model(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "assess_coverage", {"model": "no-such-model"}, scope=READ)
+    result = await call(
+        make_deps, kit, "assess_realization_coverage", {"model": "no-such-model"}, scope=READ
+    )
     data = structured(result)
     assert data["error"]["code"] == "not_found"
 
 
 async def test_assess_coverage_requires_read_scope(make_deps: DepsFactory, kit: AuthKit) -> None:
-    result = await call(make_deps, kit, "assess_coverage", {"model": "retail"}, scope=None)
+    result = await call(
+        make_deps, kit, "assess_realization_coverage", {"model": "retail"}, scope=None
+    )
     data = structured(result)
     assert data["error"]["code"] == "forbidden"
